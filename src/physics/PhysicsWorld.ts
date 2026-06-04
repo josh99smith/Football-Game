@@ -11,6 +11,9 @@ import RAPIER from "@dimforge/rapier3d-compat";
 export class PhysicsWorld {
   readonly world: RAPIER.World;
   readonly rapier = RAPIER;
+  /** The fixed ground body (at the world origin; collider offset -0.5). Foot-lock joints
+   * pin a planted foot to this so a stance foot cannot slide. */
+  groundBody!: RAPIER.RigidBody;
   /** Internal substeps per 1/60 frame — more = more stable joints, more cost. */
   substeps = 2;
 
@@ -33,6 +36,7 @@ export class PhysicsWorld {
       RAPIER.ColliderDesc.cuboid(60, 0.5, 60).setTranslation(0, -0.5, 0).setFriction(1.4),
       body,
     );
+    this.groundBody = body;
   }
 
   /**

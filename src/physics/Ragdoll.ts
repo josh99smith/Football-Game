@@ -252,6 +252,18 @@ export class Ragdoll {
 
   // --- read-out -------------------------------------------------------------
 
+  /** Raw rigid body for a bone (used by the locomotion controller to read positions
+   * and apply balance/foot-lock forces). */
+  body(name: string): RAPIER.RigidBody {
+    return this.bodies.get(name)!;
+  }
+
+  /** Mean principal angular inertia of a bone (for acceleration-based assist torques). */
+  inertiaMean(name: string): number {
+    const pi = this.bodies.get(name)!.principalInertia();
+    return Math.max(1e-3, (pi.x + pi.y + pi.z) / 3);
+  }
+
   getBoneTransforms(out: BoneTransform[]): BoneTransform[] {
     for (let i = 0; i < this.spec.bones.length; i++) {
       const b = this.spec.bones[i];

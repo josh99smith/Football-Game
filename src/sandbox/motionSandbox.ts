@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { PhysicsWorld } from "../physics/PhysicsWorld";
 import { Ragdoll, type BoneTransform } from "../physics/Ragdoll";
+import { LocomotionController } from "../physics/LocomotionController";
 import { createMotionDebugPanel } from "../debug/MotionDebugPanel";
 
 /**
@@ -39,12 +40,14 @@ async function main(): Promise<void> {
   const grid = new THREE.GridHelper(40, 40, 0x335544, 0x223322);
   scene.add(grid);
 
-  // --- physics + ragdoll ---
+  // --- physics + ragdoll + locomotion ---
   const physics = await PhysicsWorld.create();
   const ragdoll = new Ragdoll(physics);
-  createMotionDebugPanel(ragdoll, physics);
+  const loco = new LocomotionController(ragdoll, physics);
+  loco.activate(); // Slice 2 default: stand & balance on its own feet (chest unpinned)
+  createMotionDebugPanel(ragdoll, physics, loco);
   // Dev handle (sandbox page only) for scripted testing.
-  (window as unknown as { __motion: unknown }).__motion = { ragdoll, physics, THREE };
+  (window as unknown as { __motion: unknown }).__motion = { ragdoll, physics, loco, camera, scene, THREE };
 
   // One mesh per bone, matching the collider shape.
   const mat = new THREE.MeshStandardMaterial({ color: 0xd23a3a, roughness: 0.6 });
@@ -79,7 +82,11 @@ async function main(): Promise<void> {
     last = now;
     let steps = 0;
     while (acc >= STEP) {
-      physics.step((dt) => ragdoll.update(dt)); // PD muscle re-applied per substep
+      loco.tick(STEP); // gait FSM + leg targets + foot-locks (once per physics frame)
+      physics.step((dt) => {
+        loco.applyAssist(dt); // balance wrench, re-applied per substep
+        ragdoll.update(dt); // PD muscle re-applied per substep
+      });
       acc -= STEP;
       if (++steps >= 5) { acc = 0; break; }
     }

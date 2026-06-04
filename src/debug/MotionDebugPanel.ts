@@ -2,6 +2,7 @@ import GUI from "lil-gui";
 import * as THREE from "three";
 import type { Ragdoll } from "../physics/Ragdoll";
 import type { PhysicsWorld } from "../physics/PhysicsWorld";
+import type { LocomotionController } from "../physics/LocomotionController";
 import { specMass } from "../physics/RagdollConfig";
 
 /** Build a sample "reach" pose (raise + bend the right arm) to demo posing-by-angle. */
@@ -20,8 +21,8 @@ function reachPose(): Record<string, THREE.Quaternion> {
  * Live tuning surface for the motion engine (Slice 1): the central per-joint stiffness
  * knob, PD gains, solver substeps, pelvis pin, and Hold/Limp/Nudge/Reset/Pose actions.
  */
-export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld): GUI {
-  const gui = new GUI({ title: `Motion — Slice 1  (${specMass(ragdoll.spec).toFixed(0)} kg)` });
+export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld, loco?: LocomotionController): GUI {
+  const gui = new GUI({ title: `Motion — Slice 2  (${specMass(ragdoll.spec).toFixed(0)} kg)` });
 
   const state = {
     stiffness: 0.8,
@@ -29,7 +30,7 @@ export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld):
     Kd: ragdoll.Kd,
     maxImpulse: ragdoll.maxImpulse,
     substeps: physics.substeps,
-    pinAnchor: true,
+    pinAnchor: false,
     holdPose: () => {
       ragdoll.resetTargets();
       state.stiffness = 0.85;
@@ -60,7 +61,11 @@ export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld):
 
   const sim = gui.addFolder("Sim");
   sim.add(state, "substeps", 1, 8, 1).onChange((v: number) => (physics.substeps = v));
-  sim.add(state, "pinAnchor").name("Pin (hang)").onChange((v: boolean) => ragdoll.setAnchorPinned(v));
+  sim.add(state, "pinAnchor").name("Pin (hang)").onChange((v: boolean) => {
+    if (v) { loco?.deactivate(); ragdoll.setAnchorPinned(true); }
+    else if (loco) loco.activate();
+    else ragdoll.setAnchorPinned(false);
+  });
 
   const act = gui.addFolder("Actions");
   act.add(state, "holdPose").name("Hold Pose");
@@ -68,6 +73,47 @@ export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld):
   act.add(state, "goLimp").name("Go Limp");
   act.add(state, "nudge").name("Nudge");
   act.add(state, "reset").name("Reset");
+
+  if (loco) {
+    const locoState = {
+      walk: false,
+      desiredSpeed: 1.2,
+      assist: loco.assist,
+      uprightKp: loco.uprightKp,
+      uprightKd: loco.uprightKd,
+      comKp: loco.comKp,
+      comKd: loco.comKd,
+      stepDur: loco.stepDur,
+      strideAmp: loco.strideAmp,
+      liftAmp: loco.liftAmp,
+      walkLean: loco.walkLean,
+      legStiffness: loco.legStiffness,
+      stand: () => { locoState.walk = false; loco.setMode("idle"); loco.desiredSpeed = 0; },
+      restand: () => { locoState.walk = false; loco.activate(); loco.desiredSpeed = 0; },
+    };
+    const lf = gui.addFolder("Locomotion (Slice 2)");
+    lf.add(locoState, "walk").name("Walk").listen().onChange((v: boolean) => {
+      loco.setMode(v ? "walk" : "idle");
+      loco.desiredSpeed = v ? locoState.desiredSpeed : 0;
+    });
+    lf.add(locoState, "desiredSpeed", 0, 3.5, 0.05).name("Speed (m/s)").onChange((v: number) => {
+      if (locoState.walk) loco.desiredSpeed = v;
+    });
+    lf.add(locoState, "assist", 0, 1, 0.01).name("Balance assist").onChange((v: number) => (loco.assist = v));
+    lf.add(locoState, "legStiffness", 0, 1, 0.01).name("Leg stiffness").onChange((v: number) => (loco.legStiffness = v));
+    lf.add(locoState, "stepDur", 0.2, 0.9, 0.01).name("Step time").onChange((v: number) => (loco.stepDur = v));
+    lf.add(locoState, "strideAmp", 0.1, 1.2, 0.01).name("Stride").onChange((v: number) => (loco.strideAmp = v));
+    lf.add(locoState, "liftAmp", 0.1, 1.6, 0.01).name("Foot lift").onChange((v: number) => (loco.liftAmp = v));
+    lf.add(locoState, "walkLean", 0, 0.5, 0.01).name("Lean").onChange((v: number) => (loco.walkLean = v));
+    const bal = lf.addFolder("Assist gains");
+    bal.close();
+    bal.add(locoState, "uprightKp", 0, 600, 5).onChange((v: number) => (loco.uprightKp = v));
+    bal.add(locoState, "uprightKd", 0, 100, 1).onChange((v: number) => (loco.uprightKd = v));
+    bal.add(locoState, "comKp", 0, 120, 1).onChange((v: number) => (loco.comKp = v));
+    bal.add(locoState, "comKd", 0, 60, 1).onChange((v: number) => (loco.comKd = v));
+    lf.add(locoState, "stand").name("Stand still");
+    lf.add(locoState, "restand").name("Re-stand (reset)");
+  }
 
   const pj = gui.addFolder("Per-joint stiffness");
   pj.close();
