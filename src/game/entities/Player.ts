@@ -21,6 +21,8 @@ export interface LocoState {
   speed01: number;
   /** Smoothed heading in radians (atan2(y,x) convention), drives the model yaw. */
   heading: number;
+  /** Movement direction relative to facing (radians, -PI..PI): 0 fwd, ±PI back, ±PI/2 strafe. */
+  moveRel: number;
   /** Signed heading change rate this step (rad/s), for banking. */
   turnRate: number;
   /** Fully tackled and on the ground. */
@@ -77,6 +79,9 @@ export class Player {
   /** Smoothed heading that drives the 3D model yaw and gameplay facing. */
   heading = 0;
   private prevHeading = 0;
+  /** When set, the player faces this angle instead of its movement direction
+   * (QB faces downfield on the drop; DBs face the offense while backpedaling). */
+  lookDir: number | null = null;
 
   /** Per-frame locomotion state (the single source of truth for animation). */
   readonly loco: LocoState = {
@@ -84,6 +89,7 @@ export class Player {
     speed: 0,
     speed01: 0,
     heading: 0,
+    moveRel: 0,
     turnRate: 0,
     down: false,
     contact: false,
@@ -222,15 +228,22 @@ export class Player {
     const top = this.baseSpeed * TURBO_MULT;
     const speed01 = clamp(speed / top, 0, 1);
 
-    // Smoothed heading slews toward the velocity direction; turn faster when slow.
-    if (speed > 8) {
-      const target = Math.atan2(this.vel.y, this.vel.x);
+    // Face `lookDir` if set (e.g. QB downfield / DB at the offense), else the velocity
+    // direction. Heading slews so the body carves; turn faster when slow.
+    const moveAng = speed > 8 ? Math.atan2(this.vel.y, this.vel.x) : this.heading;
+    const target = this.lookDir != null ? this.lookDir : moveAng;
+    if (speed > 8 || this.lookDir != null) {
       let d = target - this.heading;
       while (d > Math.PI) d -= Math.PI * 2;
       while (d < -Math.PI) d += Math.PI * 2;
       const maxTurn = HEADING_TURN_RAD * (0.5 + 0.7 * (1 - speed01)) * dt;
       this.heading += clamp(d, -maxTurn, maxTurn);
     }
+    // Movement direction relative to where we're facing (drives fwd/back/strafe blend).
+    let rel = moveAng - this.heading;
+    while (rel > Math.PI) rel -= Math.PI * 2;
+    while (rel < -Math.PI) rel += Math.PI * 2;
+    this.loco.moveRel = speed > 8 ? rel : 0;
     let turn = this.heading - this.prevHeading;
     while (turn > Math.PI) turn -= Math.PI * 2;
     while (turn < -Math.PI) turn += Math.PI * 2;

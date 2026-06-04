@@ -73,6 +73,8 @@ export class GameApp {
     loadCharacter({
       model: `${base}rig_stance.fbx`,
       run: `${base}standard_run.fbx`,
+      runBack: `${base}run_backward.fbx`,
+      strafe: `${base}strafe.fbx`,
       pass: `${base}rig_pass.fbx`,
       catch: `${base}rig_catch.fbx`,
       defender: `${base}rig_defender.fbx`,

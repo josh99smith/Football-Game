@@ -198,6 +198,8 @@ class FbxAvatar implements Avatar {
   private readonly idleAction: THREE.AnimationAction | null;
   private readonly defAction: THREE.AnimationAction | null;
   private readonly runAction: THREE.AnimationAction | null;
+  private readonly backAction: THREE.AnimationAction | null;
+  private readonly strafeAction: THREE.AnimationAction | null;
   private readonly passAction: THREE.AnimationAction | null;
   private readonly catchAction: THREE.AnimationAction | null;
   private oneShot: THREE.AnimationAction | null = null;
@@ -245,9 +247,11 @@ class FbxAvatar implements Avatar {
     this.idleAction = clips.idle ? this.mixer.clipAction(clips.idle) : null;
     this.defAction = clips.defender ? this.mixer.clipAction(clips.defender) : null;
     this.runAction = clips.run ? this.mixer.clipAction(clips.run) : null;
+    this.backAction = clips.runBack ? this.mixer.clipAction(clips.runBack) : null;
+    this.strafeAction = clips.strafe ? this.mixer.clipAction(clips.strafe) : null;
     this.passAction = clips.pass ? this.mixer.clipAction(clips.pass) : null;
     this.catchAction = clips.catch ? this.mixer.clipAction(clips.catch) : null;
-    for (const a of [this.idleAction, this.defAction, this.runAction]) {
+    for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction]) {
       a?.setLoop(THREE.LoopRepeat, Infinity);
       a?.play();
       a?.setEffectiveWeight(0);
@@ -349,22 +353,34 @@ class FbxAvatar implements Avatar {
       this.lean.rotation.set(-this.fallT * (Math.PI / 2.1), 0, 0);
       g.position.y = this.fallT * 0.25;
       this.runAction?.setEffectiveWeight(0);
+      this.backAction?.setEffectiveWeight(0);
+      this.strafeAction?.setEffectiveWeight(0);
       idle?.setEffectiveWeight(0);
       this.ring.visible = false;
       this.chevron.visible = false;
     } else {
-      const moving = lo.speed01;
-      // Running bob complements the jog cycle.
-      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120);
-      // Bank from the smoothed turn rate + any juke/cut lean signal.
-      const bank = clamp(clamp(-lo.turnRate * 0.05, -0.4, 0.4) + p.leanTarget * 0.35, -0.55, 0.55);
-      this.lean.rotation.set(0.16 * moving, 0, bank);
-      // Speed-warped jog (feet plant) + smoothstep idle<->run blend.
-      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.55, 2.2));
-      const runW = smoothstep(JOG_EXIT_W, SPRINT_W, moving);
-      this.runAction?.setEffectiveWeight(runW * loco);
-      idle?.setEffectiveWeight((1 - runW) * loco);
+      // Directional blend: split locomotion among forward/backpedal/strafe by the
+      // movement direction relative to facing (so backpedals & shuffles read right).
+      const moving01 = smoothstep(JOG_EXIT_W, SPRINT_W, lo.speed01);
+      const ts = clamp(lo.speed * FOOT_PLANT_K, 0.55, 2.2);
+      const c = Math.cos(lo.moveRel);
+      let fwd = Math.max(0, c);
+      let back = Math.max(0, -c);
+      let strafe = Math.abs(Math.sin(lo.moveRel));
+      const sum = fwd + back + strafe || 1;
+      fwd /= sum; back /= sum; strafe /= sum;
+      this.runAction?.setEffectiveWeight(fwd * moving01 * loco);
+      this.runAction?.setEffectiveTimeScale(ts);
+      this.backAction?.setEffectiveWeight(back * moving01 * loco);
+      this.backAction?.setEffectiveTimeScale(ts);
+      this.strafeAction?.setEffectiveWeight(strafe * moving01 * loco);
+      this.strafeAction?.setEffectiveTimeScale(ts);
+      idle?.setEffectiveWeight((1 - moving01) * loco);
       idle?.setEffectiveTimeScale(1);
+      // Lean forward when running ahead, back slightly when backpedaling; bank into turns/cuts.
+      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd;
+      const bank = clamp(clamp(-lo.turnRate * 0.05, -0.4, 0.4) + p.leanTarget * 0.35, -0.55, 0.55);
+      this.lean.rotation.set((fwd - back) * 0.16 * moving01, 0, bank);
       this.phase += dt;
       this.ring.visible = p.controlled;
       this.chevron.visible = p.controlled;

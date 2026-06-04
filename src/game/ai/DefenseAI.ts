@@ -158,6 +158,15 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
 
     const sep = separation(d, defense, 26);
     d.desired = addSteer(steer, sep, 0.5);
+
+    // Face the play while in coverage so drops/mirrors read as backpedals & shuffles;
+    // face movement when rushing or chasing a runner (forward run).
+    if (carrierIsRunning || d.job === "rush" || ball.state === "loose") {
+      d.lookDir = null;
+    } else {
+      const t = qb ?? carrier;
+      d.lookDir = t ? Math.atan2(t.pos.y - d.pos.y, t.pos.x - d.pos.x) : null;
+    }
   }
   void CENTER_Y_FALLBACK;
 }

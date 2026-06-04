@@ -189,6 +189,14 @@ export class LivePlayState implements GameState {
       p.turbo = true;
     }
 
+    // QB faces downfield while dropping back in the pocket (so the drop reads as a
+    // backpedal); once he scrambles past the line or throws, he faces his movement.
+    if (this.qb) {
+      const behind = this.dir > 0 ? this.qb.pos.x < this.startLosX : this.qb.pos.x > this.startLosX;
+      const inPocket = this.ball.carrier === this.qb && !this.passThrown && !this.offensePlay.isRun && behind;
+      this.qb.lookDir = inPocket ? (this.dir > 0 ? 0 : Math.PI) : null;
+    }
+
     // Apply on-fire flames at carriers' feet + a turbo speed trail.
     this.spawnFireFx();
     this.spawnTurboTrail();

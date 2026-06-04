@@ -6,8 +6,12 @@ export interface CharacterClips {
   idle: THREE.AnimationClip | null;
   /** Defensive ready stance. */
   defender: THREE.AnimationClip | null;
-  /** Forward jog (locomotion). */
+  /** Forward run (locomotion). */
   run: THREE.AnimationClip | null;
+  /** Backpedal (moving opposite facing). */
+  runBack: THREE.AnimationClip | null;
+  /** Lateral shuffle (moving sideways relative to facing). */
+  strafe: THREE.AnimationClip | null;
   /** One-shot QB throw. */
   pass: THREE.AnimationClip | null;
   /** One-shot reception. */
@@ -27,6 +31,8 @@ export interface CharacterUrls {
   /** Rigged model that also supplies the idle/stance animation. */
   model: string;
   run: string;
+  runBack: string;
+  strafe: string;
   pass: string;
   catch: string;
   defender: string;
@@ -54,9 +60,11 @@ async function loadClip(loader: FBXLoader, url: string): Promise<THREE.Animation
  */
 export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset> {
   const loader = new FBXLoader();
-  const [model, run, pass, catchClip, defender] = await Promise.all([
+  const [model, run, runBack, strafe, pass, catchClip, defender] = await Promise.all([
     loader.loadAsync(urls.model),
     loadClip(loader, urls.run),
+    loadClip(loader, urls.runBack),
+    loadClip(loader, urls.strafe),
     loadClip(loader, urls.pass),
     loadClip(loader, urls.catch),
     loadClip(loader, urls.defender),
@@ -71,7 +79,7 @@ export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset
 
   return {
     template: model,
-    clips: { idle, defender: defender ?? idle, run, pass, catch: catchClip },
+    clips: { idle, defender: defender ?? idle, run, runBack, strafe, pass, catch: catchClip },
     scale: 1.95 / height,
     groundOffset: -box.min.y,
   };
