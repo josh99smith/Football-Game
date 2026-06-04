@@ -167,7 +167,8 @@ const MODEL_FORWARD = Math.PI;
 class FbxAvatar implements Avatar {
   readonly group = new THREE.Group();
   private readonly mixer: THREE.AnimationMixer;
-  private readonly action: THREE.AnimationAction | null;
+  private readonly idleAction: THREE.AnimationAction | null;
+  private readonly runAction: THREE.AnimationAction | null;
   private readonly mats: THREE.MeshStandardMaterial[] = [];
   private readonly helmetMat: THREE.MeshStandardMaterial | null = null;
   private padsMat: THREE.MeshStandardMaterial | null = null;
@@ -219,9 +220,15 @@ class FbxAvatar implements Avatar {
     this.buildUniform(inner);
 
     this.mixer = new THREE.AnimationMixer(inner);
-    this.action = asset.clip ? this.mixer.clipAction(asset.clip) : null;
-    this.action?.setLoop(THREE.LoopRepeat, Infinity);
-    this.action?.play();
+    this.idleAction = asset.clip ? this.mixer.clipAction(asset.clip) : null;
+    this.runAction = asset.runClip ? this.mixer.clipAction(asset.runClip) : null;
+    for (const a of [this.idleAction, this.runAction]) {
+      a?.setLoop(THREE.LoopRepeat, Infinity);
+      a?.play();
+      a?.setEffectiveWeight(0);
+    }
+    // Default to idle (falls back to run if no idle clip).
+    (this.idleAction ?? this.runAction)?.setEffectiveWeight(1);
 
     this.ring = new THREE.Mesh(G.ring, new THREE.MeshBasicMaterial({ color: 0xffe24a }));
     this.ring.rotation.x = -Math.PI / 2;
@@ -314,23 +321,21 @@ class FbxAvatar implements Avatar {
     if (p.isDown) {
       g.position.y = 0.25;
       this.lean.rotation.set(-Math.PI / 2.1, 0, 0);
-      if (this.action) this.action.timeScale = 0;
+      this.idleAction?.setEffectiveTimeScale(0);
+      this.runAction?.setEffectiveTimeScale(0);
       this.ring.visible = false;
       this.chevron.visible = false;
     } else {
-      // Running bob so strides read even with a single anim clip.
-      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.06 * moving;
-      // Forward lean with speed + bank into hard cuts.
+      // A subtle bob complements the jog cycle; forward lean + bank into cuts.
+      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * moving;
       const bank = Math.max(-0.45, Math.min(0.45, (-dyaw / Math.max(dt, 1 / 120)) * 0.016 * moving));
-      this.lean.rotation.set(moving * 0.17, 0, bank);
-      if (this.action) {
-        if (moving < 0.05) {
-          this.action.time = 0;
-          this.action.timeScale = 0;
-        } else {
-          this.action.timeScale = 0.4 + moving * 2.6;
-        }
-      }
+      this.lean.rotation.set(moving * 0.16, 0, bank);
+      // Crossfade idle <-> jog by speed; play the jog faster as you sprint.
+      const runW = Math.min(1, moving * 1.5);
+      this.runAction?.setEffectiveWeight(runW);
+      this.runAction?.setEffectiveTimeScale(0.75 + moving * 1.15);
+      this.idleAction?.setEffectiveWeight(1 - runW);
+      this.idleAction?.setEffectiveTimeScale(1);
       this.phase += dt;
       this.ring.visible = p.controlled;
       this.chevron.visible = p.controlled;
