@@ -5,7 +5,39 @@ export type TeamId = "HOME" | "AWAY";
 
 export type Role = "QB" | "HB" | "WR" | "OL" | "DL" | "LB" | "DB";
 
-export type PlayerState = "set" | "active" | "tackled" | "celebrate";
+export type PlayerState = "set" | "active" | "contact" | "stumbling" | "tackled" | "celebrate";
+
+export type Gait = "idle" | "jog" | "sprint";
+
+/**
+ * Per-frame locomotion state derived from physics (the single source of truth the
+ * simulation and the avatar both read, so visuals always track the sim).
+ */
+export interface LocoState {
+  gait: Gait;
+  /** Speed magnitude in px/s. */
+  speed: number;
+  /** Speed normalized to this player's role top speed (0..1). */
+  speed01: number;
+  /** Smoothed heading in radians (atan2(y,x) convention), drives the model yaw. */
+  heading: number;
+  /** Signed heading change rate this step (rad/s), for banking. */
+  turnRate: number;
+  /** Fully tackled and on the ground. */
+  down: boolean;
+  /** Wrapped up in the contact beat (pre-fall). */
+  contact: boolean;
+  /** Glancing-hit stumble (still upright / in control). */
+  stumbling: boolean;
+}
+
+// Gait hysteresis (normalized speed) — avoids idle<->jog flicker at the boundary.
+const JOG_ENTER = 0.14;
+const JOG_EXIT = 0.09;
+const SPRINT_AT = 0.82;
+// Smoothed heading slews toward velocity at this rate (rad/s), scaled by speed so the
+// player pivots quickly when slow and carves when sprinting.
+const HEADING_TURN_RAD = 12;
 
 /**
  * Per-role base attributes (arcade-tuned, in px/s and px/s^2). Speeds are deliberately
@@ -40,7 +72,23 @@ export class Player {
   hasBall = false;
   controlled = false;
   turbo = false;
+  /** Instantaneous velocity angle (kept for 2D render + legacy callers). */
   facing = 0;
+  /** Smoothed heading that drives the 3D model yaw and gameplay facing. */
+  heading = 0;
+  private prevHeading = 0;
+
+  /** Per-frame locomotion state (the single source of truth for animation). */
+  readonly loco: LocoState = {
+    gait: "idle",
+    speed: 0,
+    speed01: 0,
+    heading: 0,
+    turnRate: 0,
+    down: false,
+    contact: false,
+    stumbling: false,
+  };
 
   /** Countdown after being tackled before the player is "down" cleanup happens. */
   tackledTimer = 0;
@@ -50,8 +98,16 @@ export class Player {
   diveTimer = 0;
   /** Receiver just made a route break — burst open while the DB reacts late. */
   cutTimer = 0;
-  /** One-shot animation trigger consumed by the renderer ("pass" | "catch"). */
-  animEvent: "pass" | "catch" | null = null;
+  /** Wrapped-up beat: carrier + tackler slide/fall together before the whistle. */
+  contactTimer = 0;
+  /** Shared drift velocity used during the contact beat. */
+  contactVel: Vec2 = { x: 0, y: 0 };
+  /** Glancing-hit stumble window. */
+  stumbleTimer = 0;
+  /** Juke/cut lean signal (-1..1), consumed by the avatar for an extra bank. */
+  leanTarget = 0;
+  /** One-shot animation trigger consumed by the renderer. */
+  animEvent: "pass" | "catch" | "juke" | "tackle" | null = null;
 
   // AI scratch fields (used by Offense/Defense AI; harmless when unused).
   /** High-level job assigned by the playbook at snap. */
@@ -78,8 +134,13 @@ export class Player {
     this.radius = s.radius;
   }
 
+  /**
+   * "Out of the play" for AI/sim purposes. Includes the contact (wrap-up) beat so
+   * defenders/blockers disengage a wrapped carrier; the renderer distinguishes the
+   * wrap-up from a finished tackle via `loco.contact` vs `loco.down`.
+   */
   get isDown(): boolean {
-    return this.state === "tackled";
+    return this.state === "tackled" || this.state === "contact";
   }
 
   /** Speed multiplier from turbo and (optionally) team on-fire bonus. */
@@ -96,6 +157,10 @@ export class Player {
    * feel tight); braking is stronger than acceleration so stops/cuts are crisp.
    */
   step(dt: number, targetSpeed: number, accelMul = 1): void {
+    if (this.jukeTimer > 0) this.jukeTimer -= dt;
+    if (this.diveTimer > 0) this.diveTimer -= dt;
+    if (this.cutTimer > 0) this.cutTimer -= dt;
+
     if (this.state === "tackled") {
       this.tackledTimer -= dt;
       // Decelerate any residual momentum while down.
@@ -103,7 +168,29 @@ export class Player {
       this.vel.y = moveToward(this.vel.y, 0, this.accel * 2 * dt);
       this.pos.x += this.vel.x * dt;
       this.pos.y += this.vel.y * dt;
+      this.updateLoco(dt);
       return;
+    }
+
+    if (this.state === "contact") {
+      // Wrapped up: blend toward the shared fall momentum and slide down together.
+      this.contactTimer -= dt;
+      this.vel.x = moveToward(this.vel.x, this.contactVel.x, this.accel * 1.5 * dt);
+      this.vel.y = moveToward(this.vel.y, this.contactVel.y, this.accel * 1.5 * dt);
+      this.pos.x += this.vel.x * dt;
+      this.pos.y += this.vel.y * dt;
+      if (this.contactTimer <= 0) {
+        this.state = "tackled";
+        this.tackledTimer = Math.max(this.tackledTimer, 0.9);
+        this.hasBall = false;
+      }
+      this.updateLoco(dt);
+      return;
+    }
+
+    if (this.state === "stumbling") {
+      this.stumbleTimer -= dt;
+      if (this.stumbleTimer <= 0) this.state = "active";
     }
 
     const dl = Math.hypot(this.desired.x, this.desired.y);
@@ -122,11 +209,69 @@ export class Player {
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;
 
-    const sp = Math.hypot(this.vel.x, this.vel.y);
-    if (sp > 8) this.facing = Math.atan2(this.vel.y, this.vel.x);
-    if (this.jukeTimer > 0) this.jukeTimer -= dt;
-    if (this.diveTimer > 0) this.diveTimer -= dt;
-    if (this.cutTimer > 0) this.cutTimer -= dt;
+    this.updateLoco(dt);
+  }
+
+  /**
+   * Derive the per-frame locomotion state from physics: smoothed heading (rate-limited
+   * so the player carves instead of teleport-turning), gait with hysteresis, and the
+   * down/contact/stumble flags. This is the single source the avatar reads.
+   */
+  private updateLoco(dt: number): void {
+    const speed = Math.hypot(this.vel.x, this.vel.y);
+    const top = this.baseSpeed * TURBO_MULT;
+    const speed01 = clamp(speed / top, 0, 1);
+
+    // Smoothed heading slews toward the velocity direction; turn faster when slow.
+    if (speed > 8) {
+      const target = Math.atan2(this.vel.y, this.vel.x);
+      let d = target - this.heading;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      const maxTurn = HEADING_TURN_RAD * (0.5 + 0.7 * (1 - speed01)) * dt;
+      this.heading += clamp(d, -maxTurn, maxTurn);
+    }
+    let turn = this.heading - this.prevHeading;
+    while (turn > Math.PI) turn -= Math.PI * 2;
+    while (turn < -Math.PI) turn += Math.PI * 2;
+    this.prevHeading = this.heading;
+    this.facing = this.heading; // keep legacy consumers (2D render) in sync
+
+    const lo = this.loco;
+    lo.speed = speed;
+    lo.speed01 = speed01;
+    lo.heading = this.heading;
+    lo.turnRate = turn / Math.max(dt, 1 / 120);
+    lo.down = this.state === "tackled";
+    lo.contact = this.state === "contact";
+    lo.stumbling = this.state === "stumbling";
+    // Gait with hysteresis.
+    const wasJogging = lo.gait !== "idle";
+    if (this.turbo || speed01 > SPRINT_AT) lo.gait = "sprint";
+    else if (speed01 > JOG_ENTER || (wasJogging && speed01 > JOG_EXIT)) lo.gait = "jog";
+    else lo.gait = "idle";
+
+    if (this.leanTarget !== 0) this.leanTarget = moveToward(this.leanTarget, 0, dt * 3);
+  }
+
+  /** Enter the wrap-up beat: slide/fall toward a shared momentum, then go down. */
+  enterContact(driftVx: number, driftVy: number, seconds: number): void {
+    this.state = "contact";
+    this.contactTimer = seconds;
+    this.contactVel.x = driftVx;
+    this.contactVel.y = driftVy;
+  }
+
+  /** Glancing hit: stay upright but lose a beat (and lean). */
+  enterStumble(seconds: number): void {
+    if (this.state !== "active") return;
+    this.state = "stumbling";
+    this.stumbleTimer = seconds;
+  }
+
+  /** True while staggering from a glancing hit. */
+  get isStumbling(): boolean {
+    return this.state === "stumbling";
   }
 
   /** Pick an acceleration rate: faster when decelerating / reversing for snappier control. */

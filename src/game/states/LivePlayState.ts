@@ -68,6 +68,9 @@ export class LivePlayState implements GameState {
   private deadTimer = 0;
   /** Cooldown so broken tackles can't chain every frame. */
   private lastBreak = -1;
+  /** A tackle is wrapping up; endPlay fires when this timer elapses (the contact beat). */
+  private pendingTackle: { type: OutcomeType; spot: Vec2 } | null = null;
+  private pendingTackleTimer = 0;
 
   constructor(app: GameApp, offensePlay: OffensePlay, defensePlay: DefensePlay) {
     this.app = app;
@@ -111,6 +114,7 @@ export class LivePlayState implements GameState {
     this.turbo = 1;
 
     this.app.scene3d.setVisible(true);
+    this.app.scene3d.resetAvatars();
     if (this.qb) this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir);
     this.app.input.setLayout(this.controls.computeLayout(this.app.r));
     this.app.audio.startCrowd();
@@ -209,10 +213,20 @@ export class LivePlayState implements GameState {
       // (loose handled in tackle/fumble path)
     }
 
-    this.checkTackles();
-    this.checkBoundaries();
+    // A tackle in progress wraps up over the contact beat, then the whistle blows.
+    if (this.pendingTackle) {
+      this.pendingTackleTimer -= dt;
+      if (this.pendingTackleTimer <= 0) {
+        const pt = this.pendingTackle;
+        this.pendingTackle = null;
+        this.endPlay(pt.type, pt.spot);
+      }
+    } else {
+      this.checkTackles();
+      this.checkBoundaries();
+    }
 
-    if (this.playTime > MAX_PLAY_TIME && this.phase === "live") {
+    if (this.playTime > MAX_PLAY_TIME && this.phase === "live" && !this.pendingTackle) {
       this.endPlay("tackle", this.ballSpot());
     }
 
@@ -314,10 +328,22 @@ export class LivePlayState implements GameState {
     // Ball carrier moves.
     if (carrier === c) {
       if (doubleTap) {
-        // Spin/juke: brief tackle-immunity + burst.
+        // Juke: brief tackle-immunity + a lateral burst in the aim direction that
+        // preserves forward momentum (a real sidestep, not a teleport).
         c.jukeTimer = 0.45;
-        c.vel.x += Math.cos(c.facing) * 65;
-        c.vel.y += Math.sin(c.facing) * 65;
+        const aim = this.app.input.move;
+        const am = Math.hypot(aim.x, aim.y);
+        if (am > 0.3) {
+          c.vel.x += (aim.x / am) * 80;
+          c.vel.y += (aim.y / am) * 80;
+          // Lean toward the cut.
+          const cross = c.vel.x * (aim.y / am) - c.vel.y * (aim.x / am);
+          c.leanTarget = Math.sign(cross) || 1;
+        } else {
+          c.vel.x += Math.cos(c.facing) * 55;
+          c.vel.y += Math.sin(c.facing) * 55;
+        }
+        c.animEvent = "juke";
         this.app.audio.juke();
         this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
       } else if (pressed) {
@@ -436,6 +462,8 @@ export class LivePlayState implements GameState {
       // A covering DB is flat-footed for a beat when his receiver breaks, so the
       // receiver gains real separation out of the cut.
       if (isDefense && p.job === "cover" && p.assignment && p.assignment.cutTimer > 0) mult *= 0.55;
+      // Glancing-hit stumble drains a beat of speed.
+      if (p.isStumbling) mult *= 0.5;
       const target = p.speedFor(p.turbo || diving, onFire) * mult;
       // The human-controlled player gets much snappier acceleration/turning.
       const accelMul = p === this.controlled ? 2.3 : 1;
@@ -478,16 +506,20 @@ export class LivePlayState implements GameState {
         const min = a.radius + b.radius;
         if (d > 0 && d < min) {
           const overlap = min - d;
+          if (overlap < 0.4) continue; // slop: ignore micro-overlaps to avoid buzzing
           const nx = dx / d;
           const ny = dy / d;
           // Blockers are "heavier": the other body gets pushed more.
           const aMass = a.job === "block" ? 3 : 1;
           const bMass = b.job === "block" ? 3 : 1;
           const total = aMass + bMass;
-          a.pos.x -= nx * overlap * (bMass / total);
-          a.pos.y -= ny * overlap * (bMass / total);
-          b.pos.x += nx * overlap * (aMass / total);
-          b.pos.y += ny * overlap * (aMass / total);
+          // Partial (spring-like) correction each frame instead of a hard teleport;
+          // the geometric series still fully separates over a few frames.
+          const c = 0.5;
+          a.pos.x -= nx * overlap * (bMass / total) * c;
+          a.pos.y -= ny * overlap * (bMass / total) * c;
+          b.pos.x += nx * overlap * (aMass / total) * c;
+          b.pos.y += ny * overlap * (aMass / total) * c;
 
           // Collision impulse: only when the two are actually closing, so contact
           // has weight (a bump) without jitter on resting/leaning bodies.
@@ -506,7 +538,7 @@ export class LivePlayState implements GameState {
 
   private checkTackles(): void {
     const carrier = this.ball.carrier;
-    if (!carrier || this.phase !== "live") return;
+    if (!carrier || carrier.isDown || this.phase !== "live") return;
 
     for (const d of this.defense) {
       if (d.isDown) continue;
@@ -523,6 +555,9 @@ export class LivePlayState implements GameState {
 
       const closing = Math.hypot(d.vel.x - carrier.vel.x, d.vel.y - carrier.vel.y);
       const big = d.turbo || d.diveTimer > 0 || closing > 150;
+
+      // Glancing side-hit: stumble (stay up, lose a beat) instead of a clean tackle.
+      if (!big && this.tryStumble(carrier, d, closing)) return;
 
       // Break tackle: shrug off hits (much easier on weak hits / with turbo).
       if (this.tryBreakTackle(carrier, d, big)) continue;
@@ -562,16 +597,39 @@ export class LivePlayState implements GameState {
     return n;
   }
 
+  /** Glancing side-hit: the carrier staggers but stays up. Returns true if applied. */
+  private tryStumble(carrier: Player, tackler: Player, closing: number): boolean {
+    if (this.playTime - this.lastBreak < 0.5) return false;
+    const cv = Math.hypot(carrier.vel.x, carrier.vel.y);
+    if (cv < 45 || closing > 110 || this.defendersNear(carrier, 28) >= 2) return false;
+    const hvx = tackler.pos.x - carrier.pos.x;
+    const hvy = tackler.pos.y - carrier.pos.y;
+    const hl = Math.hypot(hvx, hvy) || 1;
+    const dot = (carrier.vel.x / cv) * (hvx / hl) + (carrier.vel.y / cv) * (hvy / hl);
+    if (dot > 0.5) return false; // tackler is square in front -> real tackle, not a brush
+
+    carrier.enterStumble(0.28);
+    // Nudge away from the hit + lean to that side.
+    carrier.vel.x -= (hvx / hl) * 30;
+    carrier.vel.y -= (hvy / hl) * 30;
+    const cross = carrier.vel.x * hvy - carrier.vel.y * hvx;
+    carrier.leanTarget = Math.sign(cross) || 1;
+    this.app.time.slow(0.85, 0.12);
+    this.app.shake.add(0.1);
+    this.app.particles.burst((carrier.pos.x + tackler.pos.x) / 2, (carrier.pos.y + tackler.pos.y) / 2, "#ffffff", 5, 70);
+    this.app.audio.hit(0.3);
+    return true;
+  }
+
   private doTackle(tackler: Player, carrier: Player, big: boolean, closing: number): void {
     const hx = (tackler.pos.x + carrier.pos.x) / 2;
     const hy = (tackler.pos.y + carrier.pos.y) / 2;
-
-    // Fumble chance scales with hit power (Blitz-style strips) — kept rare so a
-    // hard hit doesn't constantly cost possession.
     const fumbleChance = big ? 0.08 : 0.02;
     const dirX = carrier.pos.x - tackler.pos.x;
     const dirY = carrier.pos.y - tackler.pos.y;
+    const dl = Math.hypot(dirX, dirY) || 1;
 
+    // Impact FX fire at contact start, so the hit-stop/slow-mo plays over the wrap-up.
     if (big) {
       this.app.time.bigHit();
       this.app.shake.add(0.55);
@@ -580,49 +638,46 @@ export class LivePlayState implements GameState {
       this.app.floating.add(pickHitWord(), hx, hy - 16, { size: 28, color: "#ffd23a" });
       this.app.audio.crowdCheer();
     } else {
-      this.app.shake.add(0.18);
+      this.app.time.slow(0.6, 0.12);
+      this.app.shake.add(0.2);
       this.app.particles.burst(hx, hy, "#d9c7a0", 8, 110);
-      this.app.audio.hit(0.35);
+      this.app.audio.hit(0.4);
     }
 
-    carrier.knockDown();
-    tackler.facing = Math.atan2(dirY, dirX);
+    // Shared fall momentum: carrier + tackler travel together (with forward progress).
+    const fwd = big ? 60 : 28;
+    const bvx = (carrier.vel.x + tackler.vel.x) * 0.5 + (dirX / dl) * fwd;
+    const bvy = (carrier.vel.y + tackler.vel.y) * 0.5 + (dirY / dl) * fwd;
+    const beat = big ? 0.32 : 0.22;
+    const spot = { x: carrier.pos.x + (dirX / dl) * (big ? 8 : 3), y: carrier.pos.y };
 
-    // Momentum transfer: a big hit drives the carrier back and recoils the tackler.
-    const dl = Math.hypot(dirX, dirY) || 1;
-    const shove = big ? 150 : 55;
-    carrier.vel.x += (dirX / dl) * shove;
-    carrier.vel.y += (dirY / dl) * shove;
-    tackler.vel.x -= (dirX / dl) * shove * 0.4;
-    tackler.vel.y -= (dirY / dl) * shove * 0.4;
-
+    let type: OutcomeType;
     if (chance(fumbleChance)) {
-      // Fumble! Award recovery to whichever side is closer (slight defense bias).
       this.app.floating.add("FUMBLE!", hx, hy - 40, { size: 26, color: "#ff6a6a" });
       this.app.audio.turnover();
-      // Pop the ball loose so it visibly tumbles during the dead beat.
       this.ball.becomeLoose((dirX / dl) * 120 + (Math.random() * 80 - 40), (dirY / dl) * 120 + (Math.random() * 80 - 40), 220);
       const recoverDefense = chance(0.6);
-      const spot = { x: carrier.pos.x, y: carrier.pos.y };
       if (recoverDefense) {
-        // Defense recovers => turnover.
         const defenseIsHuman = this.app.match.opponent(this.offenseTeamId) === this.app.match.humanTeam;
         if (defenseIsHuman) this.app.audio.crowdCheer();
         else this.app.audio.crowdGroan();
         this.bumpFireStreakOnDefense();
-        this.endPlay("fumbleLost", spot);
+        type = "fumbleLost";
       } else {
-        // Offense recovers => down where it happened.
-        this.endPlay(this.sackIfBehindLine(spot), spot);
+        type = this.sackIfBehindLine(spot);
       }
-      return;
+    } else {
+      if (tackler.team !== this.offenseTeamId && big) this.bumpFireStreakOnDefense();
+      type = this.sackIfBehindLine(spot);
     }
 
-    if (tackler.team !== this.offenseTeamId && big) this.bumpFireStreakOnDefense();
-    this.endPlay(this.sackIfBehindLine({ x: carrier.pos.x, y: carrier.pos.y }), {
-      x: carrier.pos.x,
-      y: carrier.pos.y,
-    });
+    // Both players wrap up and go down together; the whistle blows after the beat.
+    carrier.enterContact(bvx, bvy, beat);
+    tackler.enterContact(bvx * 0.55, bvy * 0.55, beat);
+    tackler.facing = Math.atan2(dirY, dirX);
+    tackler.heading = tackler.facing;
+    this.pendingTackle = { type, spot };
+    this.pendingTackleTimer = beat;
   }
 
   private sackIfBehindLine(spot: Vec2): OutcomeType {

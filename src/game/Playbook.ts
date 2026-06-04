@@ -162,6 +162,7 @@ export function buildOffense(
     const p = new Player(team, slot.role, slot.number, w.x, w.y);
     p.home = { x: w.x, y: w.y };
     p.facing = dir > 0 ? 0 : Math.PI;
+    p.heading = p.facing;
     p.job = slot.job;
     if (slot.route) {
       p.route = slot.route.map((r) => relToWorld(losX, dir, r));
@@ -177,6 +178,7 @@ export function buildDefense(team: TeamId, losX: number, dir: number): Player[] 
     const p = new Player(team, slot.role, slot.number, w.x, w.y);
     p.home = { x: w.x, y: w.y };
     p.facing = dir > 0 ? Math.PI : 0;
+    p.heading = p.facing;
     return p;
   });
 }

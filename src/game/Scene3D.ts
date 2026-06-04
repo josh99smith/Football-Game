@@ -3,6 +3,7 @@ import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.j
 import type { Player } from "./entities/Player";
 import type { Ball } from "./entities/Ball";
 import type { CharacterAsset } from "./CharacterModel";
+import { clamp, moveToward } from "../engine/math/Vec2";
 import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD, ENDZONE_PX } from "./Field";
 
 /** Units per field-pixel (1 yard = 1 world unit in 3D). */
@@ -17,6 +18,7 @@ interface Avatar {
   readonly group: THREE.Object3D;
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void;
   hide(): void;
+  resetPose(): void;
 }
 
 // Shared geometries (created once, reused by every avatar).
@@ -151,6 +153,12 @@ class BoxAvatar implements Avatar {
   hide(): void {
     this.group.visible = false;
   }
+
+  resetPose(): void {
+    this.group.scale.set(1, 1, 1);
+    this.group.rotation.set(0, 0, 0);
+    this.group.position.y = 0;
+  }
 }
 
 function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number): THREE.Mesh {
@@ -162,6 +170,26 @@ function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: numb
 
 /** Facing offset so the model's front points along its movement direction. */
 const MODEL_FORWARD = 0;
+
+// Render-side feel constants.
+const TURN_RATE_RAD = 14; // rendered yaw slew (rad/s), scaled by speed
+const FOOT_PLANT_K = 0.0075; // run timeScale per px/s of ground speed (kills foot sliding)
+const JOG_EXIT_W = 0.09; // smoothstep low edge (matches Player gait hysteresis)
+const SPRINT_W = 0.82; // smoothstep high edge
+
+function wrapAngle(a: number): number {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+/** Convert a standard heading (atan2(y,x)) to the model's yaw convention. */
+function toModelYaw(h: number): number {
+  return Math.atan2(Math.cos(h), Math.sin(h));
+}
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
 
 /** A skinned, animated FBX avatar, tinted to the team color. */
 class FbxAvatar implements Avatar {
@@ -186,7 +214,10 @@ class FbxAvatar implements Avatar {
   private readonly chevron: THREE.Mesh;
   private readonly nub: THREE.Mesh;
   private phase = Math.random() * Math.PI * 2;
-  private prevYaw = 0;
+  /** Rendered yaw (slewed toward the target heading for smooth turning). */
+  private yaw = 0;
+  /** Fall progress 0 (upright) .. 1 (flat), lerped for a non-instant tackle. */
+  private fallT = 0;
 
   constructor(asset: CharacterAsset) {
     const inner = skeletonClone(asset.template);
@@ -308,6 +339,15 @@ class FbxAvatar implements Avatar {
     this.oneShotDur = action.getClip().duration;
   }
 
+  /** Reset to an upright, neutral pose for a fresh play (pooled avatars are reused). */
+  resetPose(): void {
+    this.fallT = 0;
+    this.oneShot?.setEffectiveWeight(0);
+    this.oneShot = null;
+    this.lean.rotation.set(0, 0, 0);
+    this.group.position.y = 0;
+  }
+
   private drawNumber(n: number): void {
     const ctx = this.numberCtx;
     if (!ctx || !this.numberTex) return;
@@ -333,26 +373,25 @@ class FbxAvatar implements Avatar {
       this.drawNumber(p.number);
     }
 
-    // Fire one-shot overlays (throw / catch) on game events.
+    // Fire one-shot overlays on game events (juke/tackle handled procedurally for now).
     if (p.animEvent === "pass") this.triggerOneShot(this.passAction);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction);
     p.animEvent = null;
 
-    const speed = Math.hypot(p.vel.x, p.vel.y);
-    const moving = Math.min(1, speed / 150);
-    const yaw = (speed > 8 ? Math.atan2(p.vel.x, p.vel.y) : Math.atan2(Math.cos(p.facing), Math.sin(p.facing))) + MODEL_FORWARD;
-    let dyaw = yaw - this.prevYaw;
-    while (dyaw > Math.PI) dyaw -= Math.PI * 2;
-    while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-    this.prevYaw = yaw;
-    g.rotation.y = yaw;
+    const lo = p.loco;
 
-    // One-shot envelope (ramp in/out); ducks locomotion while active.
+    // Smooth, rate-limited yaw toward the heading the sim already smoothed (carve, no snap).
+    const targetYaw = toModelYaw(lo.heading) + MODEL_FORWARD;
+    const turnCap = TURN_RATE_RAD * (0.55 + 0.9 * (1 - lo.speed01)) * dt;
+    this.yaw += clamp(wrapAngle(targetYaw - this.yaw), -turnCap, turnCap);
+    g.rotation.y = this.yaw;
+
+    // One-shot envelope (ramp in/out); ducks locomotion, which ramps back in on the out phase.
     let osW = 0;
     if (this.oneShot) {
       this.oneShotTime += dt;
       const inT = 0.1;
-      const outT = 0.2;
+      const outT = 0.28;
       if (this.oneShotTime < inT) osW = this.oneShotTime / inT;
       else if (this.oneShotTime > this.oneShotDur - outT) osW = Math.max(0, (this.oneShotDur - this.oneShotTime) / outT);
       else osW = 1;
@@ -366,25 +405,33 @@ class FbxAvatar implements Avatar {
     }
     const loco = 1 - osW;
 
-    // The idle stance differs for offense vs defense.
+    // Procedural fall: lerp toward flat (contact staggers partway, down goes flat, else up).
+    const fallTarget = lo.down ? 1 : lo.contact ? 0.55 : 0;
+    this.fallT = moveToward(this.fallT, fallTarget, (fallTarget > this.fallT ? 1 / 0.25 : 1 / 0.4) * dt);
+
     const idle = isDefense ? this.defAction : this.idleAction;
     const otherIdle = isDefense ? this.idleAction : this.defAction;
     if (otherIdle && otherIdle !== idle) otherIdle.setEffectiveWeight(0);
 
-    if (p.isDown) {
-      g.position.y = 0.25;
-      this.lean.rotation.set(-Math.PI / 2.1, 0, 0);
+    if (this.fallT > 0.02) {
+      // Falling / on the ground: procedural pose, locomotion muted.
+      this.lean.rotation.set(-this.fallT * (Math.PI / 2.1), 0, 0);
+      g.position.y = this.fallT * 0.25;
       this.runAction?.setEffectiveWeight(0);
       idle?.setEffectiveWeight(0);
       this.ring.visible = false;
       this.chevron.visible = false;
     } else {
-      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * moving;
-      const bank = Math.max(-0.45, Math.min(0.45, (-dyaw / Math.max(dt, 1 / 120)) * 0.016 * moving));
-      this.lean.rotation.set(moving * 0.16, 0, bank);
-      const runW = Math.min(1, moving * 1.5);
+      const moving = lo.speed01;
+      // Running bob complements the jog cycle.
+      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120);
+      // Bank from the smoothed turn rate + any juke/cut lean signal.
+      const bank = clamp(clamp(-lo.turnRate * 0.05, -0.4, 0.4) + p.leanTarget * 0.35, -0.55, 0.55);
+      this.lean.rotation.set(0.16 * moving, 0, bank);
+      // Speed-warped jog (feet plant) + smoothstep idle<->run blend.
+      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.55, 2.2));
+      const runW = smoothstep(JOG_EXIT_W, SPRINT_W, moving);
       this.runAction?.setEffectiveWeight(runW * loco);
-      this.runAction?.setEffectiveTimeScale(0.75 + moving * 1.15);
       idle?.setEffectiveWeight((1 - runW) * loco);
       idle?.setEffectiveTimeScale(1);
       this.phase += dt;
@@ -766,6 +813,11 @@ export class Scene3D {
 
   setVisible(v: boolean): void {
     this.canvas.style.display = v ? "block" : "none";
+  }
+
+  /** Reset all avatars to a neutral upright pose (call when a new play starts). */
+  resetAvatars(): void {
+    for (const a of this.players) a.resetPose();
   }
 
   /** Swap the box-avatar pool for skinned FBX characters once the model has loaded. */
