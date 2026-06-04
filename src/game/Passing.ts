@@ -8,8 +8,8 @@ export interface CatchResult {
   incomplete?: boolean;
 }
 
-const CATCH_RADIUS = 44; // generous so well-thrown balls are actually caught
-const CATCH_HEIGHT = 70; // ball must be low enough to be catchable
+const CATCH_RADIUS = 48; // generous so well-thrown balls are actually caught
+const CATCH_HEIGHT = 72; // ball must be low enough to be catchable
 
 /**
  * Pick the receiver to throw to. If the QB is "aiming" (joystick deflected), choose
@@ -51,8 +51,8 @@ export function chooseTarget(
   }
   if (!best) return null;
 
-  // Lead the receiver a touch based on its velocity.
-  const lead: Vec2 = { x: best.pos.x + best.vel.x * 0.25, y: best.pos.y + best.vel.y * 0.25 };
+  // Lead the receiver based on its velocity so the ball arrives where it's headed.
+  const lead: Vec2 = { x: best.pos.x + best.vel.x * 0.42, y: best.pos.y + best.vel.y * 0.42 };
   return { receiver: best, point: lead };
 }
 
@@ -77,6 +77,7 @@ export function resolveAir(
   defense: Player[],
   landed: boolean,
   pickChance: number,
+  intended: Player | null = null,
 ): CatchResult | null {
   if (ball.state !== "inAir") return null;
 
@@ -87,22 +88,29 @@ export function resolveAir(
 
   if (reachable) {
     const def = nearestInRange(ball.pos, defense, CATCH_RADIUS);
-    const rcv = nearestInRange(
-      ball.pos,
-      offense.filter((p) => p !== ball.thrownBy && p.job !== "block"),
-      CATCH_RADIUS,
-    );
+    // The targeted receiver gets a larger, more forgiving catch window (good reads
+    // shouldn't drop), otherwise fall back to the nearest eligible receiver.
+    let rcv: Player | null = null;
+    if (intended && !intended.isDown && dist(ball.pos, intended.pos) < CATCH_RADIUS * 1.35) {
+      rcv = intended;
+    } else {
+      rcv = nearestInRange(
+        ball.pos,
+        offense.filter((p) => p !== ball.thrownBy && p.job !== "block"),
+        CATCH_RADIUS,
+      );
+    }
 
-    // Resolve the first frame anyone can reach the ball, so we never re-roll.
     if (def && rcv) {
       const dDef = dist(ball.pos, def.pos);
       const dRcv = dist(ball.pos, rcv.pos);
-      // Defender only wins if clearly closer to the ball than the receiver.
-      if (dDef < dRcv - 6) {
+      // The defender must clearly beat the receiver to the ball; the targeted man
+      // gets extra benefit of the doubt on contested balls.
+      const margin = rcv === intended ? 18 : 4;
+      if (dDef < dRcv - margin) {
         return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
       }
-      // Receiver in position: catch it (tiny contested pick chance).
-      return Math.random() < pickChance * 0.25 ? { intercepted: def } : { caught: rcv };
+      return Math.random() < pickChance * 0.2 ? { intercepted: def } : { caught: rcv };
     }
     if (rcv) return { caught: rcv };
     if (def) return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };

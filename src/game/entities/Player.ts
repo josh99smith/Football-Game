@@ -48,6 +48,8 @@ export class Player {
   jukeTimer = 0;
   /** Active dive/lunge window (carrier dive or defender dive-tackle). */
   diveTimer = 0;
+  /** Receiver just made a route break — burst open while the DB reacts late. */
+  cutTimer = 0;
 
   // AI scratch fields (used by Offense/Defense AI; harmless when unused).
   /** High-level job assigned by the playbook at snap. */
@@ -122,6 +124,7 @@ export class Player {
     if (sp > 8) this.facing = Math.atan2(this.vel.y, this.vel.x);
     if (this.jukeTimer > 0) this.jukeTimer -= dt;
     if (this.diveTimer > 0) this.diveTimer -= dt;
+    if (this.cutTimer > 0) this.cutTimer -= dt;
   }
 
   /** Pick an acceleration rate: faster when decelerating / reversing for snappier control. */

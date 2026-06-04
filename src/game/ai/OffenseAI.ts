@@ -41,16 +41,24 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
         if (o.routeIndex < o.route.length) {
           const wp = o.route[o.routeIndex];
           steer = seek(o.pos, wp);
-          if (dist(o.pos, wp) < ROUTE_REACH) o.routeIndex++;
+          if (dist(o.pos, wp) < ROUTE_REACH) {
+            o.routeIndex++;
+            o.cutTimer = 0.5; // sharp break: burst open while the DB reacts late
+          }
         } else {
-          // Route finished: drift to get open away from nearest defender.
+          // Route finished: work to open grass away from the nearest defender,
+          // continuing downfield so the QB has somewhere to lead the throw.
           const cover = nearestDefenderTo(ctx, o.pos);
-          if (cover && dist(o.pos, cover.pos) < 70) {
-            steer = { x: Math.sign(o.pos.x - cover.pos.x) || ctx.dir, y: Math.sign(o.pos.y - cover.pos.y) };
+          if (cover && dist(o.pos, cover.pos) < 90) {
+            const away = Math.sign(o.pos.y - cover.pos.y) || (o.pos.y < ctx.losX ? 1 : -1);
+            steer = { x: ctx.dir * 0.5, y: away };
+            if (dist(o.pos, cover.pos) < 40) o.cutTimer = 0.3; // shake free
           } else {
-            steer = { x: ctx.dir * 0.4, y: 0 };
+            steer = { x: ctx.dir * 0.5, y: 0 };
           }
         }
+        // Push hard out of breaks to create separation.
+        o.turbo = o.cutTimer > 0;
         break;
       }
       case "run":

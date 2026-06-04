@@ -1,5 +1,6 @@
 import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
+import type { Renderer } from "../../engine/Renderer";
 import { dist, type Vec2 } from "../../engine/math/Vec2";
 import { chance } from "../../engine/math/random";
 import { Player } from "../entities/Player";
@@ -200,6 +201,7 @@ export class LivePlayState implements GameState {
         this.defense,
         landed,
         DIFFICULTY[m.difficulty].pick,
+        this.passTarget,
       );
       if (res) this.resolvePassResult(res);
     } else if (this.ball.state === "loose" && landed) {
@@ -425,6 +427,9 @@ export class LivePlayState implements GameState {
       let mult = isDefense ? DIFFICULTY[m.difficulty].cpuSpeed * react : 1;
       // A blocker latched onto a defender drags them to a crawl (opens lanes).
       if (isDefense && this.isEngagedByBlocker(p)) mult *= 0.32;
+      // A covering DB is flat-footed for a beat when his receiver breaks, so the
+      // receiver gains real separation out of the cut.
+      if (isDefense && p.job === "cover" && p.assignment && p.assignment.cutTimer > 0) mult *= 0.55;
       const target = p.speedFor(p.turbo || diving, onFire) * mult;
       // The human-controlled player gets much snappier acceleration/turning.
       const accelMul = p === this.controlled ? 2.3 : 1;
@@ -745,6 +750,7 @@ export class LivePlayState implements GameState {
     // FX and UI are drawn on the transparent 2D overlay above the 3D scene.
     const project = this.project;
     app.particles.render(r, project);
+    this.renderPassHints(r);
     app.floating.render(r, project);
 
     this.hud.render(r, m, {
@@ -758,6 +764,57 @@ export class LivePlayState implements GameState {
 
   /** Projector bound to the 3D camera, for overlay FX/text. */
   private project = (x: number, y: number, h: number) => this.app.scene3d.project(x, y, h);
+
+  /** Reticles over eligible receivers (green=open) + a highlight on the target. */
+  private renderPassHints(r: Renderer): void {
+    if (!this.humanIsOffense || this.passThrown || this.offensePlay.isRun) return;
+    if (!this.qb || this.ball.carrier !== this.qb) return;
+    const ctx = r.ctx;
+    const eligible = this.offense.filter((p) => p.role !== "QB" && p.job !== "block" && !p.isDown);
+    const choice = chooseTarget(this.qb, this.offense.filter((p) => p.role !== "QB"), this.defense, this.dir, this.app.input.move);
+    const target = choice?.receiver ?? null;
+
+    for (const rcv of eligible) {
+      const s = this.app.scene3d.project(rcv.pos.x, rcv.pos.y, 80);
+      if (!s.visible) continue;
+      const open = this.nearestDefDist(rcv);
+      const color = open > 78 ? "#5dff7a" : open > 44 ? "#ffd23a" : "#ff5a5a";
+      const isTarget = rcv === target;
+      const size = isTarget ? 13 : 8;
+      const y = s.y - (isTarget ? 4 : 0);
+      ctx.save();
+      ctx.globalAlpha = isTarget ? 1 : 0.75;
+      ctx.fillStyle = color;
+      ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(s.x, y + size);
+      ctx.lineTo(s.x - size * 0.8, y);
+      ctx.lineTo(s.x + size * 0.8, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      if (isTarget) {
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(s.x, y - 1, size + 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  private nearestDefDist(p: Player): number {
+    let m = Infinity;
+    for (const d of this.defense) {
+      if (d.isDown) continue;
+      const dd = dist(d.pos, p.pos);
+      if (dd < m) m = dd;
+    }
+    return m;
+  }
 
   private controlLabels(): { turbo: string; action: string } {
     if (this.humanIsOffense) {
