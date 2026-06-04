@@ -224,8 +224,12 @@ const MODEL_FORWARD = 0;
 
 // Render-side feel constants.
 const TURN_RATE_RAD = 14; // rendered yaw slew (rad/s), scaled by speed
-const FOOT_PLANT_K = 0.0075; // run timeScale per px/s of ground speed (kills foot sliding)
-const WALK_PLANT_K = 0.0135; // walk timeScale per px/s of ground speed
+// Foot-plant warps: timeScale = speed(px/s) * K, calibrated from each clip's measured
+// authored stride speed so the feet grip the ground (no skating) at any pace.
+const FOOT_PLANT_K = 0.0136; // run clip strides ~4.6 yd/s
+const WALK_PLANT_K = 0.0369; // walk clip strides ~1.7 yd/s
+const BACK_PLANT_K = 0.0194; // backpedal clip ~3.2 yd/s
+const STRAFE_PLANT_K = 0.0163; // strafe clip ~3.8 yd/s
 const IDLE_OUT = 0.06; // speed01 below this is idle
 const MOVE_FULL = 0.18; // speed01 above this is fully in locomotion (idle faded out)
 const WALK_TO_RUN_LO = 0.3; // below this, forward motion is the walk cycle
@@ -247,7 +251,7 @@ function smoothstep(e0: number, e1: number, x: number): number {
 /** Lerp an action's weight toward a target (~0.12s to fully change) for smooth crossfades. */
 function blendW(a: THREE.AnimationAction | null, target: number, dt: number): void {
   if (!a) return;
-  a.setEffectiveWeight(moveToward(a.getEffectiveWeight(), target, dt / 0.12));
+  a.setEffectiveWeight(moveToward(a.getEffectiveWeight(), target, dt / 0.16));
 }
 
 /** A skinned, animated player using the rigged model's own textured uniform. */
@@ -267,8 +271,6 @@ class FbxAvatar implements Avatar {
   private readonly defTackleAction: THREE.AnimationAction | null;
   private readonly defSwatAction: THREE.AnimationAction | null;
   private readonly celebrateAction: THREE.AnimationAction | null;
-  /** Right-hand bone — the held ball rides it so it follows the hand as it animates. */
-  private readonly handBone: THREE.Object3D | null;
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
@@ -354,21 +356,13 @@ class FbxAvatar implements Avatar {
     this.chevron.visible = false;
     this.nub = new THREE.Mesh(G.nub, new THREE.MeshStandardMaterial({ color: 0x7a3b12, roughness: 0.7 }));
     this.nub.scale.set(1.5, 1, 1);
-    this.nub.position.set(0.34, 1.1, 0.2);
+    this.nub.position.set(0.26, 1.22, 0.12); // tucked against the torso on the carry side
     this.nub.visible = false;
 
     // The lean group banks/leans the body; the holder group only yaws + positions,
     // so the ground ring / chevron / ball stay upright.
     this.lean.add(inner);
     this.group.add(this.lean, this.ring, this.chevron, this.nub);
-
-    // Locate the right-hand bone so the held ball can ride it (follows the hand as the
-    // run/throw/catch animations move the arm). Falls back to the fixed nub spot if absent.
-    let hand: THREE.Object3D | null = null;
-    inner.traverse((o) => {
-      if (!hand && /RightHand$/i.test(o.name)) hand = o;
-    });
-    this.handBone = hand;
   }
 
   /**
@@ -430,7 +424,7 @@ class FbxAvatar implements Avatar {
     if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 1.1);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
     else if (p.animEvent === "juke") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.9, 1.15, 0);
-    else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.5, 1.05, 0);
+    else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0);
     else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.4, 1.1, 0);
     else if (p.animEvent === "swat") this.triggerOneShot(this.defSwatAction, 0.95, 1.2, 0.3);
     else if (p.animEvent === "celebrate") this.triggerOneShot(this.celebrateAction, 2.6, 1.0, 0);
@@ -448,8 +442,8 @@ class FbxAvatar implements Avatar {
     let osW = 0;
     if (this.oneShot) {
       this.oneShotTime += dt;
-      const inT = 0.1;
-      const outT = 0.28;
+      const inT = 0.14;
+      const outT = 0.32;
       if (this.oneShotTime < inT) osW = this.oneShotTime / inT;
       else if (this.oneShotTime > this.oneShotDur - outT) osW = Math.max(0, (this.oneShotDur - this.oneShotTime) / outT);
       else osW = 1;
@@ -492,8 +486,6 @@ class FbxAvatar implements Avatar {
       // Forward motion crossfades walk -> run with speed (true walk cycle at a stroll,
       // run when hustling), each foot-planted to ground speed by its own warp.
       const runMix = smoothstep(WALK_TO_RUN_LO, WALK_TO_RUN_HI, lo.speed01);
-      const ts = clamp(lo.speed * FOOT_PLANT_K, 0.55, 2.2);
-      const walkTs = clamp(lo.speed * WALK_PLANT_K, 0.6, 1.6);
       // Split locomotion by movement-vs-facing angle, but sharpened so a mild turn
       // (small moveRel from the heading slew) stays a forward run instead of bleeding
       // into a shuffle/backpedal. Shuffle only dominates past ~50deg, backpedal past ~130.
@@ -509,10 +501,11 @@ class FbxAvatar implements Avatar {
       tBack = back * moving01;
       tStrafe = strafe * moving01;
       tIdle = 1 - moving01; // everyone settles into the football ready stance
-      this.walkAction?.setEffectiveTimeScale(walkTs);
-      this.runAction?.setEffectiveTimeScale(ts);
-      this.backAction?.setEffectiveTimeScale(ts);
-      this.strafeAction?.setEffectiveTimeScale(ts);
+      // Each cycle is warped to its own measured stride so feet grip the ground.
+      this.walkAction?.setEffectiveTimeScale(clamp(lo.speed * WALK_PLANT_K, 0.7, 3.6));
+      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 3.2));
+      this.backAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
+      this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * STRAFE_PLANT_K, 0.7, 3.0));
       // Lean forward when running ahead, back slightly when backpedaling; bank into turns/cuts.
       g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd;
       const bank = clamp(clamp(-lo.turnRate * 0.05, -0.4, 0.4) + p.leanTarget * 0.35, -0.55, 0.55);
@@ -542,18 +535,9 @@ class FbxAvatar implements Avatar {
       m.color.setHex(jersey);
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
+    // Carried ball is tucked stably against the body (a fixed carry spot). Riding the
+    // animated wrist made it swing/float, so it's anchored to the torso instead.
     this.nub.visible = p.hasBall && !p.isDown;
-    // Ride the ball on the right hand so it tracks the animated arm. The bone's world
-    // matrix is current after mixer.update; convert into the group's local space (both
-    // share the same ancestor chain, so the hand's offset is captured correctly).
-    if (this.nub.visible && this.handBone) {
-      this.handBone.updateWorldMatrix(true, false);
-      this.handBone.getWorldPosition(_handPos);
-      this.group.worldToLocal(_handPos);
-      this.nub.position.copy(_handPos);
-    } else if (!this.handBone) {
-      this.nub.position.set(0.34, 1.1, 0.2);
-    }
   }
 
   hide(): void {
@@ -1073,7 +1057,6 @@ const _tmpPos = new THREE.Vector3();
 const _tmpLook = new THREE.Vector3();
 const _tmpVec = new THREE.Vector3();
 // Scratch objects for the spiraling-ball orientation (no per-frame allocation).
-const _handPos = new THREE.Vector3();
 const _ballVel = new THREE.Vector3();
 const _ballQ = new THREE.Quaternion();
 const _spinQ = new THREE.Quaternion();
