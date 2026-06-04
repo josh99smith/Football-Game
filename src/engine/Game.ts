@@ -10,6 +10,7 @@ import { TimeScale } from "./fx/TimeScale";
 import type { GameState } from "./GameState";
 import { Field } from "../game/Field";
 import { Scene3D } from "../game/Scene3D";
+import { loadCharacter } from "../game/CharacterModel";
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
@@ -67,6 +68,10 @@ export class GameApp {
     this.field = new Field();
     this.scene3d = new Scene3D(canvas3d, this.field);
     this.scene3d.setVisible(false);
+    // Load the skinned character in the background; players use box avatars until ready.
+    loadCharacter(`${import.meta.env.BASE_URL}character.fbx`)
+      .then((asset) => this.scene3d.setCharacter(asset))
+      .catch((err) => console.warn("character model failed to load; using box avatars", err));
     this.particles = new ParticleSystem();
     this.floating = new FloatingText();
     this.shake = new ScreenShake();

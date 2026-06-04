@@ -1,6 +1,8 @@
 import * as THREE from "three";
+import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import type { Player } from "./entities/Player";
 import type { Ball } from "./entities/Ball";
+import type { CharacterAsset } from "./CharacterModel";
 import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD, ENDZONE_PX } from "./Field";
 
 /** Units per field-pixel (1 yard = 1 world unit in 3D). */
@@ -9,6 +11,13 @@ const FIELD_LEN_U = FIELD_LENGTH * U;
 const FIELD_WID_U = FIELD_WIDTH * U;
 
 const MAX_PLAYERS = 14;
+
+/** A swappable on-field player representation (box fallback or skinned FBX). */
+interface Avatar {
+  readonly group: THREE.Object3D;
+  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number): void;
+  hide(): void;
+}
 
 // Shared geometries (created once, reused by every avatar).
 const G = {
@@ -25,8 +34,8 @@ const G = {
 
 const SKIN = 0x8a5a3b;
 
-/** An articulated, lightly-animated player avatar (helmet, pads, swinging limbs). */
-class PlayerMesh {
+/** An articulated, lightly-animated box avatar (fallback before the FBX loads). */
+class BoxAvatar implements Avatar {
   readonly group = new THREE.Group();
   private readonly torsoMat: THREE.MeshStandardMaterial;
   private readonly padsMat: THREE.MeshStandardMaterial;
@@ -151,6 +160,98 @@ function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: numb
   return m;
 }
 
+/** Facing offset so the model's front points along its movement direction. */
+const MODEL_FORWARD = Math.PI;
+
+/** A skinned, animated FBX avatar, tinted to the team color. */
+class FbxAvatar implements Avatar {
+  readonly group = new THREE.Group();
+  private readonly mixer: THREE.AnimationMixer;
+  private readonly action: THREE.AnimationAction | null;
+  private readonly mats: THREE.MeshStandardMaterial[] = [];
+  private readonly ring: THREE.Mesh;
+  private readonly chevron: THREE.Mesh;
+  private readonly nub: THREE.Mesh;
+  private phase = Math.random() * Math.PI * 2;
+
+  constructor(asset: CharacterAsset) {
+    const inner = skeletonClone(asset.template);
+    inner.scale.setScalar(asset.scale);
+    inner.position.y = asset.groundOffset * asset.scale;
+    inner.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.castShadow = true;
+        const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.05 });
+        m.material = mat;
+        this.mats.push(mat);
+      }
+    });
+
+    this.mixer = new THREE.AnimationMixer(inner);
+    this.action = asset.clip ? this.mixer.clipAction(asset.clip) : null;
+    this.action?.play();
+
+    this.ring = new THREE.Mesh(G.ring, new THREE.MeshBasicMaterial({ color: 0xffe24a }));
+    this.ring.rotation.x = -Math.PI / 2;
+    this.ring.position.y = 0.05;
+    this.ring.visible = false;
+    this.chevron = new THREE.Mesh(G.chevron, new THREE.MeshBasicMaterial({ color: 0xffe24a }));
+    this.chevron.rotation.x = Math.PI;
+    this.chevron.position.y = 2.8;
+    this.chevron.visible = false;
+    this.nub = new THREE.Mesh(G.nub, new THREE.MeshStandardMaterial({ color: 0x7a3b12, roughness: 0.7 }));
+    this.nub.scale.set(1.5, 1, 1);
+    this.nub.position.set(0.34, 0.98, 0.2);
+    this.nub.visible = false;
+
+    this.group.add(inner, this.ring, this.chevron, this.nub);
+  }
+
+  update(p: Player, jersey: number, _trim: number, onFire: boolean, dt: number): void {
+    const g = this.group;
+    g.visible = true;
+    g.position.set(p.pos.x * U, 0, p.pos.y * U);
+
+    const speed = Math.hypot(p.vel.x, p.vel.y);
+    const moving = Math.min(1, speed / 150);
+    const yaw = (speed > 8 ? Math.atan2(p.vel.x, p.vel.y) : Math.atan2(Math.cos(p.facing), Math.sin(p.facing))) + MODEL_FORWARD;
+
+    if (p.isDown) {
+      g.rotation.set(-Math.PI / 2.1, yaw, 0);
+      g.position.y = 0.25;
+      if (this.action) this.action.timeScale = 0;
+      this.ring.visible = false;
+      this.chevron.visible = false;
+    } else {
+      g.position.y = 0;
+      g.rotation.set(0, yaw, 0);
+      if (this.action) this.action.timeScale = 0.3 + moving * 2.4;
+      this.phase += dt;
+      this.ring.visible = p.controlled;
+      this.chevron.visible = p.controlled;
+      if (p.controlled) this.chevron.position.y = 2.8 + Math.sin(this.phase * 4) * 0.12;
+    }
+
+    this.mixer.update(dt);
+
+    for (const m of this.mats) {
+      m.color.setHex(jersey);
+      if (onFire) {
+        m.emissive.setHex(0xff5a1e);
+        m.emissiveIntensity = 0.3;
+      } else {
+        m.emissiveIntensity = 0;
+      }
+    }
+    this.nub.visible = p.hasBall && !p.isDown;
+  }
+
+  hide(): void {
+    this.group.visible = false;
+  }
+}
+
 /**
  * Three.js renderer for the in-play 3D view: a stadium with stands + goal posts, a
  * textured turf plane that receives soft shadows, 14 articulated animated players, a
@@ -163,7 +264,7 @@ export class Scene3D {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly sun: THREE.DirectionalLight;
 
-  private readonly players: PlayerMesh[] = [];
+  private players: Avatar[] = [];
   private readonly ballGroup = new THREE.Group();
   private readonly ballMesh: THREE.Mesh;
   private readonly losMarker: THREE.Mesh;
@@ -209,7 +310,7 @@ export class Scene3D {
     this.buildStadium();
 
     for (let i = 0; i < MAX_PLAYERS; i++) {
-      const pm = new PlayerMesh();
+      const pm = new BoxAvatar();
       pm.hide();
       this.players.push(pm);
       this.scene.add(pm.group);
@@ -385,6 +486,18 @@ export class Scene3D {
 
   setVisible(v: boolean): void {
     this.canvas.style.display = v ? "block" : "none";
+  }
+
+  /** Swap the box-avatar pool for skinned FBX characters once the model has loaded. */
+  setCharacter(asset: CharacterAsset): void {
+    for (const a of this.players) this.scene.remove(a.group);
+    this.players = [];
+    for (let i = 0; i < MAX_PLAYERS; i++) {
+      const a = new FbxAvatar(asset);
+      a.hide();
+      this.players.push(a);
+      this.scene.add(a.group);
+    }
   }
 
   snapCamera(focusX: number, focusY: number, dir: number): void {

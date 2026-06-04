@@ -81,15 +81,21 @@ export class MenuState implements GameState {
   render(): void {
     const r = this.app.r;
     this.app.r.begin("#06210e");
+    this.drawBackground(r);
     this.layout();
     const cx = r.width / 2;
 
-    // Animated title.
+    // Animated, glowing title.
     const bob = Math.sin(this.t * 2) * 4;
-    r.text("GRIDIRON", cx, r.height * 0.16 + bob, { size: 44, align: "center", color: "#ffd23a" });
-    r.text("BLITZ", cx, r.height * 0.16 + 44 + bob, { size: 52, align: "center", color: "#ff7b1e" });
-    r.text("arcade football", cx, r.height * 0.16 + 84 + bob, {
-      size: 14,
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.shadowColor = "rgba(255,140,30,0.6)";
+    ctx.shadowBlur = 24;
+    r.text("GRIDIRON", cx, r.height * 0.15 + bob, { size: 46, align: "center", color: "#ffd23a" });
+    r.text("BLITZ", cx, r.height * 0.15 + 48 + bob, { size: 56, align: "center", color: "#ff7b1e" });
+    ctx.restore();
+    r.text("· ARCADE FOOTBALL ·", cx, r.height * 0.15 + 90 + bob, {
+      size: 13,
       align: "center",
       color: "#9fd9b0",
       weight: "normal",
@@ -99,43 +105,94 @@ export class MenuState implements GameState {
     const home = TEAMS[c.homeTeamIndex % TEAMS.length];
     const away = TEAMS[c.awayTeamIndex % TEAMS.length];
 
-    this.teamRow(r, this.rects.teamPrev, this.rects.teamNext, "YOU", home.name, home.colors.jersey);
-    this.teamRow(r, this.rects.oppPrev, this.rects.oppNext, "VS", away.name, away.colors.jersey);
+    this.teamRow(r, this.rects.teamPrev, this.rects.teamNext, "YOU", home);
+    this.teamRow(r, this.rects.oppPrev, this.rects.oppNext, "VS", away);
 
     drawButton(r, this.rects.diff, `DIFFICULTY: ${c.difficulty.toUpperCase()}`, { fill: "#175a30", size: 16 });
     drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: "#244", size: 14 });
     drawButton(r, this.rects.play, "KICK OFF!", { fill: "#d03a3a", size: 26 });
 
-    // Top high score.
+    // Controls hint.
+    r.text("MOVE: stick / WASD   ·   TURBO   ·   PASS / SWITCH", cx, r.height - 30, {
+      size: 11,
+      align: "center",
+      color: "rgba(180,220,190,0.75)",
+      weight: "normal",
+      baseline: "bottom",
+    });
     if (this.app.highScores.length > 0) {
       const hs = this.app.highScores[0];
       r.text(`BEST: ${hs.team} ${hs.points}–${hs.opponentPoints} ${hs.opponent}`, cx, r.height - 12, {
         size: 12,
         align: "center",
-        color: "rgba(255,255,255,0.6)",
+        color: "rgba(255,255,255,0.55)",
         weight: "normal",
         baseline: "bottom",
       });
     }
   }
 
-  private teamRow(
-    r: GameApp["r"],
-    prev: Rect,
-    next: Rect,
-    label: string,
-    name: string,
-    color: string,
-  ): void {
-    const cx = r.width / 2;
-    drawButton(r, prev, "<", { fill: "#234", size: 22 });
-    drawButton(r, next, ">", { fill: "#234", size: 22 });
+  /** Subtle animated gridiron backdrop (scrolling yard lines + a sweeping glow). */
+  private drawBackground(r: GameApp["r"]): void {
     const ctx = r.ctx;
-    ctx.fillStyle = color;
-    ctx.fillRect(prev.x + prev.w + 10, prev.y + 6, 26, 26);
-    r.text(label, cx, prev.y - 2, { size: 11, align: "center", color: "#9fd9b0", baseline: "bottom", weight: "normal" });
-    r.text(name, cx + 16, prev.y + prev.h / 2, { size: 20, align: "center", color: "#fff", baseline: "middle" });
+    const grad = ctx.createLinearGradient(0, 0, 0, r.height);
+    grad.addColorStop(0, "#082713");
+    grad.addColorStop(1, "#04160a");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, r.width, r.height);
+
+    const spacing = 64;
+    const off = (this.t * 26) % spacing;
+    ctx.strokeStyle = "rgba(255,255,255,0.045)";
+    ctx.lineWidth = 2;
+    for (let x = -spacing; x < r.width + spacing; x += spacing) {
+      ctx.beginPath();
+      ctx.moveTo(x + off, 0);
+      ctx.lineTo(x + off, r.height);
+      ctx.stroke();
+    }
+    // Sweeping highlight band.
+    const bx = ((this.t * 90) % (r.width + 300)) - 150;
+    const g2 = ctx.createLinearGradient(bx - 120, 0, bx + 120, 0);
+    g2.addColorStop(0, "rgba(255,210,60,0)");
+    g2.addColorStop(0.5, "rgba(255,210,60,0.05)");
+    g2.addColorStop(1, "rgba(255,210,60,0)");
+    ctx.fillStyle = g2;
+    ctx.fillRect(0, 0, r.width, r.height);
   }
+
+  private teamRow(r: GameApp["r"], prev: Rect, next: Rect, label: string, team: (typeof TEAMS)[number]): void {
+    const cx = r.width / 2;
+    drawButton(r, prev, "‹", { fill: "#234", size: 24 });
+    drawButton(r, next, "›", { fill: "#234", size: 24 });
+    drawHelmet(r, prev.x + prev.w + 22, prev.y + prev.h / 2, 15, team.colors.jersey, team.colors.trim);
+    r.text(label, cx, prev.y - 2, { size: 11, align: "center", color: "#9fd9b0", baseline: "bottom", weight: "normal" });
+    r.text(team.name, cx + 22, prev.y + prev.h / 2, { size: 20, align: "center", color: "#fff", baseline: "middle" });
+  }
+}
+
+/** A small team helmet icon (dome + facemask) for menus. */
+function drawHelmet(r: GameApp["r"], x: number, y: number, rad: number, jersey: string, trim: string): void {
+  const ctx = r.ctx;
+  ctx.save();
+  ctx.fillStyle = jersey;
+  ctx.beginPath();
+  ctx.arc(x, y, rad, Math.PI * 0.9, Math.PI * 2.1);
+  ctx.fill();
+  // Facemask.
+  ctx.strokeStyle = trim;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(x + rad * 0.5, y + rad * 0.2);
+  ctx.lineTo(x + rad * 1.05, y + rad * 0.2);
+  ctx.stroke();
+  // Stripe.
+  ctx.strokeStyle = trim;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, rad * 0.55, Math.PI * 1.1, Math.PI * 1.9);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function wrap(i: number): number {
