@@ -170,10 +170,12 @@ class FbxAvatar implements Avatar {
   private readonly action: THREE.AnimationAction | null;
   private readonly mats: THREE.MeshStandardMaterial[] = [];
   private readonly helmetMat: THREE.MeshStandardMaterial | null = null;
+  private readonly lean = new THREE.Group();
   private readonly ring: THREE.Mesh;
   private readonly chevron: THREE.Mesh;
   private readonly nub: THREE.Mesh;
   private phase = Math.random() * Math.PI * 2;
+  private prevYaw = 0;
 
   constructor(asset: CharacterAsset) {
     const inner = skeletonClone(asset.template);
@@ -226,7 +228,10 @@ class FbxAvatar implements Avatar {
     this.nub.position.set(0.34, 0.98, 0.2);
     this.nub.visible = false;
 
-    this.group.add(inner, this.ring, this.chevron, this.nub);
+    // The lean group banks/leans the body; the holder group only yaws + positions,
+    // so the ground ring / chevron / ball stay upright.
+    this.lean.add(inner);
+    this.group.add(this.lean, this.ring, this.chevron, this.nub);
   }
 
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number): void {
@@ -237,17 +242,31 @@ class FbxAvatar implements Avatar {
     const speed = Math.hypot(p.vel.x, p.vel.y);
     const moving = Math.min(1, speed / 150);
     const yaw = (speed > 8 ? Math.atan2(p.vel.x, p.vel.y) : Math.atan2(Math.cos(p.facing), Math.sin(p.facing))) + MODEL_FORWARD;
+    let dyaw = yaw - this.prevYaw;
+    while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+    while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+    this.prevYaw = yaw;
+    g.rotation.y = yaw;
 
     if (p.isDown) {
-      g.rotation.set(-Math.PI / 2.1, yaw, 0);
       g.position.y = 0.25;
+      this.lean.rotation.set(-Math.PI / 2.1, 0, 0);
       if (this.action) this.action.timeScale = 0;
       this.ring.visible = false;
       this.chevron.visible = false;
     } else {
       g.position.y = 0;
-      g.rotation.set(0, yaw, 0);
-      if (this.action) this.action.timeScale = 0.3 + moving * 2.4;
+      // Forward lean with speed + bank into hard cuts.
+      const bank = Math.max(-0.45, Math.min(0.45, (-dyaw / Math.max(dt, 1 / 120)) * 0.016 * moving));
+      this.lean.rotation.set(moving * 0.17, 0, bank);
+      if (this.action) {
+        if (moving < 0.05) {
+          this.action.time = 0;
+          this.action.timeScale = 0;
+        } else {
+          this.action.timeScale = 0.4 + moving * 2.6;
+        }
+      }
       this.phase += dt;
       this.ring.visible = p.controlled;
       this.chevron.visible = p.controlled;
@@ -682,9 +701,10 @@ export class Scene3D {
     const tp = _tmpPos;
     const tl = _tmpLook;
     this.computeCamTarget(opts.focusX, opts.focusY, opts.dir, tp, tl);
-    const t = 1 - Math.pow(0.0015, opts.dt);
+    // Tighter follow so the camera stays connected to decisive player movement.
+    const t = Math.min(1, opts.dt * 9);
     this.camPos.lerp(tp, t);
-    this.camLook.lerp(tl, t);
+    this.camLook.lerp(tl, Math.min(1, t * 1.3));
     this.camera.position.set(
       this.camPos.x + opts.shakeX * U * 0.5,
       this.camPos.y + opts.shakeY * U * 0.5,

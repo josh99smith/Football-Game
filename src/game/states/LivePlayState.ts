@@ -426,11 +426,13 @@ export class LivePlayState implements GameState {
       // A blocker latched onto a defender drags them to a crawl (opens lanes).
       if (isDefense && this.isEngagedByBlocker(p)) mult *= 0.32;
       const target = p.speedFor(p.turbo || diving, onFire) * mult;
+      // The human-controlled player gets much snappier acceleration/turning.
+      const accelMul = p === this.controlled ? 2.3 : 1;
       if (diving) {
         // Keep momentum during a dive (don't steer).
         p.step(dt, Math.hypot(p.vel.x, p.vel.y));
       } else {
-        p.step(dt, target);
+        p.step(dt, target, accelMul);
       }
       p.pos.y = this.app.field.clampY(p.pos.y);
     }

@@ -1,5 +1,5 @@
 import type { Renderer } from "../../engine/Renderer";
-import { clamp, moveToward, normalize, type Vec2 } from "../../engine/math/Vec2";
+import { clamp, moveToward, type Vec2 } from "../../engine/math/Vec2";
 
 export type TeamId = "HOME" | "AWAY";
 
@@ -86,8 +86,12 @@ export class Player {
     return this.baseSpeed * m;
   }
 
-  /** Integrate movement toward `desired` direction at the given target speed. */
-  step(dt: number, targetSpeed: number): void {
+  /**
+   * Integrate movement toward `desired` direction at the given target speed.
+   * `accelMul` boosts responsiveness (used to make the human-controlled player
+   * feel tight); braking is stronger than acceleration so stops/cuts are crisp.
+   */
+  step(dt: number, targetSpeed: number, accelMul = 1): void {
     if (this.state === "tackled") {
       this.tackledTimer -= dt;
       // Decelerate any residual momentum while down.
@@ -98,12 +102,19 @@ export class Player {
       return;
     }
 
-    const dir = normalize(this.desired);
-    const desiredVx = dir.x * targetSpeed;
-    const desiredVy = dir.y * targetSpeed;
-    const a = this.accel * dt;
-    this.vel.x = moveToward(this.vel.x, desiredVx, a);
-    this.vel.y = moveToward(this.vel.y, desiredVy, a);
+    const dl = Math.hypot(this.desired.x, this.desired.y);
+    const moving = dl > 0.01;
+    const dirX = moving ? this.desired.x / dl : 0;
+    const dirY = moving ? this.desired.y / dl : 0;
+    const desiredVx = dirX * targetSpeed;
+    const desiredVy = dirY * targetSpeed;
+
+    // Brake harder than we accelerate; brake hardest when there's no input at all.
+    const baseA = this.accel * accelMul * dt;
+    const ax = this.brakeStep(this.vel.x, desiredVx, baseA, moving);
+    const ay = this.brakeStep(this.vel.y, desiredVy, baseA, moving);
+    this.vel.x = moveToward(this.vel.x, desiredVx, ax);
+    this.vel.y = moveToward(this.vel.y, desiredVy, ay);
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;
 
@@ -111,6 +122,14 @@ export class Player {
     if (sp > 8) this.facing = Math.atan2(this.vel.y, this.vel.x);
     if (this.jukeTimer > 0) this.jukeTimer -= dt;
     if (this.diveTimer > 0) this.diveTimer -= dt;
+  }
+
+  /** Pick an acceleration rate: faster when decelerating / reversing for snappier control. */
+  private brakeStep(v: number, target: number, baseA: number, moving: boolean): number {
+    if (!moving) return baseA * 2.6; // no input: stop quickly
+    // Decelerating toward target (opposite sign or shrinking magnitude) gets more grip.
+    const decel = Math.sign(target - v) !== Math.sign(v) || Math.abs(target) < Math.abs(v);
+    return decel ? baseA * 1.9 : baseA;
   }
 
   knockDown(downSeconds = 1.1): void {
