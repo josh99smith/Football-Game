@@ -4,6 +4,8 @@
  * textures (jumbotron, midfield). No external image assets.
  */
 
+import { COLORS } from "./Theme";
+
 export type EmblemIcon = "bolt" | "horn" | "fin" | "wing" | "viper" | "star";
 
 export interface CrestTeam {
@@ -175,6 +177,133 @@ export function drawCrest(
   ctx.lineWidth = Math.max(1, r * 0.04);
   ctx.strokeStyle = "rgba(255,255,255,0.6)";
   ctx.stroke();
+  ctx.restore();
+}
+
+/** A bone (rounded bar with knuckle ends) for the crossed-bones motif. */
+function drawBone(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, w: number): void {
+  ctx.lineCap = "round";
+  ctx.lineWidth = w;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  for (const [bx, by] of [[x1, y1], [x2, y2]] as const) {
+    const a = Math.atan2(y2 - y1, x2 - x1) + Math.PI / 2;
+    const o = w * 0.42;
+    ctx.beginPath();
+    ctx.arc(bx + Math.cos(a) * o, by + Math.sin(a) * o, w * 0.5, 0, Math.PI * 2);
+    ctx.arc(bx - Math.cos(a) * o, by - Math.sin(a) * o, w * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/** A snarling skull, centred at (cx,cy), drawn to roughly fit radius r. */
+function drawSkull(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string): void {
+  ctx.save();
+  ctx.fillStyle = color;
+  // Cranium.
+  ctx.beginPath();
+  ctx.ellipse(cx, cy - r * 0.22, r * 0.62, r * 0.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Cheeks/jaw block.
+  ctx.beginPath();
+  ctx.moveTo(cx - r * 0.5, cy + r * 0.05);
+  ctx.lineTo(cx - r * 0.34, cy + r * 0.62);
+  ctx.lineTo(cx + r * 0.34, cy + r * 0.62);
+  ctx.lineTo(cx + r * 0.5, cy + r * 0.05);
+  ctx.closePath();
+  ctx.fill();
+  // Eye sockets (angled inward = angry).
+  ctx.fillStyle = "#000";
+  for (const s of [-1, 1]) {
+    ctx.save();
+    ctx.translate(cx + s * r * 0.27, cy - r * 0.16);
+    ctx.rotate(s * 0.5);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 0.22, r * 0.28, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  // Nasal cavity.
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + r * 0.02);
+  ctx.lineTo(cx - r * 0.1, cy + r * 0.24);
+  ctx.lineTo(cx + r * 0.1, cy + r * 0.24);
+  ctx.closePath();
+  ctx.fill();
+  // Teeth (notches in the jaw).
+  ctx.lineWidth = Math.max(1, r * 0.05);
+  ctx.strokeStyle = "#000";
+  for (let i = -2; i <= 2; i++) {
+    const tx = cx + i * r * 0.14;
+    ctx.beginPath();
+    ctx.moveTo(tx, cy + r * 0.38);
+    ctx.lineTo(tx, cy + r * 0.62);
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.moveTo(cx - r * 0.34, cy + r * 0.38);
+  ctx.lineTo(cx + r * 0.34, cy + r * 0.38);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * The hardcore game emblem: a riveted, spiked steel roundel with a snarling skull
+ * over crossed bones. Underground-league insignia, drawn entirely procedurally.
+ */
+export function drawHardcoreBadge(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
+  ctx.save();
+  // Spiked rim.
+  ctx.fillStyle = COLORS.steel;
+  const spikes = 18;
+  for (let i = 0; i < spikes; i++) {
+    const a = (i / spikes) * Math.PI * 2;
+    const a2 = a + (Math.PI / spikes) * 0.6;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * r * 0.96, cy + Math.sin(a) * r * 0.96);
+    ctx.lineTo(cx + Math.cos((a + a2) / 2) * r * 1.16, cy + Math.sin((a + a2) / 2) * r * 1.16);
+    ctx.lineTo(cx + Math.cos(a2) * r * 0.96, cy + Math.sin(a2) * r * 0.96);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Disc.
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = r * 0.25;
+  ctx.fillStyle = COLORS.bg1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.98, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  // Blood ring + steel inner ring.
+  ctx.lineWidth = r * 0.12;
+  ctx.strokeStyle = COLORS.blood;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.9, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.lineWidth = r * 0.03;
+  ctx.strokeStyle = COLORS.steel;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.78, 0, Math.PI * 2);
+  ctx.stroke();
+  // Rivets on the blood ring.
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(a) * r * 0.9, cy + Math.sin(a) * r * 0.9, r * 0.03, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Crossed bones behind the skull.
+  ctx.strokeStyle = COLORS.bone;
+  ctx.fillStyle = COLORS.bone;
+  ctx.globalAlpha = 0.92;
+  drawBone(ctx, cx - r * 0.52, cy + r * 0.5, cx + r * 0.52, cy - r * 0.5, r * 0.11);
+  drawBone(ctx, cx - r * 0.52, cy - r * 0.5, cx + r * 0.52, cy + r * 0.5, r * 0.11);
+  ctx.globalAlpha = 1;
+  // Skull.
+  drawSkull(ctx, cx, cy - r * 0.02, r * 0.62, COLORS.bone);
   ctx.restore();
 }
 

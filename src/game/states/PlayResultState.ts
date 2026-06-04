@@ -3,6 +3,7 @@ import type { GameState } from "../../engine/GameState";
 import type { PlayOutcome } from "../Match";
 import { HUD } from "../../ui/HUD";
 import { drawPanel } from "../../ui/widgets";
+import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { PlaySelectState } from "./PlaySelectState";
 import { KickoffState } from "./KickoffState";
 import { GameOverState } from "./GameOverState";
@@ -67,20 +68,25 @@ export class PlayResultState implements GameState {
 
   render(): void {
     const r = this.app.r;
-    this.app.r.begin("#0c1f3a");
+    this.app.r.begin(COLORS.bg0);
+    grungeBackground(r.ctx, r.width, r.height, performance.now() / 1000);
     this.hud.render(r, this.app.match, { turbo: 1 });
 
-    const w = Math.min(420, r.width - 40);
-    const h = 110;
+    const w = Math.min(440, r.width - 40);
+    const h = 116;
     const x = (r.width - w) / 2;
     const y = r.height / 2 - h / 2;
     drawPanel(r, { x, y, w, h });
-    r.text(this.banner, r.width / 2, y + 38, { size: 30, align: "center", color: "#ffd23a" });
-    r.text(this.detail, r.width / 2, y + 74, { size: 18, align: "center", color: "#eaf" });
-    r.text("tap to continue", r.width / 2, y + h + 16, {
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.letterSpacing = "1px";
+    r.text(this.banner.toUpperCase(), r.width / 2, y + 42, { size: 34, align: "center", color: COLORS.bone, font: FONT.display });
+    ctx.restore();
+    r.text(this.detail.toUpperCase(), r.width / 2, y + 80, { size: 18, align: "center", color: COLORS.blood, font: FONT.ui });
+    r.text("TAP TO CONTINUE", r.width / 2, y + h + 16, {
       size: 12,
       align: "center",
-      color: "rgba(255,255,255,0.6)",
+      color: COLORS.ash,
       weight: "normal",
     });
   }

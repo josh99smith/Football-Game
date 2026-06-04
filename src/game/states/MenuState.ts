@@ -2,7 +2,8 @@ import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import { TEAMS } from "../Team";
 import { drawButton, tappedIn, type Rect } from "../../ui/widgets";
-import { drawCrest, drawGameBadge } from "../../ui/Emblems";
+import { drawCrest, drawHardcoreBadge } from "../../ui/Emblems";
+import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveSettings, loadSettings } from "../storage";
 import { KickoffState } from "./KickoffState";
 
@@ -23,8 +24,11 @@ export class MenuState implements GameState {
   private teamY = 0;
   private cxL = 0;
   private cxR = 0;
-  private titleY = 0;
   private badgeR = 24;
+  private badgeY = 0;
+  private wordY = 0;
+  private taglineY = 0;
+  private titleSize = 40;
 
   constructor(app: GameApp) {
     this.app = app;
@@ -66,8 +70,20 @@ export class MenuState implements GameState {
     this.cxL = W * 0.28;
     this.cxR = W * 0.72;
     this.teamY = optY - optH * 0.3 - 22 - this.crestR;
-    this.badgeR = clamp(Math.min(H * 0.07, W * 0.06), 16, 30);
-    this.titleY = clamp(this.teamY - this.crestR - 64, this.badgeR * 2 + 10, H * 0.3);
+
+    // Size the hero cluster (skull badge + wordmark + tagline) to the headroom above
+    // the team row so it never collides on short landscape viewports.
+    const topMargin = clamp(H * 0.03, 6, 16);
+    const zoneBottom = this.teamY - this.crestR - 10;
+    const headroom = zoneBottom - topMargin;
+    const k = Math.min(clamp(headroom / 3.95, 16, 58), W * 0.085);
+    this.badgeR = k;
+    this.titleSize = clamp(Math.min(k * 1.18, W * 0.1), 18, 60);
+    const clusterH = this.badgeR * 2.32 + 6 + this.titleSize + this.titleSize * 0.5;
+    const startY = Math.max(topMargin, (zoneBottom - clusterH) / 2);
+    this.badgeY = startY + this.badgeR * 1.16;
+    this.wordY = this.badgeY + this.badgeR * 1.16 + 6 + this.titleSize * 0.5;
+    this.taglineY = this.wordY + this.titleSize * 0.62;
 
     const arrow = (centre: number, side: number): Rect => ({
       x: side < 0 ? centre - this.crestR - gap - aw : centre + this.crestR + gap,
@@ -124,29 +140,42 @@ export class MenuState implements GameState {
   render(): void {
     const r = this.app.r;
     const W = r.width;
-    this.app.r.begin("#06210e");
-    this.drawBackground(r);
+    this.app.r.begin(COLORS.bg0);
+    grungeBackground(r.ctx, r.width, r.height, this.t);
     this.layout();
     const cx = W / 2;
     const ctx = r.ctx;
 
-    // Badge + glowing wordmark on a single line (compact for landscape).
-    drawGameBadge(ctx, cx, this.titleY - this.badgeR * 0.2, this.badgeR);
-    const titleSize = clamp(Math.min(W * 0.075, this.crestR * 1.1), 22, 46);
-    const wordY = this.titleY + this.badgeR + titleSize * 0.5;
+    // Blood glow behind the emblem, then the spiked skull + stamped wordmark.
+    const badgeY = this.badgeY;
+    const glow = ctx.createRadialGradient(cx, badgeY, this.badgeR * 0.4, cx, badgeY, this.badgeR * 2.6);
+    glow.addColorStop(0, "rgba(177,18,31,0.45)");
+    glow.addColorStop(1, "rgba(177,18,31,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(cx - this.badgeR * 3, badgeY - this.badgeR * 3, this.badgeR * 6, this.badgeR * 6);
+    drawHardcoreBadge(ctx, cx, badgeY, this.badgeR);
+    const titleSize = this.titleSize;
+    this.stampedTitle(r, "GRIDIRON BLITZ", cx, this.wordY, titleSize);
+
+    // Gritty tagline strip.
     ctx.save();
-    ctx.shadowColor = "rgba(255,140,30,0.6)";
-    ctx.shadowBlur = 22;
-    r.text("GRIDIRON ", cx, wordY, { size: titleSize, align: "right", color: "#ffd23a", baseline: "middle" });
-    r.text(" BLITZ", cx, wordY, { size: titleSize, align: "left", color: "#ff7b1e", baseline: "middle" });
+    ctx.letterSpacing = "3px";
+    r.text("NO REFS · NO MERCY · STREET RULES", cx, this.taglineY, {
+      size: clamp(titleSize * 0.24, 9, 14),
+      align: "center",
+      color: COLORS.blood,
+      baseline: "middle",
+      weight: "normal",
+      font: FONT.ui,
+    });
     ctx.restore();
 
     if (this.app.highScores.length > 0) {
       const hs = this.app.highScores[0];
-      r.text(`BEST: ${hs.team} ${hs.points}–${hs.opponentPoints} ${hs.opponent}`, cx, wordY + titleSize * 0.7, {
+      r.text(`BEST: ${hs.team} ${hs.points}–${hs.opponentPoints} ${hs.opponent}`, cx, this.taglineY + titleSize * 0.45, {
         size: 11,
         align: "center",
-        color: "rgba(200,230,210,0.7)",
+        color: COLORS.ash,
         weight: "normal",
         baseline: "middle",
       });
@@ -155,48 +184,53 @@ export class MenuState implements GameState {
     const c = this.app.config;
     const home = TEAMS[c.homeTeamIndex % TEAMS.length];
     const away = TEAMS[c.awayTeamIndex % TEAMS.length];
-    this.teamColumn(r, this.cxL, "YOU", home, this.rects.teamPrev, this.rects.teamNext);
-    this.teamColumn(r, this.cxR, "OPPONENT", away, this.rects.oppPrev, this.rects.oppNext);
+    this.teamColumn(r, this.cxL, "YOUR CREW", home, this.rects.teamPrev, this.rects.teamNext);
+    this.teamColumn(r, this.cxR, "RIVALS", away, this.rects.oppPrev, this.rects.oppNext);
 
-    drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: "#15315c", size: 15 });
-    drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: "#15315c", size: 14 });
-    drawButton(r, this.rects.play, "KICK OFF!", { fill: "#f5c518", text: "#0c1f3a", size: clamp(this.rects.play.h * 0.42, 20, 30) });
+    drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: COLORS.concrete, size: 15 });
+    drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: COLORS.concrete, size: 14 });
+    drawButton(r, this.rects.play, "ENTER THE PIT", {
+      fill: COLORS.blood,
+      accent: COLORS.hazard,
+      size: clamp(this.rects.play.h * 0.4, 20, 30),
+    });
+  }
+
+  /** Heavy poster wordmark with a blood-red mis-registration shadow + dark outline. */
+  private stampedTitle(r: GameApp["r"], text: string, cx: number, y: number, size: number): void {
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.letterSpacing = `${Math.round(size * 0.02)}px`;
+    // Blood offset.
+    r.text(text, cx + size * 0.04, y + size * 0.05, {
+      size,
+      align: "center",
+      color: COLORS.bloodDeep,
+      baseline: "middle",
+      font: FONT.display,
+    });
+    // Outline.
+    ctx.font = `${size}px ${FONT.display}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = Math.max(2, size * 0.06);
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.strokeText(text, cx, y);
+    // Face.
+    r.text(text, cx, y, { size, align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display });
+    ctx.restore();
   }
 
   private teamColumn(r: GameApp["r"], cx: number, label: string, team: (typeof TEAMS)[number], prev: Rect, next: Rect): void {
-    r.text(label, cx, this.teamY - this.crestR - 8, { size: 12, align: "center", color: "#9fd9b0", baseline: "bottom", weight: "normal" });
-    drawCrest(r.ctx, cx, this.teamY, this.crestR, team);
-    drawButton(r, prev, "‹", { fill: "#1c3a5e", size: 24 });
-    drawButton(r, next, "›", { fill: "#1c3a5e", size: 24 });
-    r.text(team.name, cx, this.teamY + this.crestR + 16, { size: clamp(this.crestR * 0.42, 13, 19), align: "center", color: "#fff", baseline: "middle" });
-  }
-
-  /** Subtle animated gridiron backdrop (scrolling yard lines + a sweeping glow). */
-  private drawBackground(r: GameApp["r"]): void {
     const ctx = r.ctx;
-    const grad = ctx.createLinearGradient(0, 0, 0, r.height);
-    grad.addColorStop(0, "#0e2347");
-    grad.addColorStop(1, "#060d1f");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, r.width, r.height);
-
-    const spacing = 64;
-    const off = (this.t * 26) % spacing;
-    ctx.strokeStyle = "rgba(255,255,255,0.045)";
-    ctx.lineWidth = 2;
-    for (let x = -spacing; x < r.width + spacing; x += spacing) {
-      ctx.beginPath();
-      ctx.moveTo(x + off, 0);
-      ctx.lineTo(x + off, r.height);
-      ctx.stroke();
-    }
-    const bx = ((this.t * 90) % (r.width + 300)) - 150;
-    const g2 = ctx.createLinearGradient(bx - 120, 0, bx + 120, 0);
-    g2.addColorStop(0, "rgba(255,210,60,0)");
-    g2.addColorStop(0.5, "rgba(255,210,60,0.05)");
-    g2.addColorStop(1, "rgba(255,210,60,0)");
-    ctx.fillStyle = g2;
-    ctx.fillRect(0, 0, r.width, r.height);
+    ctx.save();
+    ctx.letterSpacing = "2px";
+    r.text(label, cx, this.teamY - this.crestR - 8, { size: 12, align: "center", color: COLORS.blood, baseline: "bottom", weight: "normal", font: FONT.ui });
+    ctx.restore();
+    drawCrest(r.ctx, cx, this.teamY, this.crestR, team);
+    drawButton(r, prev, "‹", { fill: COLORS.concrete, size: 24 });
+    drawButton(r, next, "›", { fill: COLORS.concrete, size: 24 });
+    r.text(team.name.toUpperCase(), cx, this.teamY + this.crestR + 16, { size: clamp(this.crestR * 0.42, 13, 19), align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display });
   }
 }
 

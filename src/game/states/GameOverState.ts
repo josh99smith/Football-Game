@@ -2,6 +2,7 @@ import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import { drawButton, drawPanel, tappedIn, type Rect } from "../../ui/widgets";
 import { drawCrest } from "../../ui/Emblems";
+import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveHighScore } from "../storage";
 import { MenuState } from "./MenuState";
 
@@ -46,34 +47,40 @@ export class GameOverState implements GameState {
   render(): void {
     const r = this.app.r;
     const m = this.app.match;
-    this.app.r.begin("#0c1f3a");
+    this.app.r.begin(COLORS.bg0);
+    grungeBackground(r.ctx, r.width, r.height, this.t);
 
-    const w = Math.min(420, r.width - 40);
+    const w = Math.min(440, r.width - 40);
     const h = 220;
     const x = (r.width - w) / 2;
     const y = r.height / 2 - h / 2 - 20;
     drawPanel(r, { x, y, w, h });
 
-    r.text(this.headline, r.width / 2, y + 40, { size: 36, align: "center", color: "#ffd23a" });
+    const win = m.winner() === "HOME";
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.letterSpacing = "2px";
+    r.text(this.headline, r.width / 2, y + 44, { size: 44, align: "center", color: win ? COLORS.bone : COLORS.blood, font: FONT.display });
+    ctx.restore();
 
     // Final score flanked by both team crests.
-    const ctx = r.ctx;
-    drawCrest(ctx, r.width / 2 - 110, y + 104, 30, m.home.config);
-    drawCrest(ctx, r.width / 2 + 110, y + 104, 30, m.away.config);
-    r.text(`${m.home.score}  —  ${m.away.score}`, r.width / 2, y + 104, {
-      size: 40,
+    drawCrest(ctx, r.width / 2 - 110, y + 108, 30, m.home.config);
+    drawCrest(ctx, r.width / 2 + 110, y + 108, 30, m.away.config);
+    r.text(`${m.home.score} — ${m.away.score}`, r.width / 2, y + 108, {
+      size: 44,
       align: "center",
-      color: "#fff",
+      color: COLORS.bone,
       baseline: "middle",
+      font: FONT.display,
     });
-    r.text(`${m.home.config.name}  vs  ${m.away.config.name}`, r.width / 2, y + 150, {
+    r.text(`${m.home.config.name.toUpperCase()}  VS  ${m.away.config.name.toUpperCase()}`, r.width / 2, y + 152, {
       size: 13,
       align: "center",
-      color: "#9fd9b0",
+      color: COLORS.ash,
       weight: "normal",
     });
 
     this.playRect = { x: r.width / 2 - 110, y: y + h - 30, w: 220, h: 52 };
-    drawButton(r, this.playRect, "MAIN MENU", { fill: "#d03a3a", size: 22 });
+    drawButton(r, this.playRect, "BACK TO THE STREETS", { fill: COLORS.concrete, accent: COLORS.blood, size: 18 });
   }
 }

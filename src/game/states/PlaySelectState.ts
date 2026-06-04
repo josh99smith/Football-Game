@@ -3,6 +3,7 @@ import type { GameState } from "../../engine/GameState";
 import type { Renderer } from "../../engine/Renderer";
 import { HUD } from "../../ui/HUD";
 import { drawPanel, tappedIn, type Rect } from "../../ui/widgets";
+import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import {
   OFFENSE_PLAYS,
   DEFENSE_PLAYS,
@@ -75,34 +76,41 @@ export class PlaySelectState implements GameState {
 
   render(): void {
     const r = this.app.r;
-    this.app.r.begin("#0c1f3a");
+    this.app.r.begin(COLORS.bg0);
+    grungeBackground(r.ctx, r.width, r.height, performance.now() / 1000);
     this.hud.render(r, this.app.match, { turbo: 1 });
 
-    const title = this.humanOffense ? "CALL YOUR PLAY — OFFENSE" : "CALL YOUR PLAY — DEFENSE";
+    const title = this.humanOffense ? "CALL IT — OFFENSE" : "CALL IT — DEFENSE";
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.letterSpacing = "2px";
     r.text(title, r.width / 2, r.height / 2 - r.height * 0.24, {
-      size: 22,
+      size: 26,
       align: "center",
-      color: "#ffd23a",
+      color: COLORS.bone,
+      font: FONT.display,
     });
+    ctx.restore();
 
     for (const card of this.cards) {
       const name = card.off?.name ?? card.def?.name ?? "";
-      drawPanel(r, card.rect, "rgba(14,32,58,0.96)");
-      r.text(name, card.rect.x + card.rect.w / 2, card.rect.y + 26, {
-        size: 21,
+      drawPanel(r, card.rect, COLORS.panel);
+      r.text(name.toUpperCase(), card.rect.x + card.rect.w / 2, card.rect.y + 28, {
+        size: 22,
         align: "center",
-        color: "#fff",
+        color: COLORS.bone,
+        font: FONT.display,
       });
       // Diagram region.
-      const diag = { x: card.rect.x + 10, y: card.rect.y + 40, w: card.rect.w - 20, h: card.rect.h - 70 };
+      const diag = { x: card.rect.x + 10, y: card.rect.y + 44, w: card.rect.w - 20, h: card.rect.h - 74 };
       if (card.off) this.drawOffenseDiagram(r, diag, card.off);
       else if (card.def) this.drawDefenseDiagram(r, diag, card.def);
 
       const badge = card.off ? (card.off.isRun ? "RUN" : "PASS") : (card.def?.scheme.toUpperCase() ?? "");
-      r.text(badge, card.rect.x + card.rect.w / 2, card.rect.y + card.rect.h - 16, {
+      r.text(badge, card.rect.x + card.rect.w / 2, card.rect.y + card.rect.h - 15, {
         size: 12,
         align: "center",
-        color: "#9fd9b0",
+        color: COLORS.blood,
         weight: "normal",
       });
     }
@@ -132,7 +140,7 @@ export class PlaySelectState implements GameState {
       const startX = px(slot.start.lat);
       const startY = py(slot.start.fwd);
       if (slot.route && slot.route.length) {
-        ctx.strokeStyle = "#ffd23a";
+        ctx.strokeStyle = "#e0b21a";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(startX, startY);
@@ -140,12 +148,12 @@ export class PlaySelectState implements GameState {
         ctx.stroke();
       }
       // Player dot (QB/run highlighted).
-      ctx.fillStyle = slot.job === "qb" ? "#ff7b1e" : slot.job === "run" ? "#28c0ff" : "#fff";
+      ctx.fillStyle = slot.job === "qb" ? "#e11d2b" : slot.job === "run" ? "#7b8694" : "#fff";
       ctx.beginPath();
       ctx.arc(startX, startY, slot.job === "block" ? 2 : 3, 0, Math.PI * 2);
       ctx.fill();
       if (slot.job === "run") {
-        ctx.strokeStyle = "#28c0ff";
+        ctx.strokeStyle = "#7b8694";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(startX, startY);
@@ -170,7 +178,7 @@ export class PlaySelectState implements GameState {
     const reds = [-1.6, -0.6, 0.6, 1.6];
     if (play.scheme === "blitz") {
       // Arrows charging the line.
-      ctx.strokeStyle = "#ff5a5a";
+      ctx.strokeStyle = "#e11d2b";
       ctx.lineWidth = 2;
       for (const k of reds) {
         const x = cx + k * 26;
@@ -183,11 +191,11 @@ export class PlaySelectState implements GameState {
         ctx.stroke();
       }
     } else if (play.scheme === "spy") {
-      ctx.fillStyle = "#ff5a5a";
+      ctx.fillStyle = "#e11d2b";
       ctx.beginPath();
       ctx.arc(cx, losY + 22, 5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = "#ff5a5a";
+      ctx.strokeStyle = "#e11d2b";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(cx, losY + 16);
@@ -195,7 +203,7 @@ export class PlaySelectState implements GameState {
       ctx.stroke();
     } else {
       // Coverage hooks.
-      ctx.strokeStyle = "#5aa9ff";
+      ctx.strokeStyle = "#7b8694";
       ctx.lineWidth = 2;
       for (const k of [-1.4, 0, 1.4]) {
         const x = cx + k * 30;

@@ -1,3 +1,6 @@
+/** Condensed industrial UI font stack (Oswald/Impact); web fonts upgrade in once loaded. */
+const UI_FONT = `'Oswald', 'Impact', 'Arial Narrow', system-ui, sans-serif`;
+
 /**
  * Owns the canvas + 2D context, handles DPR-aware resizing, and provides a small set
  * of drawing primitives. All public sizes are in CSS pixels; the device-pixel-ratio
@@ -132,13 +135,13 @@ export class Renderer {
     ctx.fillStyle = opts.color ?? "#fff";
     ctx.textAlign = opts.align ?? "left";
     ctx.textBaseline = opts.baseline ?? "alphabetic";
-    ctx.font = `${opts.weight ?? "bold"} ${size}px ${opts.font ?? '"Trebuchet MS", system-ui, sans-serif'}`;
+    ctx.font = `${opts.weight ?? "bold"} ${size}px ${opts.font ?? UI_FONT}`;
     ctx.fillText(str, x, y);
     ctx.globalAlpha = 1;
   }
 
   measureText(str: string, size: number, weight = "bold"): number {
-    this.ctx.font = `${weight} ${size}px "Trebuchet MS", system-ui, sans-serif`;
+    this.ctx.font = `${weight} ${size}px ${UI_FONT}`;
     return this.ctx.measureText(str).width;
   }
 }

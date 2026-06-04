@@ -3,6 +3,7 @@ import type { Match } from "../game/Match";
 import type { TeamConfig } from "../game/Team";
 import { LEFT_GOAL_X, RIGHT_GOAL_X } from "../game/Field";
 import { drawCrest } from "./Emblems";
+import { COLORS, FONT } from "./Theme";
 
 /** Top scoreboard: score, quarter, clock, down & distance, possession, field bar. */
 export class HUD {
@@ -15,10 +16,13 @@ export class HUD {
     const w = r.width;
     const barH = 46;
 
-    ctx.fillStyle = "rgba(8, 18, 38, 0.9)";
+    const g = ctx.createLinearGradient(0, 0, 0, barH);
+    g.addColorStop(0, "rgba(16,15,20,0.94)");
+    g.addColorStop(1, "rgba(8,8,10,0.9)");
+    ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, barH);
-    ctx.fillStyle = "rgba(245,197,24,0.5)";
-    ctx.fillRect(0, barH - 2, w, 2);
+    ctx.fillStyle = COLORS.blood;
+    ctx.fillRect(0, barH - 3, w, 3);
 
     const home = match.home;
     const away = match.away;
@@ -27,30 +31,32 @@ export class HUD {
 
     const mins = Math.floor(match.clock / 60);
     const secs = Math.floor(match.clock % 60);
-    r.text(`Q${match.quarter}`, w / 2, 8, { size: 13, align: "center", color: "#ffd23a", baseline: "top" });
-    r.text(`${mins}:${secs.toString().padStart(2, "0")}`, w / 2, 22, { size: 20, align: "center", color: "#fff", baseline: "top" });
+    r.text(`Q${match.quarter}`, w / 2, 7, { size: 13, align: "center", color: COLORS.blood, baseline: "top", font: FONT.display });
+    r.text(`${mins}:${secs.toString().padStart(2, "0")}`, w / 2, 20, { size: 22, align: "center", color: COLORS.bone, baseline: "top", font: FONT.display });
 
     // Down & distance.
     const dd = match.isGoalToGo() ? `${ordinal(match.down)} & GOAL` : `${ordinal(match.down)} & ${match.distanceYards}`;
     const possName = match.team(match.possession).config.abbr;
-    r.text(`${possName}  ${dd}  ·  ${match.fieldSideLabel()}`, w / 2, barH + 6, {
+    r.text(`${possName}  ${dd}  ·  ${match.fieldSideLabel()}`.toUpperCase(), w / 2, barH + 7, {
       size: 13,
       align: "center",
-      color: "#dfeee2",
+      color: COLORS.ash,
       baseline: "top",
+      font: FONT.ui,
     });
 
     this.fieldBar(r, match, barH + 24);
 
     if (opts.possessionLabel) {
-      r.text(opts.possessionLabel, w / 2, barH + 48, { size: 12, align: "center", color: "#ffd23a", baseline: "top" });
+      r.text(opts.possessionLabel, w / 2, barH + 48, { size: 12, align: "center", color: COLORS.hazard, baseline: "top", font: FONT.ui });
     }
     if (opts.playClock !== undefined) {
-      r.text(`:${Math.ceil(opts.playClock).toString().padStart(2, "0")}`, w / 2 + 64, 22, {
+      r.text(`:${Math.ceil(opts.playClock).toString().padStart(2, "0")}`, w / 2 + 64, 20, {
         size: 16,
         align: "left",
-        color: opts.playClock < 1 ? "#ff6a6a" : "#9fd9b0",
+        color: opts.playClock < 1 ? COLORS.bloodBright : COLORS.steel,
         baseline: "top",
+        font: FONT.display,
       });
     }
 
@@ -129,7 +135,7 @@ export class HUD {
 
     const textX = align === "left" ? x + cR * 2 + 8 : x - cR * 2 - 8;
     const tAlign: CanvasTextAlign = align === "left" ? "left" : "right";
-    r.text(String(score), textX, y + 7, { size: 24, color: "#fff", align: tAlign, baseline: "top" });
+    r.text(String(score), textX, y + 4, { size: 26, color: COLORS.bone, align: tAlign, baseline: "top", font: FONT.display });
 
     if (hasBall) {
       const sw = r.measureText(String(score), 24);
@@ -151,14 +157,17 @@ export class HUD {
     const h = 12;
     const x = 16;
     const y = r.height - 26;
-    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
     ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
-    ctx.fillStyle = "#0a3a1a";
+    ctx.fillStyle = COLORS.bg1;
     ctx.fillRect(x, y, w, h);
     const fill = Math.max(0, Math.min(1, turbo));
-    ctx.fillStyle = fill > 0.25 ? "#28c0ff" : "#ff5a5a";
+    ctx.fillStyle = fill > 0.25 ? COLORS.hazard : COLORS.bloodBright;
     ctx.fillRect(x, y, w * fill, h);
-    r.text("TURBO", x, y - 14, { size: 11, color: "#bfe", baseline: "top" });
+    ctx.strokeStyle = "rgba(123,134,148,0.5)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    r.text("TURBO", x, y - 14, { size: 11, color: COLORS.ash, baseline: "top", font: FONT.ui });
   }
 }
 
