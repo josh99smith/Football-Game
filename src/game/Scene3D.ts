@@ -170,6 +170,10 @@ class FbxAvatar implements Avatar {
   private readonly action: THREE.AnimationAction | null;
   private readonly mats: THREE.MeshStandardMaterial[] = [];
   private readonly helmetMat: THREE.MeshStandardMaterial | null = null;
+  private padsMat: THREE.MeshStandardMaterial | null = null;
+  private numberCtx: CanvasRenderingContext2D | null = null;
+  private numberTex: THREE.CanvasTexture | null = null;
+  private lastNumber = -1;
   private readonly lean = new THREE.Group();
   private readonly ring: THREE.Mesh;
   private readonly chevron: THREE.Mesh;
@@ -211,8 +215,12 @@ class FbxAvatar implements Avatar {
       headBone.add(helmet);
     }
 
+    // Shoulder pads + jersey number rigged to the chest bone.
+    this.buildUniform(inner);
+
     this.mixer = new THREE.AnimationMixer(inner);
     this.action = asset.clip ? this.mixer.clipAction(asset.clip) : null;
+    this.action?.setLoop(THREE.LoopRepeat, Infinity);
     this.action?.play();
 
     this.ring = new THREE.Mesh(G.ring, new THREE.MeshBasicMaterial({ color: 0xffe24a }));
@@ -234,10 +242,65 @@ class FbxAvatar implements Avatar {
     this.group.add(this.lean, this.ring, this.chevron, this.nub);
   }
 
+  /** Shoulder pads + a back jersey number, rigged to the chest bone. */
+  private buildUniform(inner: THREE.Object3D): void {
+    const spine = inner.getObjectByName("Spine2") ?? inner.getObjectByName("Spine1");
+    if (!spine) return;
+    inner.updateMatrixWorld(true);
+    const ws = spine.getWorldScale(new THREE.Vector3()).x || 1;
+    const S = 1 / ws; // local units per world unit
+
+    this.padsMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
+    const pads = new THREE.Mesh(new THREE.BoxGeometry(0.9 * S, 0.28 * S, 0.58 * S), this.padsMat);
+    pads.position.set(0, 0.22 * S, 0.02 * S);
+    pads.castShadow = true;
+    const endGeo = new THREE.SphereGeometry(0.19 * S, 10, 8);
+    const e1 = new THREE.Mesh(endGeo, this.padsMat);
+    e1.position.set(-0.45 * S, 0.22 * S, 0.02 * S);
+    const e2 = new THREE.Mesh(endGeo, this.padsMat);
+    e2.position.set(0.45 * S, 0.22 * S, 0.02 * S);
+    e1.castShadow = true;
+    e2.castShadow = true;
+    spine.add(pads, e1, e2);
+
+    const c = document.createElement("canvas");
+    c.width = 128;
+    c.height = 128;
+    this.numberCtx = c.getContext("2d");
+    this.numberTex = new THREE.CanvasTexture(c);
+    const numPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.8 * S, 0.8 * S),
+      new THREE.MeshBasicMaterial({ map: this.numberTex, transparent: true }),
+    );
+    numPlane.position.set(0, 0.16 * S, -0.34 * S);
+    numPlane.rotation.set(0, Math.PI, 0);
+    spine.add(numPlane);
+  }
+
+  private drawNumber(n: number): void {
+    const ctx = this.numberCtx;
+    if (!ctx || !this.numberTex) return;
+    ctx.clearRect(0, 0, 128, 128);
+    ctx.font = `900 92px "Trebuchet MS", system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 11;
+    ctx.strokeStyle = "rgba(0,0,0,0.65)";
+    ctx.strokeText(String(n), 64, 68);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(String(n), 64, 68);
+    this.numberTex.needsUpdate = true;
+  }
+
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number): void {
     const g = this.group;
     g.visible = true;
     g.position.set(p.pos.x * U, 0, p.pos.y * U);
+
+    if (p.number !== this.lastNumber) {
+      this.lastNumber = p.number;
+      this.drawNumber(p.number);
+    }
 
     const speed = Math.hypot(p.vel.x, p.vel.y);
     const moving = Math.min(1, speed / 150);
@@ -255,7 +318,8 @@ class FbxAvatar implements Avatar {
       this.ring.visible = false;
       this.chevron.visible = false;
     } else {
-      g.position.y = 0;
+      // Running bob so strides read even with a single anim clip.
+      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.06 * moving;
       // Forward lean with speed + bank into hard cuts.
       const bank = Math.max(-0.45, Math.min(0.45, (-dyaw / Math.max(dt, 1 / 120)) * 0.016 * moving));
       this.lean.rotation.set(moving * 0.17, 0, bank);
@@ -275,6 +339,11 @@ class FbxAvatar implements Avatar {
 
     this.mixer.update(dt);
 
+    if (this.padsMat) {
+      this.padsMat.color.setHex(jersey);
+      this.padsMat.emissive.setHex(onFire ? 0xff5a1e : 0x000000);
+      this.padsMat.emissiveIntensity = onFire ? 0.3 : 0;
+    }
     for (const m of this.mats) {
       m.color.setHex(jersey);
       if (onFire) {
