@@ -240,12 +240,14 @@ export class LivePlayState implements GameState {
     // Ball + passing.
     const landed = this.ball.update(dt);
     if (this.ball.state === "inAir") {
+      const f = this.app.field;
       const res = resolveAir(
         this.ball,
         this.offense,
         this.defense,
         landed,
         DIFFICULTY[m.difficulty].pick,
+        { minX: f.minX, maxX: f.maxX, minY: f.minY, maxY: f.maxY },
         this.passTarget,
       );
       if (res) this.resolvePassResult(res);

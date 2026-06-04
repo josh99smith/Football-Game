@@ -68,6 +68,14 @@ function nearestDefDist(p: Player, defense: Player[]): number {
   return m === Infinity ? 999 : m;
 }
 
+/** Field play bounds (world px) — a ball/catch outside these is out of bounds. */
+export interface FieldBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
 /**
  * Resolve a ball in flight against nearby players. Call each frame while inAir.
  * Returns a result when the ball is caught/picked/incomplete, else null.
@@ -79,6 +87,7 @@ export function resolveAir(
   defense: Player[],
   landed: boolean,
   pickChance: number,
+  bounds: FieldBounds,
   intended: Player | null = null,
 ): CatchResult | null {
   if (ball.state !== "inAir") return null;
@@ -90,6 +99,17 @@ export function resolveAir(
   const atCatchPoint = ball.distToTarget < CATCH_RADIUS || landed;
   if (!atCatchPoint || ball.z >= CATCH_HEIGHT) {
     return landed ? { incomplete: true } : null;
+  }
+
+  // A ball arriving out of bounds (past a sideline or the back of an end zone) can't be
+  // caught or picked — it's incomplete. Stops back-of-the-end-zone passes scoring TDs.
+  if (
+    ball.pos.x < bounds.minX ||
+    ball.pos.x > bounds.maxX ||
+    ball.pos.y < bounds.minY ||
+    ball.pos.y > bounds.maxY
+  ) {
+    return { incomplete: true };
   }
 
   // Find the catcher and nearest defender around the arrival point. Receivers are led

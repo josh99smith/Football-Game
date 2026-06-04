@@ -4,7 +4,7 @@ import type { Player } from "./entities/Player";
 import type { Ball } from "./entities/Ball";
 import type { CharacterAsset } from "./CharacterModel";
 import { clamp, moveToward } from "../engine/math/Vec2";
-import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD, ENDZONE_PX } from "./Field";
+import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD } from "./Field";
 
 /** Units per field-pixel (1 yard = 1 world unit in 3D). */
 const U = 1 / PX_PER_YARD;
@@ -695,9 +695,9 @@ export class Scene3D {
   }
 
   private buildStadium(): void {
-    // Goal posts at each end.
-    this.scene.add(this.goalPost(ENDZONE_PX * U - 0.5));
-    this.scene.add(this.goalPost(FIELD_LEN_U - ENDZONE_PX * U + 0.5));
+    // Goal posts on the end lines (back of each end zone), per real fields.
+    this.scene.add(this.goalPost(0.4));
+    this.scene.add(this.goalPost(FIELD_LEN_U - 0.4));
 
     const crowd = this.makeCrowdTexture();
     const ad = this.makeAdTexture();
