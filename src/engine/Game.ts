@@ -70,12 +70,12 @@ export class GameApp {
     this.scene3d.setVisible(false);
     // Load the skinned character in the background; players use box avatars until ready.
     const base = import.meta.env.BASE_URL;
-    loadCharacter(`${base}character.fbx`, {
-      run: `${base}jog_forward.fbx`,
-      pass: `${base}quarterback_pass.fbx`,
-      catch: `${base}football_catch.fbx`,
-      stance: `${base}football_stance.fbx`,
-      defender: `${base}defender.fbx`,
+    loadCharacter({
+      model: `${base}rig_stance.fbx`,
+      run: `${base}standard_run.fbx`,
+      pass: `${base}rig_pass.fbx`,
+      catch: `${base}rig_catch.fbx`,
+      defender: `${base}rig_defender.fbx`,
     })
       .then((asset) => this.scene3d.setCharacter(asset))
       .catch((err) => console.warn("character model failed to load; using box avatars", err));

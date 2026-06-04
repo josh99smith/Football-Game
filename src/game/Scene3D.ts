@@ -191,7 +191,7 @@ function smoothstep(e0: number, e1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-/** A skinned, animated FBX avatar, tinted to the team color. */
+/** A skinned, animated player using the rigged model's own textured uniform. */
 class FbxAvatar implements Avatar {
   readonly group = new THREE.Group();
   private readonly mixer: THREE.AnimationMixer;
@@ -203,12 +203,8 @@ class FbxAvatar implements Avatar {
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
-  private readonly mats: THREE.MeshStandardMaterial[] = [];
-  private readonly helmetMat: THREE.MeshStandardMaterial | null = null;
-  private padsMat: THREE.MeshStandardMaterial | null = null;
-  private numberCtx: CanvasRenderingContext2D | null = null;
-  private numberTex: THREE.CanvasTexture | null = null;
-  private lastNumber = -1;
+  /** The uniform/helmet materials that get tinted to the team color. */
+  private readonly uniformMats: THREE.MeshStandardMaterial[] = [];
   private readonly lean = new THREE.Group();
   private readonly ring: THREE.Mesh;
   private readonly chevron: THREE.Mesh;
@@ -223,38 +219,26 @@ class FbxAvatar implements Avatar {
     const inner = skeletonClone(asset.template);
     inner.scale.setScalar(asset.scale);
     inner.position.y = asset.groundOffset * asset.scale;
+    // Clone the model's materials per-avatar so each can be tinted independently;
+    // the uniform/helmet material takes the team color, skin/face stay natural.
     inner.traverse((o) => {
       const m = o as THREE.Mesh;
-      if (m.isMesh) {
-        m.castShadow = true;
-        const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.05 });
-        m.material = mat;
-        this.mats.push(mat);
-      }
+      if (!m.isMesh) return;
+      m.castShadow = true;
+      const apply = (mat: THREE.Material): THREE.Material => {
+        const clone = mat.clone() as THREE.MeshStandardMaterial;
+        if (/uniform|helmet|jersey|body/i.test(mat.name)) this.uniformMats.push(clone);
+        return clone;
+      };
+      m.material = Array.isArray(m.material) ? m.material.map(apply) : apply(m.material);
     });
-
-    // Attach a team helmet (facemask + stripe) to the head bone so it animates.
-    const headBone = inner.getObjectByName("Head");
-    if (headBone) {
-      inner.updateMatrixWorld(true);
-      const ws = headBone.getWorldScale(new THREE.Vector3()).x || 1;
-      const R = 0.16 / ws;
-      this.helmetMat = new THREE.MeshStandardMaterial({ color: 0x222233, roughness: 0.35, metalness: 0.15 });
-      const maskMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.5 });
-      const helmet = new THREE.Group();
-      const dome = new THREE.Mesh(new THREE.SphereGeometry(R, 14, 12), this.helmetMat);
-      dome.castShadow = true;
-      const mask = new THREE.Mesh(new THREE.BoxGeometry(R * 1.3, R * 0.5, R * 0.18), maskMat);
-      mask.position.set(0, -R * 0.25, R * 0.92);
-      const stripe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.28, R * 0.4, R * 2), maskMat);
-      stripe.position.set(0, R * 0.5, 0);
-      helmet.add(dome, mask, stripe);
-      helmet.position.set(0, R * 0.55, R * 0.1);
-      headBone.add(helmet);
+    // Fallback: if nothing matched by name, tint everything.
+    if (this.uniformMats.length === 0) {
+      inner.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && !Array.isArray(m.material)) this.uniformMats.push(m.material as THREE.MeshStandardMaterial);
+      });
     }
-
-    // Shoulder pads + jersey number rigged to the chest bone.
-    this.buildUniform(inner);
 
     this.mixer = new THREE.AnimationMixer(inner);
     const clips = asset.clips;
@@ -284,7 +268,7 @@ class FbxAvatar implements Avatar {
     this.chevron.visible = false;
     this.nub = new THREE.Mesh(G.nub, new THREE.MeshStandardMaterial({ color: 0x7a3b12, roughness: 0.7 }));
     this.nub.scale.set(1.5, 1, 1);
-    this.nub.position.set(0.34, 0.98, 0.2);
+    this.nub.position.set(0.34, 1.1, 0.2);
     this.nub.visible = false;
 
     // The lean group banks/leans the body; the holder group only yaws + positions,
@@ -293,42 +277,8 @@ class FbxAvatar implements Avatar {
     this.group.add(this.lean, this.ring, this.chevron, this.nub);
   }
 
-  /** Shoulder pads + a back jersey number, rigged to the chest bone. */
-  private buildUniform(inner: THREE.Object3D): void {
-    const spine = inner.getObjectByName("Spine2") ?? inner.getObjectByName("Spine1");
-    if (!spine) return;
-    inner.updateMatrixWorld(true);
-    const ws = spine.getWorldScale(new THREE.Vector3()).x || 1;
-    const S = 1 / ws; // local units per world unit
-
-    this.padsMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
-    const pads = new THREE.Mesh(new THREE.BoxGeometry(0.9 * S, 0.28 * S, 0.58 * S), this.padsMat);
-    pads.position.set(0, 0.22 * S, 0.02 * S);
-    pads.castShadow = true;
-    const endGeo = new THREE.SphereGeometry(0.19 * S, 10, 8);
-    const e1 = new THREE.Mesh(endGeo, this.padsMat);
-    e1.position.set(-0.45 * S, 0.22 * S, 0.02 * S);
-    const e2 = new THREE.Mesh(endGeo, this.padsMat);
-    e2.position.set(0.45 * S, 0.22 * S, 0.02 * S);
-    e1.castShadow = true;
-    e2.castShadow = true;
-    spine.add(pads, e1, e2);
-
-    const c = document.createElement("canvas");
-    c.width = 128;
-    c.height = 128;
-    this.numberCtx = c.getContext("2d");
-    this.numberTex = new THREE.CanvasTexture(c);
-    const numPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.8 * S, 0.8 * S),
-      new THREE.MeshBasicMaterial({ map: this.numberTex, transparent: true }),
-    );
-    numPlane.position.set(0, 0.16 * S, -0.34 * S);
-    numPlane.rotation.set(0, Math.PI, 0);
-    spine.add(numPlane);
-  }
-
-  private triggerOneShot(action: THREE.AnimationAction | null): void {
+  /** Play a one-shot overlay, capping how long it ducks locomotion (clips can be long). */
+  private triggerOneShot(action: THREE.AnimationAction | null, maxDur: number): void {
     if (!action) return;
     action.reset();
     action.setLoop(THREE.LoopOnce, 1);
@@ -336,7 +286,7 @@ class FbxAvatar implements Avatar {
     action.play();
     this.oneShot = action;
     this.oneShotTime = 0;
-    this.oneShotDur = action.getClip().duration;
+    this.oneShotDur = Math.min(action.getClip().duration, maxDur);
   }
 
   /** Reset to an upright, neutral pose for a fresh play (pooled avatars are reused). */
@@ -348,34 +298,15 @@ class FbxAvatar implements Avatar {
     this.group.position.y = 0;
   }
 
-  private drawNumber(n: number): void {
-    const ctx = this.numberCtx;
-    if (!ctx || !this.numberTex) return;
-    ctx.clearRect(0, 0, 128, 128);
-    ctx.font = `900 92px "Trebuchet MS", system-ui, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.lineWidth = 11;
-    ctx.strokeStyle = "rgba(0,0,0,0.65)";
-    ctx.strokeText(String(n), 64, 68);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(String(n), 64, 68);
-    this.numberTex.needsUpdate = true;
-  }
-
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void {
+    void trim;
     const g = this.group;
     g.visible = true;
     g.position.set(p.pos.x * U, 0, p.pos.y * U);
 
-    if (p.number !== this.lastNumber) {
-      this.lastNumber = p.number;
-      this.drawNumber(p.number);
-    }
-
     // Fire one-shot overlays on game events (juke/tackle handled procedurally for now).
-    if (p.animEvent === "pass") this.triggerOneShot(this.passAction);
-    else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction);
+    if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 1.1);
+    else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
     p.animEvent = null;
 
     const lo = p.loco;
@@ -442,21 +373,12 @@ class FbxAvatar implements Avatar {
 
     this.mixer.update(dt);
 
-    if (this.padsMat) {
-      this.padsMat.color.setHex(jersey);
-      this.padsMat.emissive.setHex(onFire ? 0xff5a1e : 0x000000);
-      this.padsMat.emissiveIntensity = onFire ? 0.3 : 0;
-    }
-    for (const m of this.mats) {
+    // Tint the uniform/helmet to the team color (multiplies the model's texture);
+    // glow on fire. Works for the model's Phong or Standard materials.
+    for (const m of this.uniformMats) {
       m.color.setHex(jersey);
-      if (onFire) {
-        m.emissive.setHex(0xff5a1e);
-        m.emissiveIntensity = 0.3;
-      } else {
-        m.emissiveIntensity = 0;
-      }
+      m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
-    if (this.helmetMat) this.helmetMat.color.setHex(trim);
     this.nub.visible = p.hasBall && !p.isDown;
   }
 

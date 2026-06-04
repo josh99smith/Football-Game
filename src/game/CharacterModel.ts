@@ -23,54 +23,55 @@ export interface CharacterAsset {
   groundOffset: number;
 }
 
-export interface AnimUrls {
+export interface CharacterUrls {
+  /** Rigged model that also supplies the idle/stance animation. */
+  model: string;
   run: string;
   pass: string;
   catch: string;
-  stance: string;
   defender: string;
 }
 
-/** Strip any `mixamorig:` prefix so clip tracks bind to our (unprefixed) bones. */
-function normalize(clip: THREE.AnimationClip): THREE.AnimationClip {
+/**
+ * Prepare a clip: strip the root-motion (Hips translation) so it plays in place.
+ * Bone-track names keep their (mixamorig) prefix so they bind to the rigged model.
+ */
+function prep(clip: THREE.AnimationClip): THREE.AnimationClip {
   const c = clip.clone();
-  for (const t of c.tracks) t.name = t.name.replace(/mixamorig[:_]?/i, "");
-  // Drop root-motion translation so the clip plays in place.
-  c.tracks = c.tracks.filter((t) => t.name !== "Hips.position");
+  c.tracks = c.tracks.filter((t) => !/Hips\.position$/i.test(t.name));
   return c;
 }
 
 async function loadClip(loader: FBXLoader, url: string): Promise<THREE.AnimationClip | null> {
   const fbx = await loader.loadAsync(url);
-  return fbx.animations[0] ? normalize(fbx.animations[0]) : null;
+  return fbx.animations[0] ? prep(fbx.animations[0]) : null;
 }
 
 /**
- * Loads the skinned character plus a set of Mixamo-compatible animation clips
- * (stance/idle, defender stance, jog, pass, catch). Root motion is stripped so
- * everything plays in place while the game drives position.
+ * Loads the rigged player model (whose own clip is the idle stance) plus the jog,
+ * pass, catch, and defender animation clips. All clips bind to the model's skeleton
+ * by bone name; root motion is stripped so everything plays in place.
  */
-export async function loadCharacter(charUrl: string, urls: AnimUrls): Promise<CharacterAsset> {
+export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset> {
   const loader = new FBXLoader();
-  const [fbx, run, pass, catchClip, stance, defender] = await Promise.all([
-    loader.loadAsync(charUrl),
+  const [model, run, pass, catchClip, defender] = await Promise.all([
+    loader.loadAsync(urls.model),
     loadClip(loader, urls.run),
     loadClip(loader, urls.pass),
     loadClip(loader, urls.catch),
-    loadClip(loader, urls.stance),
     loadClip(loader, urls.defender),
   ]);
 
-  const fallbackIdle = fbx.animations[0] ? normalize(fbx.animations[0]) : null;
+  const idle = model.animations[0] ? prep(model.animations[0]) : null;
 
-  const box = new THREE.Box3().setFromObject(fbx);
+  const box = new THREE.Box3().setFromObject(model);
   const size = new THREE.Vector3();
   box.getSize(size);
   const height = size.y || 1;
 
   return {
-    template: fbx,
-    clips: { idle: stance ?? fallbackIdle, defender: defender ?? stance ?? fallbackIdle, run, pass, catch: catchClip },
+    template: model,
+    clips: { idle, defender: defender ?? idle, run, pass, catch: catchClip },
     scale: 1.95 / height,
     groundOffset: -box.min.y,
   };
