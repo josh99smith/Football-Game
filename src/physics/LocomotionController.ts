@@ -35,6 +35,8 @@ interface Leg {
   foot: string;
   planted: boolean;
   lock: RAPIER.ImpulseJoint | null;
+  /** World point the foot was pinned to when it last planted (for live slip read-out). */
+  anchor: THREE.Vector3;
 }
 
 const _v = new THREE.Vector3();
@@ -70,8 +72,8 @@ export class LocomotionController {
   private readonly physics: PhysicsWorld;
 
   private readonly legs: Leg[] = [
-    { side: "L", hip: "hipL", knee: "kneeL", ankle: "ankleL", foot: "footL", planted: true, lock: null },
-    { side: "R", hip: "hipR", knee: "kneeR", ankle: "ankleR", foot: "footR", planted: true, lock: null },
+    { side: "L", hip: "hipL", knee: "kneeL", ankle: "ankleL", foot: "footL", planted: true, lock: null, anchor: new THREE.Vector3() },
+    { side: "R", hip: "hipR", knee: "kneeR", ankle: "ankleR", foot: "footR", planted: true, lock: null, anchor: new THREE.Vector3() },
   ];
 
   active = false;
@@ -292,6 +294,7 @@ export class LocomotionController {
       { x: ft.x, y: 0.05, z: ft.z },
     );
     leg.lock = this.physics.world.createImpulseJoint(data, foot, this.physics.groundBody, true);
+    leg.anchor.set(ft.x, 0.05, ft.z);
     leg.planted = true;
   }
 
@@ -315,6 +318,38 @@ export class LocomotionController {
       swing: this.swing,
       comY: this.rag.getCOM(_v).y,
       pelvisY: this.rag.body("pelvis").translation().y,
+    };
+  }
+
+  /** Live metrics for the on-screen HUD (read each frame). */
+  hud(): {
+    mode: string; targetSpeed: number; speed: number; pelvisY: number; comY: number;
+    tip: number; assist: number; legs: { side: Side; planted: boolean; slipMm: number }[];
+  } {
+    this.rag.getCOM(_v);
+    // Support centre (planted feet) and COM horizontal offset from it = how close to tipping.
+    let sx = 0, sz = 0, n = 0;
+    for (const leg of this.legs) {
+      if (!leg.planted) continue;
+      const ft = this.rag.body(leg.foot).translation();
+      sx += ft.x; sz += ft.z; n++;
+    }
+    // Lateral (side-to-side) COM offset from support = real fall risk. Forward offset is
+    // intentional lean during a walk, so it's excluded here.
+    const tip = n > 0 ? Math.abs(_v.x - sx / n) : 0;
+    return {
+      mode: this.mode,
+      targetSpeed: this.desiredSpeed,
+      speed: this.comVel.z,
+      pelvisY: this.rag.body("pelvis").translation().y,
+      comY: _v.y,
+      tip,
+      assist: this.assist,
+      legs: this.legs.map((l) => {
+        const ft = this.rag.body(l.foot).translation();
+        const slip = l.planted ? Math.hypot(ft.x - l.anchor.x, ft.z - l.anchor.z) : 0;
+        return { side: l.side, planted: l.planted, slipMm: slip * 1000 };
+      }),
     };
   }
 }

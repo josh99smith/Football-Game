@@ -70,11 +70,36 @@ async function main(): Promise<void> {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
+  // --- live debug HUD (top-left): updates every frame so numbers move with the sliders ---
+  const hud = document.createElement("div");
+  hud.style.cssText =
+    "position:fixed;top:8px;left:8px;z-index:10;font:12px/1.5 ui-monospace,Menlo,monospace;" +
+    "color:#cfe;background:rgba(10,14,20,.72);padding:8px 10px;border-radius:6px;" +
+    "white-space:pre;pointer-events:none;min-width:182px;text-shadow:0 1px 2px #000";
+  document.body.appendChild(hud);
+  let hudT = 0;
+  const fmt = (n: number, d = 2) => n.toFixed(d).padStart(6);
+  function updateHud(): void {
+    const h = loco.hud();
+    const slip = h.legs.map((l) => `${l.side}:${l.planted ? `${l.slipMm.toFixed(0).padStart(2)}mm` : "swing"}`).join("  ");
+    const tipFlag = h.tip > 0.12 ? "  ⚠tipping" : "";
+    hud.textContent =
+      `mode      ${h.mode}\n` +
+      `speed     ${fmt(h.speed)} / ${fmt(h.targetSpeed)} m/s\n` +
+      `pelvis Y  ${fmt(h.pelvisY)} m\n` +
+      `com Y     ${fmt(h.comY)} m\n` +
+      `tip (side) ${fmt(h.tip)} m${tipFlag}\n` +
+      `assist    ${fmt(h.assist)}\n` +
+      `feet      ${slip}`;
+  }
+
   // --- fixed-step loop ---
   const STEP = 1 / 60;
   let last = performance.now();
   let acc = 0;
   const xforms: BoneTransform[] = [];
+  const _com = new THREE.Vector3();
+  const camFocus = new THREE.Vector3(0, 1.0, 0);
 
   function frame(now: number): void {
     requestAnimationFrame(frame);
@@ -95,6 +120,14 @@ async function main(): Promise<void> {
       meshes[i].position.copy(xforms[i].position);
       meshes[i].quaternion.copy(xforms[i].quaternion);
     }
+    // Follow camera so a walking figure stays framed (smoothed toward the COM).
+    const com = ragdoll.getCOM(_com);
+    camFocus.lerp(_com.set(com.x, 1.0, com.z), 0.08);
+    camera.position.set(camFocus.x + 2.6, 1.6, camFocus.z + 3.2);
+    camera.lookAt(camFocus);
+
+    hudT += STEP;
+    if (hudT >= 0.1) { hudT = 0; updateHud(); } // refresh HUD ~10x/s
     renderer.render(scene, camera);
   }
   requestAnimationFrame(frame);
