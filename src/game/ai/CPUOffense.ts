@@ -27,7 +27,7 @@ export class CPUOffense {
 
   update(
     ctx: PlayContext,
-    throwFn: (from: Player, target: Vec2, receiver: Player | null) => void,
+    throwFn: (from: Player, target: Vec2, receiver: Player | null, power?: number) => void,
   ): void {
     this.timer += 1 / 60;
     const carrier = ctx.carrier;
@@ -63,7 +63,11 @@ export class CPUOffense {
       this.decided = true;
       const target = bestReceiver(ctx);
       if (target) {
-        throwFn(qb, leadPoint(target), target);
+        const aim = leadPoint(target);
+        // Short routes get fired in (bullet); deep balls are lofted (lob).
+        const d = distance(qb.pos, aim);
+        const power = Math.max(0.15, Math.min(0.9, 1 - d / 380));
+        throwFn(qb, aim, target, power);
       } else {
         this.scrambling = true;
       }

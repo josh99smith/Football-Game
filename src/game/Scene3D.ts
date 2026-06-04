@@ -843,8 +843,14 @@ export class Scene3D {
       if (shadow) shadow.position.y = -ball.z * U + 0.02 - 0.1;
       // Point the ball along its travel and spiral it; tumble end-over-end if loose.
       if (ball.state === "inAir") {
-        this.ballRoll += opts.dt * 26;
-        this.ballMesh.rotation.set(0, Math.atan2(ball.vel.x, ball.vel.y), this.ballRoll);
+        // Nose the long axis along the 3D velocity (arc tangent) and spin about it.
+        const v = _ballVel.set(ball.vel.x, ball.verticalVel, ball.vel.y);
+        if (v.lengthSq() > 1e-4) {
+          v.normalize();
+          _ballQ.setFromUnitVectors(_xAxis, v);
+          _spinQ.setFromAxisAngle(_xAxis, ball.spin);
+          this.ballMesh.quaternion.copy(_ballQ).multiply(_spinQ);
+        }
       } else if (ball.state === "loose") {
         this.ballRoll += opts.dt * 16;
         this.ballMesh.rotation.set(this.ballRoll, Math.atan2(ball.vel.x, ball.vel.y), this.ballRoll * 0.6);
@@ -894,3 +900,8 @@ export class Scene3D {
 const _tmpPos = new THREE.Vector3();
 const _tmpLook = new THREE.Vector3();
 const _tmpVec = new THREE.Vector3();
+// Scratch objects for the spiraling-ball orientation (no per-frame allocation).
+const _ballVel = new THREE.Vector3();
+const _ballQ = new THREE.Quaternion();
+const _spinQ = new THREE.Quaternion();
+const _xAxis = new THREE.Vector3(1, 0, 0);

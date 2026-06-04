@@ -1,7 +1,7 @@
 import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import type { Renderer } from "../../engine/Renderer";
-import { dist, type Vec2 } from "../../engine/math/Vec2";
+import { dist, lerp, clamp, type Vec2 } from "../../engine/math/Vec2";
 import { chance } from "../../engine/math/random";
 import { Player } from "../entities/Player";
 import { Ball } from "../entities/Ball";
@@ -23,6 +23,14 @@ type Phase = "presnap" | "live" | "dead";
 const PRESNAP_TIME = 20;
 const PRESNAP_WALK = 130; // px/s break-the-huddle / walk-to-the-line speed
 const MAX_PLAY_TIME = 16;
+/** Hold this long (s) to fully charge a bullet pass; a quick tap throws a lob. */
+const THROW_CHARGE_MAX = 0.5;
+
+/** Map throw power (0 lob .. 1 bullet) to launch parameters. Single source of truth. */
+function throwParams(power: number): { speed: number; loft: number; spin: number } {
+  const p = Math.max(0, Math.min(1, power));
+  return { speed: lerp(300, 580, p), loft: lerp(2.0, 0.72, p), spin: lerp(26, 52, p) };
+}
 const DIFFICULTY = {
   // reactBase/reactRate control how fast the pass rush + pursuit ramp up after the
   // snap — lower = more time in the pocket and bigger running lanes.
@@ -66,6 +74,9 @@ export class LivePlayState implements GameState {
   private controls = new TouchControls();
 
   private turbo = 1; // 0..1 meter for the controlled player
+  /** Throw charge (seconds ACTION held); maps tap->lob, hold->bullet. */
+  private throwCharge = 0;
+  private throwCharging = false;
   private startLosX = 0;
   private passThrown = false;
   private sackPossible = true;
@@ -177,12 +188,12 @@ export class LivePlayState implements GameState {
     m.tickClock(dt);
 
     const ctx = this.context();
-    this.handleHumanControl();
+    this.handleHumanControl(dt);
 
     // AI for everyone not under human control.
     updateOffense(ctx, this.controlled);
     if (!this.humanIsOffense) {
-      this.cpu.update(ctx, (from, target, receiver) => this.throwPass(from, target, receiver));
+      this.cpu.update(ctx, (from, target, receiver, power) => this.throwPass(from, target, receiver, power));
     }
     updateDefense(ctx, this.controlled);
 
@@ -366,7 +377,7 @@ export class LivePlayState implements GameState {
     }
   }
 
-  private handleHumanControl(): void {
+  private handleHumanControl(dt: number): void {
     const input = this.app.input;
     const c = this.controlled;
 
@@ -390,23 +401,57 @@ export class LivePlayState implements GameState {
     }
 
     if (this.humanIsOffense) {
-      this.handleOffenseAction(c, input.actionPressed, input.action2Pressed);
+      // While the QB is a legal passer (behind the line, hasn't thrown), the ACTION
+      // button charges the throw: a quick tap is a lob, holding loads a bullet.
+      const behind = this.dir > 0 ? c.pos.x <= this.startLosX + 4 : c.pos.x >= this.startLosX - 4;
+      const canThrow =
+        c === this.qb && this.ball.carrier === this.qb && !this.passThrown && !this.offensePlay.isRun && behind;
+      if (canThrow) {
+        this.updateThrowCharge(c, dt);
+      } else {
+        this.throwCharging = false;
+        this.throwCharge = 0;
+        this.handleOffenseAction(c, input.actionPressed, input.action2Pressed);
+      }
     } else {
       this.handleDefenseAction(c, input.actionPressed, input.action2Pressed);
     }
   }
 
+  /** Charge a throw while ACTION is held; release into a lob (tap) -> bullet (hold). */
+  private updateThrowCharge(qb: Player, dt: number): void {
+    const input = this.app.input;
+    // Begin a charge only on a FRESH press, so the held hike press (same button)
+    // doesn't carry over into the first live frame and auto-throw a lob.
+    if (input.actionPressed) {
+      this.throwCharging = true;
+      this.throwCharge = 0;
+    }
+    if (this.throwCharging && input.action) {
+      this.throwCharge = Math.min(THROW_CHARGE_MAX, this.throwCharge + dt);
+    }
+    if (this.throwCharging && input.actionReleased) {
+      const power = clamp(this.throwCharge / THROW_CHARGE_MAX, 0, 1);
+      this.throwCharging = false;
+      this.throwCharge = 0;
+      const receivers = this.offense.filter((p) => p.role !== "QB");
+      const choice = chooseTarget(qb, receivers, this.defense, this.dir, input.move);
+      if (choice) {
+        const r = choice.receiver;
+        // Lead the receiver by the resulting flight time so they run onto the ball.
+        const speed = throwParams(power).speed;
+        const flight = dist(qb.pos, r.pos) / speed;
+        const lead = { x: r.pos.x + r.vel.x * flight * 0.9, y: r.pos.y + r.vel.y * flight * 0.9 };
+        this.throwPass(qb, lead, r, power);
+      }
+    }
+    // Allow a quick juke/scramble cue via ACTION2 even while a passer.
+    if (input.action2Pressed) this.handleOffenseAction(qb, false, true);
+  }
+
   private handleOffenseAction(c: Player, pressed: boolean, doubleTap: boolean): void {
     if (!pressed && !doubleTap) return;
     const carrier = this.ball.carrier;
-
-    if (c === this.qb && carrier === this.qb && !this.passThrown && !this.offensePlay.isRun) {
-      // QB throws to the receiver indicated by the joystick aim.
-      const receivers = this.offense.filter((p) => p.role !== "QB");
-      const choice = chooseTarget(this.qb, receivers, this.defense, this.dir, this.app.input.move);
-      if (choice) this.throwPass(this.qb, choice.point, choice.receiver);
-      return;
-    }
 
     // Ball carrier moves.
     if (carrier === c) {
@@ -477,12 +522,15 @@ export class LivePlayState implements GameState {
     if (p) p.controlled = true;
   }
 
-  private throwPass(from: Player, target: Vec2, receiver: Player | null): void {
-    const distToTarget = dist(from.pos, target);
-    // Slower, loftier passes give the receiver time to get under the ball.
-    const speed = 300 + Math.min(170, distToTarget * 0.5);
-    const loft = distToTarget > 300 ? 1.7 : 1.3;
-    this.ball.throwTo(from, target, speed, loft);
+  /**
+   * Throw the ball. `power` (0..1) blends a touch lob (0: high, floaty, slow) into a
+   * bullet (1: flat, fast, tight spiral). A quick tap throws a lob; holding charges a
+   * bullet. The receiver is led by the resulting flight time so fast WRs run onto it.
+   */
+  private throwPass(from: Player, target: Vec2, receiver: Player | null, power = 0.4): void {
+    // Lob -> bullet: faster + flatter + a tighter, quicker spiral as power climbs.
+    const { speed, loft, spin } = throwParams(power);
+    this.ball.throwTo(from, target, speed, loft, spin);
     this.passThrown = true;
     this.passTarget = receiver;
     from.animEvent = "pass";
@@ -910,6 +958,7 @@ export class LivePlayState implements GameState {
     const project = this.project;
     app.particles.render(r, project);
     this.renderPassHints(r);
+    this.renderThrowMeter(r);
     app.floating.render(r, project);
 
     this.hud.render(r, m, {
@@ -971,6 +1020,36 @@ export class LivePlayState implements GameState {
       }
       ctx.restore();
     }
+  }
+
+  /** A charging-throw power bar above the QB: green lob -> red bullet as you hold. */
+  private renderThrowMeter(r: Renderer): void {
+    if (!this.throwCharging || !this.qb) return;
+    const t = clamp(this.throwCharge / THROW_CHARGE_MAX, 0, 1);
+    const s = this.app.scene3d.project(this.qb.pos.x, this.qb.pos.y, 130);
+    if (!s.visible) return;
+    const ctx = r.ctx;
+    const w = 56;
+    const h = 8;
+    const x = s.x - w / 2;
+    const y = s.y - 34;
+    const cr = Math.round(lerp(80, 255, t));
+    const cg = Math.round(lerp(230, 80, t));
+    const cb = Math.round(lerp(160, 40, t));
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.fillRect(x, y, w * t, h);
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
+    ctx.fillStyle = "#fff";
+    ctx.font = 'bold 11px "Trebuchet MS", system-ui, sans-serif';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(t > 0.66 ? "BULLET" : t < 0.33 ? "LOB" : "PASS", s.x, y - 4);
+    ctx.restore();
   }
 
   private nearestDefDist(p: Player): number {

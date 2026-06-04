@@ -19,6 +19,18 @@ export class Ball {
   z = 0;
   private vz = 0;
 
+  /** Spin accumulated about the long axis (spiral) / tumble, in radians. */
+  spin = 0;
+  /** Spin rate (rad/s): high for a tight bullet spiral, lower for a lob. */
+  spinRate = 0;
+  /** True for a spiral (spins about its long axis); false tumbles end-over-end. */
+  spiral = false;
+
+  /** Vertical velocity (px/s, +up) — read by the renderer to nose the ball along its arc. */
+  get verticalVel(): number {
+    return this.vz;
+  }
+
   /** Landing target while in the air. */
   target: Vec2 = { x: 0, y: 0 };
   /** Who threw it (so we can ignore the thrower for catches and flag INTs). */
@@ -31,10 +43,14 @@ export class Ball {
     p.hasBall = true;
     this.z = 0;
     this.vz = 0;
+    this.spinRate = 0;
   }
 
-  /** Launch a pass toward `target`; `speed` is horizontal px/s, `loft` sets arc height. */
-  throwTo(from: Player, target: Vec2, speed: number, loft = 1): void {
+  /**
+   * Launch a pass toward `target`. `speed` is horizontal px/s, `loft` sets arc height,
+   * `spinRate` is the spiral spin in rad/s (tight bullets spin faster than lobs).
+   */
+  throwTo(from: Player, target: Vec2, speed: number, loft = 1, spinRate = 34): void {
     this.state = "inAir";
     this.thrownBy = from;
     this.carrier = null;
@@ -53,6 +69,10 @@ export class Ball {
     this.vz = (loft * 9.8 * 22 * t) / 2; // tuned gravity so it lands ~ at target time
     this.flightTime = t;
     this.gravity = this.vz / (t / 2);
+    // A thrown pass spins as a tight spiral about its long (nose) axis.
+    this.spiral = true;
+    this.spinRate = spinRate;
+    this.spin = 0;
   }
 
   flightTime = 0;
@@ -83,6 +103,7 @@ export class Ball {
       this.pos.y += this.vel.y * dt;
       this.vz -= this.gravity * dt;
       this.z += this.vz * dt;
+      this.spin += this.spinRate * dt;
       if (this.z < 0) this.z = 0;
       if (this.airTime >= this.flightTime) {
         this.z = 0;
@@ -90,6 +111,7 @@ export class Ball {
       }
     }
     if (this.state === "loose") {
+      this.spin += this.spinRate * dt;
       // Bouncing projectile: gravity on height, damped bounces, ground friction.
       this.vz -= 540 * dt;
       this.z += this.vz * dt;
@@ -118,6 +140,9 @@ export class Ball {
     this.vel.x = vx;
     this.vel.y = vy;
     this.vz = vz;
+    // A loose ball tumbles end-over-end rather than spiraling.
+    this.spiral = false;
+    this.spinRate = 12 + Math.hypot(vx, vy) * 0.03;
   }
 
   render(r: Renderer): void {
