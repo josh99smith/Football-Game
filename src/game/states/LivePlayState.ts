@@ -353,9 +353,9 @@ export class LivePlayState implements GameState {
       if (d > 6) {
         p.desired = { x: dx / d, y: dy / d };
         p.lookDir = null; // face the way they're walking
-        // Per-role pace keyed to base speed so every role reads as the same clean
-        // jog (a flat speed under/over-warps the run blend by role).
-        p.step(dt, p.baseSpeed * 0.8);
+        // Per-role pace keyed to base speed, tuned to land in the walk-cycle band so
+        // breaking the huddle reads as a deliberate walk to the line.
+        p.step(dt, p.baseSpeed * 0.5);
         allSet = false;
       } else {
         // Arrived: hard-stop and set facing so the player stands cleanly in idle,
@@ -875,6 +875,7 @@ export class LivePlayState implements GameState {
 
     // Both players wrap up and go down together; the whistle blows after the beat.
     carrier.enterContact(bvx, bvy, beat);
+    carrier.animEvent = "tackle"; // play the getting-tackled reaction clip
     tackler.enterContact(bvx * 0.55, bvy * 0.55, beat);
     tackler.facing = Math.atan2(dirY, dirX);
     tackler.heading = tackler.facing;
@@ -1017,13 +1018,14 @@ export class LivePlayState implements GameState {
 
   // --- render ---------------------------------------------------------------
 
-  render(): void {
+  render(alpha = 1): void {
     const app = this.app;
     const r = app.r;
     const m = app.match;
 
     // The 3D field + players are drawn to the WebGL canvas; sync happens in update().
-    app.scene3d.render();
+    // `alpha` is the fixed-step remainder used to interpolate body/ball/camera motion.
+    app.scene3d.render(alpha);
 
     // FX and UI are drawn on the transparent 2D overlay above the 3D scene.
     const project = this.project;

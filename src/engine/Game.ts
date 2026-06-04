@@ -79,6 +79,9 @@ export class GameApp {
       catch: `${base}rig_catch.fbx`,
       defender: `${base}rig_defender.fbx`,
       juke: `${base}change_dir.fbx`,
+      walk: `${base}walk.fbx`,
+      tackle: `${base}tackle.fbx`,
+      spin: `${base}spin.fbx`,
     })
       .then((asset) => this.scene3d.setCharacter(asset))
       .catch((err) => console.warn("character model failed to load; using box avatars", err));

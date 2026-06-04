@@ -17,8 +17,51 @@ const MAX_PLAYERS = 14;
 interface Avatar {
   readonly group: THREE.Object3D;
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void;
+  /** Apply the fixed-step interpolation: place the body between the last two sim
+   * positions by `alpha` (0..1) so motion is smooth on any refresh rate. */
+  present(alpha: number): void;
   hide(): void;
   resetPose(): void;
+}
+
+/**
+ * Tracks the last two sim-step horizontal positions so the renderer can place a body
+ * between them by the fixed-step alpha (smooth motion on any refresh rate). A fresh
+ * push after a snap()/reset starts both samples equal so nothing slides across the field.
+ */
+class Interp {
+  private px = 0;
+  private pz = 0;
+  private cx = 0;
+  private cz = 0;
+  private primed = false;
+
+  /** Record this tick's target position (called once per sim step). */
+  push(x: number, z: number): void {
+    if (this.primed) {
+      this.px = this.cx;
+      this.pz = this.cz;
+    } else {
+      this.px = x;
+      this.pz = z;
+      this.primed = true;
+    }
+    this.cx = x;
+    this.cz = z;
+  }
+
+  /** Snap both samples so the next frame doesn't interpolate from a stale spot. */
+  reset(): void {
+    this.primed = false;
+  }
+
+  x(alpha: number): number {
+    return this.px + (this.cx - this.px) * alpha;
+  }
+
+  z(alpha: number): number {
+    return this.pz + (this.cz - this.pz) * alpha;
+  }
 }
 
 // Shared geometries (created once, reused by every avatar).
@@ -51,6 +94,7 @@ class BoxAvatar implements Avatar {
   private readonly chevron: THREE.Mesh;
   private readonly nub: THREE.Mesh;
   private phase = Math.random() * Math.PI * 2;
+  private readonly interp = new Interp();
 
   constructor() {
     this.torsoMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
@@ -103,7 +147,7 @@ class BoxAvatar implements Avatar {
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, _isDefense: boolean): void {
     const g = this.group;
     g.visible = true;
-    g.position.set(p.pos.x * U, 0, p.pos.y * U);
+    this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
 
     const speed = Math.hypot(p.vel.x, p.vel.y);
     const moving = Math.min(1, speed / 150);
@@ -150,14 +194,21 @@ class BoxAvatar implements Avatar {
     this.nub.visible = p.hasBall && !p.isDown;
   }
 
+  present(alpha: number): void {
+    this.group.position.x = this.interp.x(alpha);
+    this.group.position.z = this.interp.z(alpha);
+  }
+
   hide(): void {
     this.group.visible = false;
+    this.interp.reset();
   }
 
   resetPose(): void {
     this.group.scale.set(1, 1, 1);
     this.group.rotation.set(0, 0, 0);
     this.group.position.y = 0;
+    this.interp.reset();
   }
 }
 
@@ -174,8 +225,11 @@ const MODEL_FORWARD = 0;
 // Render-side feel constants.
 const TURN_RATE_RAD = 14; // rendered yaw slew (rad/s), scaled by speed
 const FOOT_PLANT_K = 0.0075; // run timeScale per px/s of ground speed (kills foot sliding)
-const JOG_EXIT_W = 0.09; // smoothstep low edge (matches Player gait hysteresis)
-const SPRINT_W = 0.82; // smoothstep high edge
+const WALK_PLANT_K = 0.0135; // walk timeScale per px/s of ground speed
+const IDLE_OUT = 0.06; // speed01 below this is idle
+const MOVE_FULL = 0.18; // speed01 above this is fully in locomotion (idle faded out)
+const WALK_TO_RUN_LO = 0.3; // below this, forward motion is the walk cycle
+const WALK_TO_RUN_HI = 0.6; // above this, forward motion is the run cycle
 
 function wrapAngle(a: number): number {
   while (a > Math.PI) a -= Math.PI * 2;
@@ -205,9 +259,12 @@ class FbxAvatar implements Avatar {
   private readonly runAction: THREE.AnimationAction | null;
   private readonly backAction: THREE.AnimationAction | null;
   private readonly strafeAction: THREE.AnimationAction | null;
+  private readonly walkAction: THREE.AnimationAction | null;
   private readonly passAction: THREE.AnimationAction | null;
   private readonly catchAction: THREE.AnimationAction | null;
   private readonly jukeAction: THREE.AnimationAction | null;
+  private readonly tackleAction: THREE.AnimationAction | null;
+  private readonly spinAction: THREE.AnimationAction | null;
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
@@ -222,6 +279,7 @@ class FbxAvatar implements Avatar {
   private yaw = 0;
   /** Fall progress 0 (upright) .. 1 (flat), lerped for a non-instant tackle. */
   private fallT = 0;
+  private readonly interp = new Interp();
 
   constructor(asset: CharacterAsset) {
     const inner = skeletonClone(asset.template);
@@ -255,15 +313,18 @@ class FbxAvatar implements Avatar {
     this.runAction = clips.run ? this.mixer.clipAction(clips.run) : null;
     this.backAction = clips.runBack ? this.mixer.clipAction(clips.runBack) : null;
     this.strafeAction = clips.strafe ? this.mixer.clipAction(clips.strafe) : null;
+    this.walkAction = clips.walk ? this.mixer.clipAction(clips.walk) : null;
     this.passAction = clips.pass ? this.mixer.clipAction(clips.pass) : null;
     this.catchAction = clips.catch ? this.mixer.clipAction(clips.catch) : null;
     this.jukeAction = clips.juke ? this.mixer.clipAction(clips.juke) : null;
-    for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction]) {
+    this.tackleAction = clips.tackle ? this.mixer.clipAction(clips.tackle) : null;
+    this.spinAction = clips.spin ? this.mixer.clipAction(clips.spin) : null;
+    for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
       a?.setLoop(THREE.LoopRepeat, Infinity);
       a?.play();
       a?.setEffectiveWeight(0);
     }
-    for (const a of [this.passAction, this.catchAction, this.jukeAction]) {
+    for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction]) {
       a?.setLoop(THREE.LoopOnce, 1);
       if (a) a.clampWhenFinished = true;
     }
@@ -319,22 +380,30 @@ class FbxAvatar implements Avatar {
     this.oneShot = null;
     this.lean.rotation.set(0, 0, 0);
     this.group.position.y = 0;
-    for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction]) {
+    for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
       a?.setEffectiveWeight(0);
     }
+    this.interp.reset();
+  }
+
+  present(alpha: number): void {
+    this.group.position.x = this.interp.x(alpha);
+    this.group.position.z = this.interp.z(alpha);
   }
 
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void {
     void trim;
     const g = this.group;
     g.visible = true;
-    g.position.set(p.pos.x * U, 0, p.pos.y * U);
+    this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
+    g.position.y = 0;
 
-    // Fire one-shot overlays on game events. The juke uses the plant→cut window of
-    // the change-direction clip (skipping its run-in), sped up so it reads snappily.
+    // Fire one-shot overlays on game events: throw, catch, a spin-move juke, and a
+    // getting-tackled reaction. (Spin supersedes the old change-direction juke clip.)
     if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 1.1);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
-    else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.5, 1.4, 0.72);
+    else if (p.animEvent === "juke") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.9, 1.15, 0);
+    else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.5, 1.05, 0);
     p.animEvent = null;
 
     const lo = p.loco;
@@ -365,7 +434,10 @@ class FbxAvatar implements Avatar {
     const loco = 1 - osW;
 
     // Procedural fall: lerp toward flat (contact staggers partway, down goes flat, else up).
-    const fallTarget = lo.down ? 1 : lo.contact ? 0.55 : 0;
+    // When the tackle clip is the active one-shot, IT drives the fall, so skip the
+    // procedural pitch (otherwise the body would double-tip).
+    const tackleClip = this.oneShot != null && this.oneShot === this.tackleAction;
+    const fallTarget = tackleClip ? 0 : lo.down ? 1 : lo.contact ? 0.55 : 0;
     this.fallT = moveToward(this.fallT, fallTarget, (fallTarget > this.fallT ? 1 / 0.25 : 1 / 0.4) * dt);
 
     // Procedural fall pose (applies whether or not locomotion is muted).
@@ -374,6 +446,7 @@ class FbxAvatar implements Avatar {
     // Compute TARGET weights, then lerp toward them so every transition crossfades.
     let tIdle = 0;
     let tDef = 0;
+    let tWalk = 0;
     let tRun = 0;
     let tBack = 0;
     let tStrafe = 0;
@@ -386,8 +459,12 @@ class FbxAvatar implements Avatar {
     } else {
       // Directional blend: split locomotion among forward/backpedal/strafe by the
       // movement direction relative to facing (so backpedals & shuffles read right).
-      const moving01 = smoothstep(JOG_EXIT_W, SPRINT_W, lo.speed01);
+      const moving01 = smoothstep(IDLE_OUT, MOVE_FULL, lo.speed01);
+      // Forward motion crossfades walk -> run with speed (true walk cycle at a stroll,
+      // run when hustling), each foot-planted to ground speed by its own warp.
+      const runMix = smoothstep(WALK_TO_RUN_LO, WALK_TO_RUN_HI, lo.speed01);
       const ts = clamp(lo.speed * FOOT_PLANT_K, 0.55, 2.2);
+      const walkTs = clamp(lo.speed * WALK_PLANT_K, 0.6, 1.6);
       // Split locomotion by movement-vs-facing angle, but sharpened so a mild turn
       // (small moveRel from the heading slew) stays a forward run instead of bleeding
       // into a shuffle/backpedal. Shuffle only dominates past ~50deg, backpedal past ~130.
@@ -397,11 +474,14 @@ class FbxAvatar implements Avatar {
       let strafe = Math.pow(Math.abs(Math.sin(lo.moveRel)), 2.0);
       const sum = fwd + back + strafe || 1;
       fwd /= sum; back /= sum; strafe /= sum;
-      tRun = fwd * moving01;
+      const fwdMoving = fwd * moving01;
+      tWalk = fwdMoving * (1 - runMix);
+      tRun = fwdMoving * runMix;
       tBack = back * moving01;
       tStrafe = strafe * moving01;
       if (isDefense) tDef = 1 - moving01;
       else tIdle = 1 - moving01;
+      this.walkAction?.setEffectiveTimeScale(walkTs);
       this.runAction?.setEffectiveTimeScale(ts);
       this.backAction?.setEffectiveTimeScale(ts);
       this.strafeAction?.setEffectiveTimeScale(ts);
@@ -422,6 +502,7 @@ class FbxAvatar implements Avatar {
     // Smoothly crossfade all locomotion/idle weights toward their targets.
     blendW(this.idleAction, tIdle * loco, dt);
     blendW(this.defAction, tDef * loco, dt);
+    blendW(this.walkAction, tWalk * loco, dt);
     blendW(this.runAction, tRun * loco, dt);
     blendW(this.backAction, tBack * loco, dt);
     blendW(this.strafeAction, tStrafe * loco, dt);
@@ -439,6 +520,7 @@ class FbxAvatar implements Avatar {
 
   hide(): void {
     this.group.visible = false;
+    this.interp.reset();
   }
 }
 
@@ -466,6 +548,17 @@ export class Scene3D {
 
   private camPos = new THREE.Vector3(60, 14, 27);
   private camLook = new THREE.Vector3(70, 1.5, 27);
+
+  // Fixed-step interpolation state for the ball + camera (smooth on any refresh rate).
+  private readonly ballPrev = new THREE.Vector3();
+  private readonly ballCur = new THREE.Vector3();
+  private ballPrimed = false;
+  private readonly camPosPrev = new THREE.Vector3(60, 14, 27);
+  private readonly camPosCur = new THREE.Vector3(60, 14, 27);
+  private readonly camLookPrev = new THREE.Vector3(70, 1.5, 27);
+  private readonly camLookCur = new THREE.Vector3(70, 1.5, 27);
+  private shakeX = 0;
+  private shakeY = 0;
 
   constructor(canvas: HTMLCanvasElement, field: Field) {
     this.canvas = canvas;
@@ -811,6 +904,11 @@ export class Scene3D {
 
   snapCamera(focusX: number, focusY: number, dir: number): void {
     this.computeCamTarget(focusX, focusY, dir, this.camPos, this.camLook);
+    this.camPosPrev.copy(this.camPos);
+    this.camPosCur.copy(this.camPos);
+    this.camLookPrev.copy(this.camLook);
+    this.camLookCur.copy(this.camLook);
+    this.ballPrimed = false;
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camLook);
   }
@@ -855,9 +953,15 @@ export class Scene3D {
 
     if (ball.state === "held") {
       this.ballGroup.visible = false;
+      this.ballPrimed = false; // snap when it next appears (no slide from a stale spot)
     } else {
       this.ballGroup.visible = true;
-      this.ballGroup.position.set(ball.pos.x * U, ball.z * U + 0.1, ball.pos.y * U);
+      if (this.ballPrimed) this.ballPrev.copy(this.ballCur);
+      this.ballCur.set(ball.pos.x * U, ball.z * U + 0.1, ball.pos.y * U);
+      if (!this.ballPrimed) {
+        this.ballPrev.copy(this.ballCur);
+        this.ballPrimed = true;
+      }
       const shadow = this.ballGroup.getObjectByName("shadow");
       if (shadow) shadow.position.y = -ball.z * U + 0.02 - 0.1;
       // Point the ball along its travel and spiral it; tumble end-over-end if loose.
@@ -879,20 +983,20 @@ export class Scene3D {
     this.losMarker.position.x = opts.losX * U;
     this.firstDownMarker.position.x = opts.firstDownX * U;
 
-    // Smooth camera follow + shake.
+    // Smooth camera follow (per-tick); the final placement is interpolated in render().
     const tp = _tmpPos;
     const tl = _tmpLook;
     this.computeCamTarget(opts.focusX, opts.focusY, opts.dir, tp, tl);
     // Tighter follow so the camera stays connected to decisive player movement.
     const t = Math.min(1, opts.dt * 9);
+    this.camPosPrev.copy(this.camPos);
+    this.camLookPrev.copy(this.camLook);
     this.camPos.lerp(tp, t);
     this.camLook.lerp(tl, Math.min(1, t * 1.3));
-    this.camera.position.set(
-      this.camPos.x + opts.shakeX * U * 0.5,
-      this.camPos.y + opts.shakeY * U * 0.5,
-      this.camPos.z,
-    );
-    this.camera.lookAt(this.camLook);
+    this.camPosCur.copy(this.camPos);
+    this.camLookCur.copy(this.camLook);
+    this.shakeX = opts.shakeX;
+    this.shakeY = opts.shakeY;
 
     // Keep the shadow frustum centered on the action.
     const fx = opts.focusX * U;
@@ -901,7 +1005,18 @@ export class Scene3D {
     this.sun.target.position.set(fx, 0, fz);
   }
 
-  render(): void {
+  render(alpha = 1): void {
+    const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+    // Interpolate every moving body between its last two sim positions by `alpha`.
+    for (const av of this.players) av.present(a);
+    if (this.ballGroup.visible && this.ballPrimed) {
+      this.ballGroup.position.lerpVectors(this.ballPrev, this.ballCur, a);
+    }
+    _tmpPos.lerpVectors(this.camPosPrev, this.camPosCur, a);
+    _tmpLook.lerpVectors(this.camLookPrev, this.camLookCur, a);
+    this.camera.position.set(_tmpPos.x + this.shakeX * U * 0.5, _tmpPos.y + this.shakeY * U * 0.5, _tmpPos.z);
+    this.camera.lookAt(_tmpLook);
+
     this.renderer.render(this.scene, this.camera);
   }
 
