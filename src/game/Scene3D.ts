@@ -207,6 +207,7 @@ class FbxAvatar implements Avatar {
   private readonly strafeAction: THREE.AnimationAction | null;
   private readonly passAction: THREE.AnimationAction | null;
   private readonly catchAction: THREE.AnimationAction | null;
+  private readonly jukeAction: THREE.AnimationAction | null;
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
@@ -256,12 +257,13 @@ class FbxAvatar implements Avatar {
     this.strafeAction = clips.strafe ? this.mixer.clipAction(clips.strafe) : null;
     this.passAction = clips.pass ? this.mixer.clipAction(clips.pass) : null;
     this.catchAction = clips.catch ? this.mixer.clipAction(clips.catch) : null;
+    this.jukeAction = clips.juke ? this.mixer.clipAction(clips.juke) : null;
     for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction]) {
       a?.setLoop(THREE.LoopRepeat, Infinity);
       a?.play();
       a?.setEffectiveWeight(0);
     }
-    for (const a of [this.passAction, this.catchAction]) {
+    for (const a of [this.passAction, this.catchAction, this.jukeAction]) {
       a?.setLoop(THREE.LoopOnce, 1);
       if (a) a.clampWhenFinished = true;
     }
@@ -286,16 +288,28 @@ class FbxAvatar implements Avatar {
     this.group.add(this.lean, this.ring, this.chevron, this.nub);
   }
 
-  /** Play a one-shot overlay, capping how long it ducks locomotion (clips can be long). */
-  private triggerOneShot(action: THREE.AnimationAction | null, maxDur: number): void {
+  /**
+   * Play a one-shot overlay, capping how long it ducks locomotion (clips can be long).
+   * `rate` speeds up playback and `startAt` skips into the clip (e.g. to land on the
+   * plant of a long change-of-direction clip rather than its run-in).
+   */
+  private triggerOneShot(
+    action: THREE.AnimationAction | null,
+    maxDur: number,
+    rate = 1,
+    startAt = 0,
+  ): void {
     if (!action) return;
     action.reset();
     action.setLoop(THREE.LoopOnce, 1);
     action.clampWhenFinished = true;
+    action.setEffectiveTimeScale(rate);
+    action.time = startAt;
     action.play();
     this.oneShot = action;
     this.oneShotTime = 0;
-    this.oneShotDur = Math.min(action.getClip().duration, maxDur);
+    // oneShotTime advances in real seconds; the clip runs `rate`x faster.
+    this.oneShotDur = Math.min((action.getClip().duration - startAt) / rate, maxDur);
   }
 
   /** Reset to an upright, neutral pose for a fresh play (pooled avatars are reused). */
@@ -316,9 +330,11 @@ class FbxAvatar implements Avatar {
     g.visible = true;
     g.position.set(p.pos.x * U, 0, p.pos.y * U);
 
-    // Fire one-shot overlays on game events (juke/tackle handled procedurally for now).
+    // Fire one-shot overlays on game events. The juke uses the plant→cut window of
+    // the change-direction clip (skipping its run-in), sped up so it reads snappily.
     if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 1.1);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
+    else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.5, 1.4, 0.72);
     p.animEvent = null;
 
     const lo = p.loco;
@@ -372,10 +388,13 @@ class FbxAvatar implements Avatar {
       // movement direction relative to facing (so backpedals & shuffles read right).
       const moving01 = smoothstep(JOG_EXIT_W, SPRINT_W, lo.speed01);
       const ts = clamp(lo.speed * FOOT_PLANT_K, 0.55, 2.2);
+      // Split locomotion by movement-vs-facing angle, but sharpened so a mild turn
+      // (small moveRel from the heading slew) stays a forward run instead of bleeding
+      // into a shuffle/backpedal. Shuffle only dominates past ~50deg, backpedal past ~130.
       const c = Math.cos(lo.moveRel);
-      let fwd = Math.max(0, c);
-      let back = Math.max(0, -c);
-      let strafe = Math.abs(Math.sin(lo.moveRel));
+      let fwd = Math.pow(Math.max(0, c), 1.4);
+      let back = Math.pow(Math.max(0, -c), 1.4);
+      let strafe = Math.pow(Math.abs(Math.sin(lo.moveRel)), 2.0);
       const sum = fwd + back + strafe || 1;
       fwd /= sum; back /= sum; strafe /= sum;
       tRun = fwd * moving01;

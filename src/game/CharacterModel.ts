@@ -16,6 +16,8 @@ export interface CharacterClips {
   pass: THREE.AnimationClip | null;
   /** One-shot reception. */
   catch: THREE.AnimationClip | null;
+  /** One-shot plant-and-cut (juke). */
+  juke: THREE.AnimationClip | null;
 }
 
 export interface CharacterAsset {
@@ -36,6 +38,7 @@ export interface CharacterUrls {
   pass: string;
   catch: string;
   defender: string;
+  juke: string;
 }
 
 /**
@@ -60,7 +63,7 @@ async function loadClip(loader: FBXLoader, url: string): Promise<THREE.Animation
  */
 export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset> {
   const loader = new FBXLoader();
-  const [model, run, runBack, strafe, pass, catchClip, defender] = await Promise.all([
+  const [model, run, runBack, strafe, pass, catchClip, defender, juke] = await Promise.all([
     loader.loadAsync(urls.model),
     loadClip(loader, urls.run),
     loadClip(loader, urls.runBack),
@@ -68,6 +71,7 @@ export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset
     loadClip(loader, urls.pass),
     loadClip(loader, urls.catch),
     loadClip(loader, urls.defender),
+    loadClip(loader, urls.juke),
   ]);
 
   const idle = model.animations[0] ? prep(model.animations[0]) : null;
@@ -79,7 +83,7 @@ export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset
 
   return {
     template: model,
-    clips: { idle, defender: defender ?? idle, run, runBack, strafe, pass, catch: catchClip },
+    clips: { idle, defender: defender ?? idle, run, runBack, strafe, pass, catch: catchClip, juke },
     scale: 1.95 / height,
     groundOffset: -box.min.y,
   };

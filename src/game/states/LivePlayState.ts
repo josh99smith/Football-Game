@@ -552,6 +552,7 @@ export class LivePlayState implements GameState {
       }
     } else if (res.intercepted) {
       this.ball.attachTo(res.intercepted);
+      res.intercepted.animEvent = "catch";
       this.app.audio.turnover();
       if (res.intercepted.team === this.app.match.humanTeam) this.app.audio.crowdCheer();
       else this.app.audio.crowdGroan();
