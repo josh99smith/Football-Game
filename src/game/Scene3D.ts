@@ -573,28 +573,49 @@ export class Scene3D {
 
   private makeCrowdTexture(): THREE.Texture {
     const c = document.createElement("canvas");
-    c.width = 256;
-    c.height = 128;
+    c.width = 512;
+    c.height = 256;
     const ctx = c.getContext("2d")!;
-    ctx.fillStyle = "#0c1420";
-    ctx.fillRect(0, 0, 256, 128);
-    const cols = ["#d8d8d8", "#ffd23a", "#e25b5b", "#5aa9ff", "#7bd88a", "#caa6ff", "#ff9a3c"];
-    // Seating rows of speckled fans.
-    const rowH = 9;
-    for (let y = 4; y < 128; y += rowH) {
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.fillRect(0, y + rowH - 2, 256, 2);
-      for (let x = 2; x < 256; x += 5) {
-        ctx.fillStyle = cols[(Math.random() * cols.length) | 0];
-        ctx.globalAlpha = 0.55 + Math.random() * 0.45;
-        ctx.fillRect(x + (Math.random() * 2 - 1), y + (Math.random() * 3), 3, 4);
+    // Concrete bowl, darker up top (under the roof).
+    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, "#090d15");
+    g.addColorStop(1, "#212a38");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 512, 256);
+
+    const skin = ["#f0c9a0", "#e0aa78", "#c98e5e", "#9c6b43", "#7a4f30"];
+    // Clothing leans toward the two team colors, with neutrals mixed in.
+    const cloth = [
+      "#ffd23a", "#ffd23a", "#e23b3b", "#e23b3b", "#ffffff", "#ffffff",
+      "#27a3ff", "#1fd17a", "#9b5cff", "#ff7b1e", "#dddddd", "#2a2a2a", "#ff5aa0",
+    ];
+    const rows = 26;
+    for (let r = 0; r < rows; r++) {
+      const y = 6 + (r * (256 - 12)) / rows;
+      // subtle per-row shading for depth
+      ctx.fillStyle = "rgba(0,0,0,0.22)";
+      ctx.fillRect(0, y + 6, 512, 2);
+      for (let x = 3; x < 512; x += 7) {
+        if (Math.random() < 0.07) continue; // empty seat
+        const jx = x + (Math.random() * 1.5 - 0.75);
+        // torso (clothing)
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = cloth[(Math.random() * cloth.length) | 0];
+        ctx.fillRect(jx, y + 2.5, 5, 5);
+        // head (skin)
+        ctx.fillStyle = skin[(Math.random() * skin.length) | 0];
+        ctx.fillRect(jx + 1, y, 3, 3);
       }
     }
     ctx.globalAlpha = 1;
+    // Vertical aisles.
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    for (let a = 64; a < 512; a += 96) ctx.fillRect(a, 0, 5, 256);
+
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(14, 2);
+    tex.repeat.set(9, 2);
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }

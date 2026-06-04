@@ -94,9 +94,50 @@ export class AudioManager {
   }
 
   hit(power: number): void {
-    // power 0..1 — bigger hits are louder, lower, with more noise.
-    this.noise(0.12 + power * 0.1, 0.35 + power * 0.4, 120);
-    this.blip("sine", 90 - power * 30, 0.14, 0.3 + power * 0.3, 40);
+    // Layered pad impact: low body thump + a noisy crack + a short pad click.
+    this.blip("sine", 95 - power * 35, 0.16, 0.34 + power * 0.34, 45);
+    this.noise(0.1 + power * 0.12, 0.3 + power * 0.45, 160);
+    this.blip("square", 210, 0.04, 0.1 + power * 0.12, 110);
+  }
+
+  /** Stadium air horn for touchdowns. */
+  airHorn(): void {
+    if (!this.ctx || !this.master || this.muted) return;
+    const t = this.now();
+    const dur = 1.1;
+    for (const f of [185, 246]) {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = "sawtooth";
+      osc.frequency.value = f;
+      const lfo = this.ctx.createOscillator();
+      const lg = this.ctx.createGain();
+      lfo.frequency.value = 5.5;
+      lg.gain.value = 3.5;
+      lfo.connect(lg).connect(osc.frequency);
+      lfo.start(t);
+      lfo.stop(t + dur);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.3, t + 0.04);
+      g.gain.setValueAtTime(0.3, t + dur - 0.18);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      osc.connect(g).connect(this.master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+  }
+
+  /** Classic stadium organ "Charge!" riff. */
+  organCharge(): void {
+    const seq: [number, number][] = [
+      [392, 0], [523, 150], [659, 300], [784, 450], [659, 660], [784, 800],
+    ];
+    for (const [f, d] of seq) window.setTimeout(() => this.blip("square", f, 0.16, 0.2, f), d);
+  }
+
+  /** Pleasant two-note chime for first downs. */
+  firstDownChime(): void {
+    [659, 988].forEach((f, i) => window.setTimeout(() => this.blip("triangle", f, 0.16, 0.26), i * 110));
   }
 
   juke(): void {
@@ -156,14 +197,42 @@ export class AudioManager {
     this.crowd = { src, gain };
   }
 
-  /** Briefly swell the crowd (after a big play). */
+  /** Briefly swell the crowd into a roar (after a big play). */
   crowdCheer(): void {
     if (!this.crowd || !this.ctx) return;
     const t = this.now();
-    this.crowd.gain.gain.cancelScheduledValues(t);
-    this.crowd.gain.gain.setValueAtTime(this.crowd.gain.gain.value, t);
-    this.crowd.gain.gain.linearRampToValueAtTime(0.32, t + 0.15);
-    this.crowd.gain.gain.linearRampToValueAtTime(0.14, t + 1.2);
+    const c = this.crowd.gain.gain;
+    c.cancelScheduledValues(t);
+    c.setValueAtTime(c.value, t);
+    c.linearRampToValueAtTime(0.36, t + 0.12);
+    c.linearRampToValueAtTime(0.14, t + 1.4);
+    this.noise(0.5, 0.16, 420); // airy roar on top of the bed
+  }
+
+  /** Home-crowd disappointment: a descending "ohhh" + a dip in the bed. */
+  crowdGroan(): void {
+    if (!this.ctx || !this.master || this.muted) return;
+    const t = this.now();
+    for (const f of [320, 244]) {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.62, t + 0.8);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.16, t + 0.12);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+      osc.connect(g).connect(this.master);
+      osc.start(t);
+      osc.stop(t + 0.92);
+    }
+    if (this.crowd) {
+      const c = this.crowd.gain.gain;
+      c.cancelScheduledValues(t);
+      c.setValueAtTime(c.value, t);
+      c.linearRampToValueAtTime(0.04, t + 0.2);
+      c.linearRampToValueAtTime(0.14, t + 1.3);
+    }
   }
 
   stopCrowd(): void {

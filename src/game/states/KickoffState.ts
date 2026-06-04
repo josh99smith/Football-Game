@@ -25,6 +25,7 @@ export class KickoffState implements GameState {
   enter(): void {
     this.app.input.consumeTaps();
     this.app.audio.whistle();
+    this.app.audio.organCharge();
   }
 
   update(dt: number): void {

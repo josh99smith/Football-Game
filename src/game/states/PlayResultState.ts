@@ -35,6 +35,7 @@ export class PlayResultState implements GameState {
       this.detail = `${t.config.name} score!`;
     } else if (this.outcome.firstDown) {
       this.detail = "FIRST DOWN!";
+      this.app.audio.firstDownChime();
     } else if (this.result.changedPossession) {
       this.detail = "TURNOVER!";
     } else {

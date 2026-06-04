@@ -385,14 +385,15 @@ export class LivePlayState implements GameState {
       this.passTarget = null;
       this.app.audio.catchBall();
       this.app.floating.add("CAUGHT!", res.caught.pos.x, res.caught.pos.y - 20, { size: 18, color: "#bfffd0" });
+      if (res.caught.team === this.app.match.humanTeam) this.app.audio.crowdCheer();
       if (res.caught.team === this.app.match.humanTeam && this.humanIsOffense) {
         this.setControlled(res.caught);
-      } else if (!this.humanIsOffense) {
-        // CPU receiver now runs (driven by CPUOffense.steerCarrier).
       }
     } else if (res.intercepted) {
       this.ball.attachTo(res.intercepted);
       this.app.audio.turnover();
+      if (res.intercepted.team === this.app.match.humanTeam) this.app.audio.crowdCheer();
+      else this.app.audio.crowdGroan();
       this.app.floating.add("PICKED!", res.intercepted.pos.x, res.intercepted.pos.y - 20, {
         size: 22,
         color: "#ff8a8a",
@@ -401,6 +402,7 @@ export class LivePlayState implements GameState {
       this.endPlay("interception", { x: res.intercepted.pos.x, y: res.intercepted.pos.y });
     } else if (res.incomplete) {
       this.app.audio.whistle();
+      if (this.humanIsOffense) this.app.audio.crowdGroan();
       this.app.floating.add("INCOMPLETE", this.ball.pos.x, this.ball.pos.y - 10, { size: 18, color: "#ddd" });
       // Let the ball skip/bounce at the spot during the dead beat.
       this.ball.becomeLoose(this.ball.vel.x * 0.3, this.ball.vel.y * 0.3, 120);
@@ -600,6 +602,9 @@ export class LivePlayState implements GameState {
       const spot = { x: carrier.pos.x, y: carrier.pos.y };
       if (recoverDefense) {
         // Defense recovers => turnover.
+        const defenseIsHuman = this.app.match.opponent(this.offenseTeamId) === this.app.match.humanTeam;
+        if (defenseIsHuman) this.app.audio.crowdCheer();
+        else this.app.audio.crowdGroan();
         this.bumpFireStreakOnDefense();
         this.endPlay("fumbleLost", spot);
       } else {
@@ -663,8 +668,13 @@ export class LivePlayState implements GameState {
   }
 
   private scoreTouchdown(carrier: Player): void {
-    this.app.audio.score();
-    this.app.audio.crowdCheer();
+    this.app.audio.airHorn();
+    if (carrier.team === this.app.match.humanTeam) {
+      this.app.audio.crowdCheer();
+      this.app.audio.organCharge();
+    } else {
+      this.app.audio.crowdGroan();
+    }
     this.app.shake.add(0.6);
     this.app.particles.confetti(carrier.pos.x, carrier.pos.y, 50);
     this.app.floating.add("TOUCHDOWN!", carrier.pos.x, carrier.pos.y - 30, { size: 34, color: "#ffd23a", life: 1.6 });
