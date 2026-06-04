@@ -66,70 +66,160 @@ export class Field {
 
   /**
    * Draw the full field markings into a 2D context in field-pixel space (0..FIELD_LENGTH
-   * by 0..FIELD_WIDTH). Used to bake a texture for the 3D turf plane.
+   * by 0..FIELD_WIDTH). Used to bake a richly-textured turf for the 3D field plane.
+   * Optional team colors paint the end zones.
    */
-  drawTexture(ctx: CanvasRenderingContext2D): void {
-    // Turf base + 5-yard mow stripes.
-    ctx.fillStyle = "#178a3c";
-    ctx.fillRect(LEFT_GOAL_X, 0, RIGHT_GOAL_X - LEFT_GOAL_X, FIELD_WIDTH);
+  drawTexture(ctx: CanvasRenderingContext2D, homeColor = "#0e6b8f", awayColor = "#b03a3a"): void {
+    // Base turf.
+    ctx.fillStyle = "#16823a";
+    ctx.fillRect(0, 0, FIELD_LENGTH, FIELD_WIDTH);
+
+    // Mowing stripes: alternating brightness every 5 yards across the field.
     for (let yd = 0; yd < FIELD_PLAY_YARDS; yd += 5) {
-      if ((yd / 5) % 2 === 0) {
-        ctx.fillStyle = "#149036";
-        ctx.fillRect(xFromLeftGoal(yd), 0, yards(5), FIELD_WIDTH);
+      ctx.fillStyle = (yd / 5) % 2 === 0 ? "#1b9442" : "#138537";
+      ctx.fillRect(xFromLeftGoal(yd), 0, yards(5), FIELD_WIDTH);
+    }
+    // Cross-mow: subtle horizontal bands for a checker effect.
+    ctx.globalAlpha = 0.06;
+    for (let i = 0; i < 8; i++) {
+      if (i % 2 === 0) {
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(LEFT_GOAL_X, (FIELD_WIDTH / 8) * i, RIGHT_GOAL_X - LEFT_GOAL_X, FIELD_WIDTH / 8);
       }
     }
+    ctx.globalAlpha = 1;
 
-    // End zones.
-    ctx.fillStyle = "#0e6b8f";
-    ctx.fillRect(0, 0, ENDZONE_PX, FIELD_WIDTH);
-    ctx.fillStyle = "#b03a3a";
-    ctx.fillRect(RIGHT_GOAL_X, 0, ENDZONE_PX, FIELD_WIDTH);
+    // Grass speckle for texture (cheap one-time bake).
+    for (let i = 0; i < 9000; i++) {
+      const gx = LEFT_GOAL_X + Math.random() * (RIGHT_GOAL_X - LEFT_GOAL_X);
+      const gy = Math.random() * FIELD_WIDTH;
+      ctx.fillStyle = Math.random() > 0.5 ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.05)";
+      ctx.fillRect(gx, gy, 2, 2);
+    }
+
+    // End zones (team-colored) with a diagonal hatch.
+    this.endzone(ctx, 0, homeColor);
+    this.endzone(ctx, RIGHT_GOAL_X, awayColor);
 
     // Yard lines + goal lines.
     for (let yd = 0; yd <= FIELD_PLAY_YARDS; yd += 5) {
       const x = xFromLeftGoal(yd);
       const isGoal = yd === 0 || yd === FIELD_PLAY_YARDS;
-      ctx.strokeStyle = isGoal ? "#ffffff" : "rgba(255,255,255,0.85)";
-      ctx.lineWidth = isGoal ? 6 : 3;
+      ctx.strokeStyle = isGoal ? "#ffffff" : "rgba(255,255,255,0.88)";
+      ctx.lineWidth = isGoal ? 7 : 3;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, FIELD_WIDTH);
       ctx.stroke();
     }
 
-    // Hash marks.
+    // Hash marks (two inbound rows) every yard.
     const hashTop = FIELD_WIDTH * 0.36;
     const hashBot = FIELD_WIDTH * 0.64;
-    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.strokeStyle = "rgba(255,255,255,0.75)";
     ctx.lineWidth = 2;
     for (let yd = 1; yd < FIELD_PLAY_YARDS; yd++) {
       if (yd % 5 === 0) continue;
       const x = xFromLeftGoal(yd);
+      for (const hy of [hashTop, hashBot, FIELD_WIDTH * 0.04, FIELD_WIDTH * 0.96]) {
+        ctx.beginPath();
+        ctx.moveTo(x, hy - 5);
+        ctx.lineTo(x, hy + 5);
+        ctx.stroke();
+      }
+    }
+
+    // Yard numbers with direction arrows near each sideline.
+    for (let yd = 10; yd < FIELD_PLAY_YARDS; yd += 10) {
+      const n = yd <= 50 ? yd : 100 - yd;
+      const x = xFromLeftGoal(yd);
+      this.yardNumber(ctx, x, FIELD_WIDTH * 0.13, n, yd);
+      this.yardNumber(ctx, x, FIELD_WIDTH * 0.87, n, yd);
+    }
+
+    // Midfield logo: a ringed star at the 50.
+    this.midfieldLogo(ctx, xFromLeftGoal(50), FIELD_WIDTH / 2);
+
+    // Sideline border.
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 6;
+    ctx.strokeRect(2, 2, FIELD_LENGTH - 4, FIELD_WIDTH - 4);
+  }
+
+  private endzone(ctx: CanvasRenderingContext2D, x0: number, color: string): void {
+    ctx.fillStyle = color;
+    ctx.fillRect(x0, 0, ENDZONE_PX, FIELD_WIDTH);
+    // Diagonal hatch.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, 0, ENDZONE_PX, FIELD_WIDTH);
+    ctx.clip();
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.lineWidth = 6;
+    for (let d = -FIELD_WIDTH; d < ENDZONE_PX; d += 26) {
       ctx.beginPath();
-      ctx.moveTo(x, hashTop - 5);
-      ctx.lineTo(x, hashTop + 5);
-      ctx.moveTo(x, hashBot - 5);
-      ctx.lineTo(x, hashBot + 5);
+      ctx.moveTo(x0 + d, 0);
+      ctx.lineTo(x0 + d + FIELD_WIDTH, FIELD_WIDTH);
       ctx.stroke();
     }
-
-    // Yard numbers near each sideline.
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.restore();
+    // "BLITZ" wordmark.
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.font = `900 70px "Trebuchet MS", system-ui, sans-serif`;
     ctx.textAlign = "center";
-    for (let yd = 10; yd < FIELD_PLAY_YARDS; yd += 10) {
-      const label = String(yd <= 50 ? yd : 100 - yd);
-      const x = xFromLeftGoal(yd);
-      ctx.font = `900 30px "Trebuchet MS", system-ui, sans-serif`;
-      ctx.textBaseline = "top";
-      ctx.fillText(label, x, 16);
-      ctx.textBaseline = "bottom";
-      ctx.fillText(label, x, FIELD_WIDTH - 16);
-    }
+    ctx.textBaseline = "middle";
+    ctx.translate(x0 + ENDZONE_PX / 2, FIELD_WIDTH / 2);
+    ctx.rotate(x0 === 0 ? -Math.PI / 2 : Math.PI / 2);
+    ctx.fillText("BLITZ", 0, 0);
+    ctx.restore();
+  }
 
-    // Sideline borders.
-    ctx.strokeStyle = "#ffffff";
+  private yardNumber(ctx: CanvasRenderingContext2D, x: number, y: number, n: number, yd: number): void {
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.font = `900 34px "Trebuchet MS", system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const s = String(n);
+    ctx.fillText(s[0], x - 14, y);
+    if (s[1]) ctx.fillText(s[1], x + 14, y);
+    // Direction arrow toward the nearer goal line (real-field convention).
+    if (n < 50) {
+      const dir = yd < 50 ? -1 : 1;
+      const ax = x + dir * 40;
+      ctx.beginPath();
+      ctx.moveTo(ax + dir * 8, y);
+      ctx.lineTo(ax, y - 7);
+      ctx.lineTo(ax, y + 7);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private midfieldLogo(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
     ctx.lineWidth = 5;
-    ctx.strokeRect(0, 0, FIELD_LENGTH, FIELD_WIDTH);
+    ctx.beginPath();
+    ctx.arc(0, 0, 70, 0, Math.PI * 2);
+    ctx.stroke();
+    // Star.
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const ang = (Math.PI / 5) * i - Math.PI / 2;
+      const rad = i % 2 === 0 ? 52 : 22;
+      const px = Math.cos(ang) * rad;
+      const py = Math.sin(ang) * rad;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 
   /** Draw the field (turf, end zones, yard lines, hash marks, numbers) in world space. */

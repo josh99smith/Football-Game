@@ -169,6 +169,7 @@ class FbxAvatar implements Avatar {
   private readonly mixer: THREE.AnimationMixer;
   private readonly action: THREE.AnimationAction | null;
   private readonly mats: THREE.MeshStandardMaterial[] = [];
+  private readonly helmetMat: THREE.MeshStandardMaterial | null = null;
   private readonly ring: THREE.Mesh;
   private readonly chevron: THREE.Mesh;
   private readonly nub: THREE.Mesh;
@@ -187,6 +188,26 @@ class FbxAvatar implements Avatar {
         this.mats.push(mat);
       }
     });
+
+    // Attach a team helmet (facemask + stripe) to the head bone so it animates.
+    const headBone = inner.getObjectByName("Head");
+    if (headBone) {
+      inner.updateMatrixWorld(true);
+      const ws = headBone.getWorldScale(new THREE.Vector3()).x || 1;
+      const R = 0.16 / ws;
+      this.helmetMat = new THREE.MeshStandardMaterial({ color: 0x222233, roughness: 0.35, metalness: 0.15 });
+      const maskMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.5 });
+      const helmet = new THREE.Group();
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(R, 14, 12), this.helmetMat);
+      dome.castShadow = true;
+      const mask = new THREE.Mesh(new THREE.BoxGeometry(R * 1.3, R * 0.5, R * 0.18), maskMat);
+      mask.position.set(0, -R * 0.25, R * 0.92);
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.28, R * 0.4, R * 2), maskMat);
+      stripe.position.set(0, R * 0.5, 0);
+      helmet.add(dome, mask, stripe);
+      helmet.position.set(0, R * 0.55, R * 0.1);
+      headBone.add(helmet);
+    }
 
     this.mixer = new THREE.AnimationMixer(inner);
     this.action = asset.clip ? this.mixer.clipAction(asset.clip) : null;
@@ -208,7 +229,7 @@ class FbxAvatar implements Avatar {
     this.group.add(inner, this.ring, this.chevron, this.nub);
   }
 
-  update(p: Player, jersey: number, _trim: number, onFire: boolean, dt: number): void {
+  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number): void {
     const g = this.group;
     g.visible = true;
     g.position.set(p.pos.x * U, 0, p.pos.y * U);
@@ -244,6 +265,7 @@ class FbxAvatar implements Avatar {
         m.emissiveIntensity = 0;
       }
     }
+    if (this.helmetMat) this.helmetMat.color.setHex(trim);
     this.nub.visible = p.hasBall && !p.isDown;
   }
 
@@ -361,23 +383,22 @@ export class Scene3D {
     c.height = Math.round(FIELD_WIDTH);
     const ctx = c.getContext("2d")!;
     field.drawTexture(ctx);
-    this.drawEndzoneText(ctx);
     const tex = new THREE.CanvasTexture(c);
     tex.anisotropy = 8;
     tex.colorSpace = THREE.SRGBColorSpace;
 
     const geo = new THREE.PlaneGeometry(FIELD_LEN_U, FIELD_WID_U);
-    const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95 });
+    const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.92 });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.set(FIELD_LEN_U / 2, 0, FIELD_WID_U / 2);
     mesh.receiveShadow = true;
     this.scene.add(mesh);
 
-    // A dark apron under/around the field so edges aren't floating.
+    // A dark apron (sideline area) around the field so edges aren't floating.
     const apron = new THREE.Mesh(
-      new THREE.PlaneGeometry(FIELD_LEN_U + 30, FIELD_WID_U + 30),
-      new THREE.MeshStandardMaterial({ color: 0x12331c, roughness: 1 }),
+      new THREE.PlaneGeometry(FIELD_LEN_U + 30, FIELD_WID_U + 22),
+      new THREE.MeshStandardMaterial({ color: 0x123018, roughness: 1 }),
     );
     apron.rotation.x = -Math.PI / 2;
     apron.position.set(FIELD_LEN_U / 2, -0.05, FIELD_WID_U / 2);
@@ -385,47 +406,133 @@ export class Scene3D {
     this.scene.add(apron);
   }
 
-  private drawEndzoneText(ctx: CanvasRenderingContext2D): void {
-    ctx.save();
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.font = `900 64px "Trebuchet MS", system-ui, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    // Left end zone text (rotated to read along the field).
-    ctx.save();
-    ctx.translate(ENDZONE_PX / 2, FIELD_WIDTH / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText("BLITZ", 0, 0);
-    ctx.restore();
-    ctx.save();
-    ctx.translate(FIELD_LENGTH - ENDZONE_PX / 2, FIELD_WIDTH / 2);
-    ctx.rotate(Math.PI / 2);
-    ctx.fillText("BLITZ", 0, 0);
-    ctx.restore();
-    ctx.restore();
-  }
-
   private buildStadium(): void {
     // Goal posts at each end.
     this.scene.add(this.goalPost(ENDZONE_PX * U - 0.5));
     this.scene.add(this.goalPost(FIELD_LEN_U - ENDZONE_PX * U + 0.5));
 
-    // Crowd stands: tall boxes around the perimeter with a speckled crowd texture.
     const crowd = this.makeCrowdTexture();
-    const standMat = new THREE.MeshStandardMaterial({ map: crowd, roughness: 1 });
-    const longLen = FIELD_LEN_U + 24;
-    const sideZ = FIELD_WID_U + 12;
-    const standH = 11;
-    const mkStand = (w: number, x: number, z: number, ry: number) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, standH, 2), standMat);
-      m.position.set(x, standH / 2 - 1, z);
-      m.rotation.y = ry;
-      this.scene.add(m);
-    };
-    mkStand(longLen, FIELD_LEN_U / 2, -12, 0);
-    mkStand(longLen, FIELD_LEN_U / 2, sideZ, Math.PI);
-    mkStand(FIELD_WID_U + 22, -12, FIELD_WID_U / 2, Math.PI / 2);
-    mkStand(FIELD_WID_U + 22, FIELD_LEN_U + 12, FIELD_WID_U / 2, -Math.PI / 2);
+    const ad = this.makeAdTexture();
+    const m = 4;
+    const ext = 28;
+    const sides: { x: number; z: number; ry: number; len: number }[] = [
+      { x: FIELD_LEN_U / 2, z: -m, ry: Math.PI, len: FIELD_LEN_U + ext },
+      { x: FIELD_LEN_U / 2, z: FIELD_WID_U + m, ry: 0, len: FIELD_LEN_U + ext },
+      { x: -m, z: FIELD_WID_U / 2, ry: -Math.PI / 2, len: FIELD_WID_U + ext },
+      { x: FIELD_LEN_U + m, z: FIELD_WID_U / 2, ry: Math.PI / 2, len: FIELD_WID_U + ext },
+    ];
+    for (const s of sides) this.scene.add(this.buildStand(s.x, s.z, s.ry, s.len, crowd, ad));
+
+    // Light towers at the four corners.
+    const corners: [number, number][] = [
+      [-m - 3, -m - 3],
+      [FIELD_LEN_U + m + 3, -m - 3],
+      [-m - 3, FIELD_WID_U + m + 3],
+      [FIELD_LEN_U + m + 3, FIELD_WID_U + m + 3],
+    ];
+    for (const [cx, cz] of corners) this.scene.add(this.lightTower(cx, cz));
+
+    // Jumbotron above the right end zone, facing the field.
+    this.scene.add(this.jumbotron(FIELD_LEN_U + m + 5, FIELD_WID_U / 2));
+  }
+
+  /** One stand: ad board at field level + two raked seating tiers + a roof line. */
+  private buildStand(x: number, z: number, ry: number, len: number, crowd: THREE.Texture, ad: THREE.Texture): THREE.Group {
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = ry;
+    const concrete = new THREE.MeshStandardMaterial({ color: 0x3a4452, roughness: 1 });
+
+    const adMat = new THREE.MeshStandardMaterial({ map: ad, roughness: 0.8, emissive: 0x111111 });
+    const adBoard = new THREE.Mesh(new THREE.BoxGeometry(len, 2.4, 0.5), adMat);
+    adBoard.position.set(0, 1.2, 0.4);
+    g.add(adBoard);
+
+    const crowdMat = new THREE.MeshStandardMaterial({ map: crowd, roughness: 1 });
+    const lower = new THREE.Mesh(new THREE.BoxGeometry(len, 6.5, 5.5), crowdMat);
+    lower.position.set(0, 3.6, 3.4);
+    lower.rotation.x = -0.32;
+    g.add(lower);
+
+    const upper = new THREE.Mesh(new THREE.BoxGeometry(len, 6, 5.5), crowdMat);
+    upper.position.set(0, 9.2, 8.2);
+    upper.rotation.x = -0.32;
+    g.add(upper);
+
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(len, 0.6, 8), concrete);
+    roof.position.set(0, 13, 8);
+    g.add(roof);
+
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(len, 1.4, 0.6), concrete);
+    wall.position.set(0, 0.2, 0.1);
+    g.add(wall);
+    return g;
+  }
+
+  private lightTower(x: number, z: number): THREE.Group {
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.35, 0.45, 22, 8),
+      new THREE.MeshStandardMaterial({ color: 0x2a3038, roughness: 0.9 }),
+    );
+    pole.position.y = 11;
+    g.add(pole);
+    const bank = new THREE.Mesh(
+      new THREE.BoxGeometry(5, 2.4, 0.6),
+      new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff0c0, emissiveIntensity: 1.2 }),
+    );
+    bank.position.set(0, 21, 0);
+    // Aim the bank toward the field center.
+    bank.lookAt(FIELD_LEN_U / 2, 0, FIELD_WID_U / 2);
+    g.add(bank);
+    return g;
+  }
+
+  private jumbotron(x: number, z: number): THREE.Group {
+    const g = new THREE.Group();
+    g.position.set(x, 13, z);
+    const frame = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 7, 13),
+      new THREE.MeshStandardMaterial({ color: 0x1a1f26, roughness: 0.8 }),
+    );
+    g.add(frame);
+    const screen = new THREE.Mesh(
+      new THREE.PlaneGeometry(11, 5.5),
+      new THREE.MeshStandardMaterial({ color: 0x0a2a4a, emissive: 0x1d5a8a, emissiveIntensity: 0.8 }),
+    );
+    screen.position.x = -0.55;
+    screen.rotation.y = -Math.PI / 2;
+    g.add(screen);
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.4, 0.4, 13, 8),
+      new THREE.MeshStandardMaterial({ color: 0x2a3038 }),
+    );
+    stem.position.y = -9.5;
+    g.add(stem);
+    return g;
+  }
+
+  private makeAdTexture(): THREE.Texture {
+    const c = document.createElement("canvas");
+    c.width = 512;
+    c.height = 64;
+    const ctx = c.getContext("2d")!;
+    const panels = ["#1c6fd0", "#d03a3a", "#155a30", "#e6a91e", "#5a3aa0", "#0f8a8a"];
+    const pw = 86;
+    for (let i = 0, x = 0; x < 512; i++, x += pw) {
+      ctx.fillStyle = panels[i % panels.length];
+      ctx.fillRect(x, 0, pw - 4, 64);
+      // Fake wordmark blocks.
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.fillRect(x + 14, 26, pw - 32, 6);
+      ctx.fillRect(x + 24, 38, pw - 52, 5);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.repeat.set(6, 1);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
   }
 
   private goalPost(x: number): THREE.Group {
@@ -448,19 +555,27 @@ export class Scene3D {
   private makeCrowdTexture(): THREE.Texture {
     const c = document.createElement("canvas");
     c.width = 256;
-    c.height = 64;
+    c.height = 128;
     const ctx = c.getContext("2d")!;
     ctx.fillStyle = "#0c1420";
-    ctx.fillRect(0, 0, 256, 64);
-    const cols = ["#d8d8d8", "#ffd23a", "#e25b5b", "#5aa9ff", "#7bd88a", "#caa6ff"];
-    for (let i = 0; i < 1400; i++) {
-      ctx.fillStyle = cols[(Math.random() * cols.length) | 0];
-      ctx.globalAlpha = 0.5 + Math.random() * 0.5;
-      ctx.fillRect(Math.random() * 256, Math.random() * 64, 2, 2);
+    ctx.fillRect(0, 0, 256, 128);
+    const cols = ["#d8d8d8", "#ffd23a", "#e25b5b", "#5aa9ff", "#7bd88a", "#caa6ff", "#ff9a3c"];
+    // Seating rows of speckled fans.
+    const rowH = 9;
+    for (let y = 4; y < 128; y += rowH) {
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillRect(0, y + rowH - 2, 256, 2);
+      for (let x = 2; x < 256; x += 5) {
+        ctx.fillStyle = cols[(Math.random() * cols.length) | 0];
+        ctx.globalAlpha = 0.55 + Math.random() * 0.45;
+        ctx.fillRect(x + (Math.random() * 2 - 1), y + (Math.random() * 3), 3, 4);
+      }
     }
+    ctx.globalAlpha = 1;
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = THREE.RepeatWrapping;
-    tex.repeat.set(8, 1);
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(14, 2);
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }
@@ -550,10 +665,13 @@ export class Scene3D {
       this.ballGroup.position.set(ball.pos.x * U, ball.z * U + 0.1, ball.pos.y * U);
       const shadow = this.ballGroup.getObjectByName("shadow");
       if (shadow) shadow.position.y = -ball.z * U + 0.02 - 0.1;
-      // Point the ball along its travel and spiral it.
+      // Point the ball along its travel and spiral it; tumble end-over-end if loose.
       if (ball.state === "inAir") {
         this.ballRoll += opts.dt * 26;
         this.ballMesh.rotation.set(0, Math.atan2(ball.vel.x, ball.vel.y), this.ballRoll);
+      } else if (ball.state === "loose") {
+        this.ballRoll += opts.dt * 16;
+        this.ballMesh.rotation.set(this.ballRoll, Math.atan2(ball.vel.x, ball.vel.y), this.ballRoll * 0.6);
       }
     }
 

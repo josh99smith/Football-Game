@@ -90,7 +90,20 @@ export class Ball {
       }
     }
     if (this.state === "loose") {
-      const d = Math.exp(-3 * dt);
+      // Bouncing projectile: gravity on height, damped bounces, ground friction.
+      this.vz -= 540 * dt;
+      this.z += this.vz * dt;
+      if (this.z <= 0) {
+        this.z = 0;
+        if (this.vz < -25) {
+          this.vz = -this.vz * 0.46; // bounce
+          this.vel.x *= 0.6;
+          this.vel.y *= 0.6;
+        } else {
+          this.vz = 0;
+        }
+      }
+      const d = Math.exp(-1.4 * dt);
       this.vel.x *= d;
       this.vel.y *= d;
       this.pos.x += this.vel.x * dt;
@@ -99,12 +112,12 @@ export class Ball {
     return false;
   }
 
-  becomeLoose(vx: number, vy: number): void {
+  becomeLoose(vx: number, vy: number, vz = 150): void {
     this.state = "loose";
     this.carrier = null;
     this.vel.x = vx;
     this.vel.y = vy;
-    this.z = 0;
+    this.vz = vz;
   }
 
   render(r: Renderer): void {

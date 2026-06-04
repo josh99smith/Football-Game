@@ -400,6 +400,8 @@ export class LivePlayState implements GameState {
     } else if (res.incomplete) {
       this.app.audio.whistle();
       this.app.floating.add("INCOMPLETE", this.ball.pos.x, this.ball.pos.y - 10, { size: 18, color: "#ddd" });
+      // Let the ball skip/bounce at the spot during the dead beat.
+      this.ball.becomeLoose(this.ball.vel.x * 0.3, this.ball.vel.y * 0.3, 120);
       this.endPlay("incomplete", { x: this.startLosX, y: this.ball.pos.y });
     }
   }
@@ -473,6 +475,17 @@ export class LivePlayState implements GameState {
           a.pos.y -= ny * overlap * (bMass / total);
           b.pos.x += nx * overlap * (aMass / total);
           b.pos.y += ny * overlap * (aMass / total);
+
+          // Collision impulse: only when the two are actually closing, so contact
+          // has weight (a bump) without jitter on resting/leaning bodies.
+          const relN = (b.vel.x - a.vel.x) * nx + (b.vel.y - a.vel.y) * ny;
+          if (relN < 0) {
+            const j = -relN * 0.45;
+            a.vel.x -= nx * j * (bMass / total);
+            a.vel.y -= ny * j * (bMass / total);
+            b.vel.x += nx * j * (aMass / total);
+            b.vel.y += ny * j * (aMass / total);
+          }
         }
       }
     }
@@ -562,10 +575,20 @@ export class LivePlayState implements GameState {
     carrier.knockDown();
     tackler.facing = Math.atan2(dirY, dirX);
 
+    // Momentum transfer: a big hit drives the carrier back and recoils the tackler.
+    const dl = Math.hypot(dirX, dirY) || 1;
+    const shove = big ? 150 : 55;
+    carrier.vel.x += (dirX / dl) * shove;
+    carrier.vel.y += (dirY / dl) * shove;
+    tackler.vel.x -= (dirX / dl) * shove * 0.4;
+    tackler.vel.y -= (dirY / dl) * shove * 0.4;
+
     if (chance(fumbleChance)) {
       // Fumble! Award recovery to whichever side is closer (slight defense bias).
       this.app.floating.add("FUMBLE!", hx, hy - 40, { size: 26, color: "#ff6a6a" });
       this.app.audio.turnover();
+      // Pop the ball loose so it visibly tumbles during the dead beat.
+      this.ball.becomeLoose((dirX / dl) * 120 + (Math.random() * 80 - 40), (dirY / dl) * 120 + (Math.random() * 80 - 40), 220);
       const recoverDefense = chance(0.6);
       const spot = { x: carrier.pos.x, y: carrier.pos.y };
       if (recoverDefense) {
