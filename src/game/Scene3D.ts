@@ -15,7 +15,7 @@ const MAX_PLAYERS = 14;
 /** A swappable on-field player representation (box fallback or skinned FBX). */
 interface Avatar {
   readonly group: THREE.Object3D;
-  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number): void;
+  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void;
   hide(): void;
 }
 
@@ -98,7 +98,7 @@ class BoxAvatar implements Avatar {
     return joint;
   }
 
-  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number): void {
+  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, _isDefense: boolean): void {
     const g = this.group;
     g.visible = true;
     g.position.set(p.pos.x * U, 0, p.pos.y * U);
@@ -168,7 +168,13 @@ class FbxAvatar implements Avatar {
   readonly group = new THREE.Group();
   private readonly mixer: THREE.AnimationMixer;
   private readonly idleAction: THREE.AnimationAction | null;
+  private readonly defAction: THREE.AnimationAction | null;
   private readonly runAction: THREE.AnimationAction | null;
+  private readonly passAction: THREE.AnimationAction | null;
+  private readonly catchAction: THREE.AnimationAction | null;
+  private oneShot: THREE.AnimationAction | null = null;
+  private oneShotTime = 0;
+  private oneShotDur = 0;
   private readonly mats: THREE.MeshStandardMaterial[] = [];
   private readonly helmetMat: THREE.MeshStandardMaterial | null = null;
   private padsMat: THREE.MeshStandardMaterial | null = null;
@@ -220,14 +226,21 @@ class FbxAvatar implements Avatar {
     this.buildUniform(inner);
 
     this.mixer = new THREE.AnimationMixer(inner);
-    this.idleAction = asset.clip ? this.mixer.clipAction(asset.clip) : null;
-    this.runAction = asset.runClip ? this.mixer.clipAction(asset.runClip) : null;
-    for (const a of [this.idleAction, this.runAction]) {
+    const clips = asset.clips;
+    this.idleAction = clips.idle ? this.mixer.clipAction(clips.idle) : null;
+    this.defAction = clips.defender ? this.mixer.clipAction(clips.defender) : null;
+    this.runAction = clips.run ? this.mixer.clipAction(clips.run) : null;
+    this.passAction = clips.pass ? this.mixer.clipAction(clips.pass) : null;
+    this.catchAction = clips.catch ? this.mixer.clipAction(clips.catch) : null;
+    for (const a of [this.idleAction, this.defAction, this.runAction]) {
       a?.setLoop(THREE.LoopRepeat, Infinity);
       a?.play();
       a?.setEffectiveWeight(0);
     }
-    // Default to idle (falls back to run if no idle clip).
+    for (const a of [this.passAction, this.catchAction]) {
+      a?.setLoop(THREE.LoopOnce, 1);
+      if (a) a.clampWhenFinished = true;
+    }
     (this.idleAction ?? this.runAction)?.setEffectiveWeight(1);
 
     this.ring = new THREE.Mesh(G.ring, new THREE.MeshBasicMaterial({ color: 0xffe24a }));
@@ -284,6 +297,17 @@ class FbxAvatar implements Avatar {
     spine.add(numPlane);
   }
 
+  private triggerOneShot(action: THREE.AnimationAction | null): void {
+    if (!action) return;
+    action.reset();
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+    action.play();
+    this.oneShot = action;
+    this.oneShotTime = 0;
+    this.oneShotDur = action.getClip().duration;
+  }
+
   private drawNumber(n: number): void {
     const ctx = this.numberCtx;
     if (!ctx || !this.numberTex) return;
@@ -299,7 +323,7 @@ class FbxAvatar implements Avatar {
     this.numberTex.needsUpdate = true;
   }
 
-  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number): void {
+  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void {
     const g = this.group;
     g.visible = true;
     g.position.set(p.pos.x * U, 0, p.pos.y * U);
@@ -308,6 +332,11 @@ class FbxAvatar implements Avatar {
       this.lastNumber = p.number;
       this.drawNumber(p.number);
     }
+
+    // Fire one-shot overlays (throw / catch) on game events.
+    if (p.animEvent === "pass") this.triggerOneShot(this.passAction);
+    else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction);
+    p.animEvent = null;
 
     const speed = Math.hypot(p.vel.x, p.vel.y);
     const moving = Math.min(1, speed / 150);
@@ -318,24 +347,46 @@ class FbxAvatar implements Avatar {
     this.prevYaw = yaw;
     g.rotation.y = yaw;
 
+    // One-shot envelope (ramp in/out); ducks locomotion while active.
+    let osW = 0;
+    if (this.oneShot) {
+      this.oneShotTime += dt;
+      const inT = 0.1;
+      const outT = 0.2;
+      if (this.oneShotTime < inT) osW = this.oneShotTime / inT;
+      else if (this.oneShotTime > this.oneShotDur - outT) osW = Math.max(0, (this.oneShotDur - this.oneShotTime) / outT);
+      else osW = 1;
+      if (this.oneShotTime >= this.oneShotDur) {
+        this.oneShot.setEffectiveWeight(0);
+        this.oneShot = null;
+        osW = 0;
+      } else {
+        this.oneShot.setEffectiveWeight(osW);
+      }
+    }
+    const loco = 1 - osW;
+
+    // The idle stance differs for offense vs defense.
+    const idle = isDefense ? this.defAction : this.idleAction;
+    const otherIdle = isDefense ? this.idleAction : this.defAction;
+    if (otherIdle && otherIdle !== idle) otherIdle.setEffectiveWeight(0);
+
     if (p.isDown) {
       g.position.y = 0.25;
       this.lean.rotation.set(-Math.PI / 2.1, 0, 0);
-      this.idleAction?.setEffectiveTimeScale(0);
-      this.runAction?.setEffectiveTimeScale(0);
+      this.runAction?.setEffectiveWeight(0);
+      idle?.setEffectiveWeight(0);
       this.ring.visible = false;
       this.chevron.visible = false;
     } else {
-      // A subtle bob complements the jog cycle; forward lean + bank into cuts.
       g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * moving;
       const bank = Math.max(-0.45, Math.min(0.45, (-dyaw / Math.max(dt, 1 / 120)) * 0.016 * moving));
       this.lean.rotation.set(moving * 0.16, 0, bank);
-      // Crossfade idle <-> jog by speed; play the jog faster as you sprint.
       const runW = Math.min(1, moving * 1.5);
-      this.runAction?.setEffectiveWeight(runW);
+      this.runAction?.setEffectiveWeight(runW * loco);
       this.runAction?.setEffectiveTimeScale(0.75 + moving * 1.15);
-      this.idleAction?.setEffectiveWeight(1 - runW);
-      this.idleAction?.setEffectiveTimeScale(1);
+      idle?.setEffectiveWeight((1 - runW) * loco);
+      idle?.setEffectiveTimeScale(1);
       this.phase += dt;
       this.ring.visible = p.controlled;
       this.chevron.visible = p.controlled;
@@ -752,7 +803,7 @@ export class Scene3D {
   sync(opts: {
     players: Player[];
     ball: Ball;
-    colorFor: (p: Player) => { jersey: number; trim: number; onFire: boolean };
+    colorFor: (p: Player) => { jersey: number; trim: number; onFire: boolean; defense: boolean };
     focusX: number;
     focusY: number;
     dir: number;
@@ -767,7 +818,7 @@ export class Scene3D {
       const p = players[i];
       if (p) {
         const col = opts.colorFor(p);
-        this.players[i].update(p, col.jersey, col.trim, col.onFire, opts.dt);
+        this.players[i].update(p, col.jersey, col.trim, col.onFire, opts.dt, col.defense);
       } else {
         this.players[i].hide();
       }

@@ -50,6 +50,8 @@ export class Player {
   diveTimer = 0;
   /** Receiver just made a route break — burst open while the DB reacts late. */
   cutTimer = 0;
+  /** One-shot animation trigger consumed by the renderer ("pass" | "catch"). */
+  animEvent: "pass" | "catch" | null = null;
 
   // AI scratch fields (used by Offense/Defense AI; harmless when unused).
   /** High-level job assigned by the playbook at snap. */

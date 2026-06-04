@@ -244,12 +244,13 @@ export class LivePlayState implements GameState {
     });
   }
 
-  private colorFor(p: Player): { jersey: number; trim: number; onFire: boolean } {
+  private colorFor(p: Player): { jersey: number; trim: number; onFire: boolean; defense: boolean } {
     const team = this.app.match.team(p.team);
     return {
       jersey: hexNum(team.colors.jersey),
       trim: hexNum(team.colors.trim),
       onFire: team.onFire,
+      defense: p.team !== this.offenseTeamId,
     };
   }
 
@@ -375,6 +376,7 @@ export class LivePlayState implements GameState {
     this.ball.throwTo(from, target, speed, loft);
     this.passThrown = true;
     this.passTarget = receiver;
+    from.animEvent = "pass";
     this.app.audio.throwBall();
     // After the throw, no one is controlled until a catch resolves.
     this.setControlled(null);
@@ -384,6 +386,7 @@ export class LivePlayState implements GameState {
     if (res.caught) {
       this.ball.attachTo(res.caught);
       this.passTarget = null;
+      res.caught.animEvent = "catch";
       this.app.audio.catchBall();
       this.app.floating.add("CAUGHT!", res.caught.pos.x, res.caught.pos.y - 20, { size: 18, color: "#bfffd0" });
       if (res.caught.team === this.app.match.humanTeam) this.app.audio.crowdCheer();
