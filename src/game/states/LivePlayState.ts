@@ -100,16 +100,10 @@ export class LivePlayState implements GameState {
     this.sackPossible = true;
     this.turbo = 1;
 
-    this.app.cam.zoom = this.computeZoom();
-    if (this.qb) this.app.cam.snapTo(this.qb.pos.x, this.qb.pos.y);
+    this.app.scene3d.setVisible(true);
+    if (this.qb) this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir);
     this.app.input.setLayout(this.controls.computeLayout(this.app.r));
     this.app.audio.startCrowd();
-  }
-
-  private computeZoom(): number {
-    // Fit the full field width to the screen height (leaving room for the HUD).
-    const usableH = this.app.r.height - 80;
-    return Math.max(0.5, Math.min(1.4, usableH / (53.3 * PX_PER_YARD + 60)));
   }
 
   private context(): PlayContext {
@@ -149,7 +143,7 @@ export class LivePlayState implements GameState {
       if (this.snapTimer <= 0 || (this.humanIsOffense && this.app.input.actionPressed)) {
         this.snap();
       }
-      this.updateCamera(dt);
+      this.syncScene(dt);
       return;
     }
     if (this.phase === "dead") return;
@@ -196,7 +190,41 @@ export class LivePlayState implements GameState {
       this.endPlay("tackle", this.ballSpot());
     }
 
-    this.updateCamera(dt);
+    this.syncScene(dt);
+  }
+
+  /** Push the current sim state into the 3D scene (positions + camera). */
+  private syncScene(dt: number): void {
+    const m = this.app.match;
+    const focus = this.ball.carrier
+      ? this.ball.carrier.pos
+      : this.ball.state === "inAir"
+        ? this.ball.pos
+        : this.qb
+          ? this.qb.pos
+          : { x: this.startLosX, y: this.app.field.maxY / 2 };
+    this.app.scene3d.sync({
+      players: this.all,
+      ball: this.ball,
+      colorFor: (p) => this.colorFor(p),
+      focusX: focus.x,
+      focusY: focus.y,
+      dir: this.dir,
+      losX: this.startLosX,
+      firstDownX: m.firstDownX,
+      shakeX: this.app.shake.offsetX,
+      shakeY: this.app.shake.offsetY,
+      dt,
+    });
+  }
+
+  private colorFor(p: Player): { jersey: number; trim: number; onFire: boolean } {
+    const team = this.app.match.team(p.team);
+    return {
+      jersey: hexNum(team.colors.jersey),
+      trim: hexNum(team.colors.trim),
+      onFire: team.onFire,
+    };
   }
 
   private snap(): void {
@@ -261,8 +289,8 @@ export class LivePlayState implements GameState {
       if (doubleTap) {
         // Spin/juke: brief tackle-immunity + burst.
         c.jukeTimer = 0.45;
-        c.vel.x += Math.cos(c.facing) * 90;
-        c.vel.y += Math.sin(c.facing) * 90;
+        c.vel.x += Math.cos(c.facing) * 65;
+        c.vel.y += Math.sin(c.facing) * 65;
         this.app.audio.juke();
         this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
       } else if (pressed) {
@@ -276,8 +304,8 @@ export class LivePlayState implements GameState {
     if (doubleTap) {
       // Dive tackle: lunge with a larger tackle radius for a moment.
       c.diveTimer = 0.32;
-      c.vel.x += Math.cos(c.facing) * 120;
-      c.vel.y += Math.sin(c.facing) * 120;
+      c.vel.x += Math.cos(c.facing) * 95;
+      c.vel.y += Math.sin(c.facing) * 95;
     } else if (pressed) {
       this.switchDefender();
     }
@@ -285,8 +313,8 @@ export class LivePlayState implements GameState {
 
   private startDive(c: Player): void {
     c.diveTimer = 0.34;
-    c.vel.x += Math.cos(c.facing) * 110;
-    c.vel.y += Math.sin(c.facing) * 110;
+    c.vel.x += Math.cos(c.facing) * 85;
+    c.vel.y += Math.sin(c.facing) * 85;
     this.app.particles.burst(c.pos.x, c.pos.y, "#cfe8d4", 6, 70);
     // The dive ends the play shortly after, securing the spot.
   }
@@ -315,7 +343,7 @@ export class LivePlayState implements GameState {
 
   private throwPass(from: Player, target: Vec2): void {
     const distToTarget = dist(from.pos, target);
-    const speed = 520 + Math.min(260, distToTarget * 0.7);
+    const speed = 360 + Math.min(200, distToTarget * 0.6);
     const loft = distToTarget > 360 ? 1.5 : 1.0;
     this.ball.throwTo(from, target, speed, loft);
     this.passThrown = true;
@@ -423,7 +451,7 @@ export class LivePlayState implements GameState {
 
       // Tackle. Big hit if the defender is turbo/diving or closing fast.
       const closing = Math.hypot(d.vel.x - carrier.vel.x, d.vel.y - carrier.vel.y);
-      const big = d.turbo || d.diveTimer > 0 || closing > 230;
+      const big = d.turbo || d.diveTimer > 0 || closing > 160;
       this.doTackle(d, carrier, big, closing);
       return;
     }
@@ -442,7 +470,7 @@ export class LivePlayState implements GameState {
       this.app.time.bigHit();
       this.app.shake.add(0.55);
       this.app.particles.spark(hx, hy, dirX, dirY, 18);
-      this.app.audio.hit(Math.min(1, closing / 380 + 0.4));
+      this.app.audio.hit(Math.min(1, closing / 260 + 0.4));
       this.app.floating.add(pickHitWord(), hx, hy - 16, { size: 28, color: "#ffd23a" });
       this.app.audio.crowdCheer();
     } else {
@@ -490,10 +518,8 @@ export class LivePlayState implements GameState {
     defTeam.streak++;
     if (defTeam.igniteIfReady()) {
       this.app.audio.fire();
-      this.app.floating.add("ON FIRE!", this.app.cam.cx, this.app.cam.cy - 60, {
-        size: 30,
-        color: "#ff8a1e",
-      });
+      const s = this.ballSpot();
+      this.app.floating.add("ON FIRE!", s.x, s.y, { size: 30, color: "#ff8a1e", life: 1.4 });
     }
   }
 
@@ -577,24 +603,6 @@ export class LivePlayState implements GameState {
     }
   }
 
-  private updateCamera(dt: number): void {
-    const focus = this.ball.carrier ?? (this.ball.state === "inAir" ? this.ballPos() : this.qb);
-    if (focus) {
-      const target = "pos" in focus ? focus.pos : focus;
-      this.app.cam.follow(target as Vec2, 0.12, dt);
-    }
-    this.app.cam.clampToBounds(
-      this.app.field.minX,
-      this.app.field.minY,
-      this.app.field.maxX,
-      this.app.field.maxY,
-    );
-  }
-
-  private ballPos(): { pos: Vec2 } {
-    return { pos: this.ball.pos };
-  }
-
   // --- render ---------------------------------------------------------------
 
   render(): void {
@@ -602,20 +610,14 @@ export class LivePlayState implements GameState {
     const r = app.r;
     const m = app.match;
 
-    app.cam.apply(r.ctx, r.dpr);
-    app.field.render(r, app.cam);
-    this.renderMarkers();
-    // Draw players sorted by Y for a pseudo-depth feel.
-    const sorted = [...this.all].sort((a, b) => a.pos.y - b.pos.y);
-    for (const p of sorted) {
-      p.render(r, m.team(p.team).colors, m.team(p.team).onFire);
-    }
-    this.ball.render(r);
-    app.particles.render(r);
-    app.floating.render(r);
-    app.cam.reset(r.ctx);
+    // The 3D field + players are drawn to the WebGL canvas; sync happens in update().
+    app.scene3d.render();
 
-    // Screen-space UI.
+    // FX and UI are drawn on the transparent 2D overlay above the 3D scene.
+    const project = this.project;
+    app.particles.render(r, project);
+    app.floating.render(r, project);
+
     this.hud.render(r, m, {
       turbo: this.turbo,
       possessionLabel: this.phase === "presnap" ? (this.humanIsOffense ? "TAP ACTION TO HIKE" : "DEFENSE — TAP TO SWITCH") : undefined,
@@ -623,6 +625,9 @@ export class LivePlayState implements GameState {
     app.input.setLayout(this.controls.computeLayout(r));
     this.controls.render(r, app.input, this.controlLabels());
   }
+
+  /** Projector bound to the 3D camera, for overlay FX/text. */
+  private project = (x: number, y: number, h: number) => this.app.scene3d.project(x, y, h);
 
   private controlLabels(): { turbo: string; action: string } {
     if (this.humanIsOffense) {
@@ -635,17 +640,14 @@ export class LivePlayState implements GameState {
     return { turbo: "TURBO", action: "SWITCH" };
   }
 
-  /** Draw the line of scrimmage and the bright first-down line. */
-  private renderMarkers(): void {
-    const r = this.app.r;
-    const f = this.app.field;
-    r.line(this.startLosX, f.minY, this.startLosX, f.maxY, "rgba(40,80,255,0.6)", 2.5);
-    r.line(this.app.match.firstDownX, f.minY, this.app.match.firstDownX, f.maxY, "rgba(255,215,40,0.85)", 3);
-  }
-
   exit(): void {
     this.app.audio.stopCrowd();
   }
+}
+
+/** Convert a "#rrggbb" CSS color to a numeric hex for Three.js materials. */
+function hexNum(css: string): number {
+  return parseInt(css.replace("#", ""), 16);
 }
 
 function pickHitWord(): string {

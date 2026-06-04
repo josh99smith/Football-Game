@@ -9,6 +9,7 @@ import { ScreenShake } from "./fx/ScreenShake";
 import { TimeScale } from "./fx/TimeScale";
 import type { GameState } from "./GameState";
 import { Field } from "../game/Field";
+import { Scene3D } from "../game/Scene3D";
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
@@ -31,6 +32,7 @@ export class GameApp {
   readonly input: Input;
   readonly audio: AudioManager;
   readonly field: Field;
+  readonly scene3d: Scene3D;
 
   readonly particles: ParticleSystem;
   readonly floating: FloatingText;
@@ -56,13 +58,15 @@ export class GameApp {
 
   private rotatePrompt: HTMLElement | null;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, canvas3d: HTMLCanvasElement) {
     this.r = new Renderer(canvas);
     this.cam = new Camera();
     this.cam.setViewport(this.r.width, this.r.height);
     this.input = new Input(canvas);
     this.audio = new AudioManager();
     this.field = new Field();
+    this.scene3d = new Scene3D(canvas3d, this.field);
+    this.scene3d.setVisible(false);
     this.particles = new ParticleSystem();
     this.floating = new FloatingText();
     this.shake = new ScreenShake();
@@ -99,6 +103,7 @@ export class GameApp {
   private onResize = (): void => {
     this.r.resize();
     this.cam.setViewport(this.r.width, this.r.height);
+    this.scene3d.resize(this.r.width, this.r.height, this.r.dpr);
     this.updateOrientationPrompt();
   };
 
@@ -128,12 +133,16 @@ export class GameApp {
       this.state?.exit?.();
       this.state = this.nextState;
       this.nextState = null;
+      // Hide the 3D field by default; only LivePlayState re-shows it on enter.
+      this.scene3d.setVisible(false);
       this.state.enter?.();
     }
   };
 
   private draw = (alpha: number): void => {
-    this.r.begin("#06210e");
+    // The 2D canvas is a transparent overlay above the WebGL field; each state
+    // paints its own opaque background (menus) or leaves it clear (live play).
+    this.r.clear();
     this.state?.render(alpha);
   };
 }

@@ -14,7 +14,8 @@ export class Renderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    const ctx = canvas.getContext("2d", { alpha: false });
+    // alpha:true so the 2D layer can be a transparent overlay above the WebGL field.
+    const ctx = canvas.getContext("2d", { alpha: true });
     if (!ctx) throw new Error("2D canvas context unavailable");
     this.ctx = ctx;
     this.resize();
@@ -46,6 +47,13 @@ export class Renderer {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, this.width, this.height);
+  }
+
+  /** Reset the transform and clear to full transparency (overlay above the 3D scene). */
+  clear(): void {
+    const { ctx } = this;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, this.width, this.height);
   }
 
   save(): void {

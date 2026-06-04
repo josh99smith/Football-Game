@@ -3,9 +3,10 @@ import { GameApp } from "./engine/Game";
 import { MenuState } from "./game/states/MenuState";
 
 const canvas = document.getElementById("game") as HTMLCanvasElement | null;
-if (!canvas) throw new Error("missing #game canvas");
+const canvas3d = document.getElementById("game3d") as HTMLCanvasElement | null;
+if (!canvas || !canvas3d) throw new Error("missing game canvases");
 
-const app = new GameApp(canvas);
+const app = new GameApp(canvas, canvas3d);
 app.start(new MenuState(app));
 
 // Resume audio on the very first interaction (autoplay policy).

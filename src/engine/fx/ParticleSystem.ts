@@ -1,20 +1,29 @@
 import type { Renderer } from "../Renderer";
 import { rand, randInt } from "../math/random";
 
+/** Projects a field-world point (+ pixel height) to overlay screen coordinates. */
+export type Projector = (x: number, y: number, h: number) => { x: number; y: number; visible: boolean };
+
 interface Particle {
-  x: number;
-  y: number;
+  x: number; // field-plane X (world px)
+  y: number; // field-plane Y (world px)
+  h: number; // height above the field (world px)
   vx: number;
   vy: number;
+  vh: number;
   life: number;
   maxLife: number;
   size: number;
   color: string;
   drag: number;
-  gravity: number;
+  gravity: number; // pulls height down
 }
 
-/** Simple world-space particle pool for dust, sparks, and fire. */
+/**
+ * World-space particle pool. Particles live on the field plane (x,y) with a height
+ * (h); they are projected to the screen by the 3D camera at render time so dust
+ * scatters on the turf while fire/confetti rise convincingly.
+ */
 export class ParticleSystem {
   private readonly pool: Particle[] = [];
 
@@ -22,28 +31,21 @@ export class ParticleSystem {
     this.pool.push(p);
   }
 
-  /** A puff of dust on tackles / cuts. */
+  /** A puff of dust on tackles / cuts (scatters along the ground). */
   burst(x: number, y: number, color: string, count = 10, speed = 120): void {
     for (let i = 0; i < count; i++) {
       const a = rand(0, Math.PI * 2);
       const s = rand(speed * 0.3, speed);
       const life = rand(0.3, 0.7);
       this.spawn({
-        x,
-        y,
-        vx: Math.cos(a) * s,
-        vy: Math.sin(a) * s,
-        life,
-        maxLife: life,
-        size: rand(2, 5),
-        color,
-        drag: 3,
-        gravity: 0,
+        x, y, h: rand(2, 10),
+        vx: Math.cos(a) * s, vy: Math.sin(a) * s, vh: rand(20, 80),
+        life, maxLife: life, size: rand(3, 6), color, drag: 3, gravity: 220,
       });
     }
   }
 
-  /** Sparks that shoot in a rough direction (big hits). */
+  /** Sparks that shoot in a rough ground direction with some lift (big hits). */
   spark(x: number, y: number, dirX: number, dirY: number, count = 14): void {
     const base = Math.atan2(dirY, dirX);
     for (let i = 0; i < count; i++) {
@@ -51,57 +53,40 @@ export class ParticleSystem {
       const s = rand(140, 320);
       const life = rand(0.2, 0.5);
       this.spawn({
-        x,
-        y,
-        vx: Math.cos(a) * s,
-        vy: Math.sin(a) * s,
-        life,
-        maxLife: life,
-        size: rand(2, 4),
-        color: rand(0, 1) > 0.5 ? "#ffe24a" : "#ff8a1e",
-        drag: 2,
-        gravity: 0,
+        x, y, h: rand(8, 24),
+        vx: Math.cos(a) * s, vy: Math.sin(a) * s, vh: rand(120, 260),
+        life, maxLife: life, size: rand(3, 5),
+        color: rand(0, 1) > 0.5 ? "#ffe24a" : "#ff8a1e", drag: 2, gravity: 600,
       });
     }
   }
 
-  /** Continuous flame for the "ON FIRE" state — call each frame at a player's feet. */
+  /** Continuous flame rising at a player's feet — call each frame (ON FIRE). */
   fire(x: number, y: number, count = 2): void {
     for (let i = 0; i < count; i++) {
       const life = rand(0.25, 0.5);
       this.spawn({
-        x: x + rand(-6, 6),
-        y: y + rand(-4, 4),
-        vx: rand(-12, 12),
-        vy: rand(-70, -110),
-        life,
-        maxLife: life,
-        size: rand(3, 7),
+        x: x + rand(-6, 6), y: y + rand(-6, 6), h: rand(0, 8),
+        vx: rand(-8, 8), vy: rand(-8, 8), vh: rand(80, 150),
+        life, maxLife: life, size: rand(4, 9),
         color: randInt(0, 2) === 0 ? "#ffd23a" : randInt(0, 1) === 0 ? "#ff7b1e" : "#ff3b1e",
-        drag: 1,
-        gravity: 0,
+        drag: 1, gravity: -40,
       });
     }
   }
 
-  /** Confetti-ish celebration burst for touchdowns. */
+  /** Celebration burst for touchdowns (up then fall). */
   confetti(x: number, y: number, count = 40): void {
     const colors = ["#ffd23a", "#ff5a5a", "#5ad1ff", "#7bff8a", "#ff8af0"];
     for (let i = 0; i < count; i++) {
-      const a = rand(-Math.PI, 0);
-      const s = rand(120, 340);
-      const life = rand(0.7, 1.4);
+      const a = rand(0, Math.PI * 2);
+      const s = rand(40, 140);
+      const life = rand(0.8, 1.6);
       this.spawn({
-        x,
-        y,
-        vx: Math.cos(a) * s,
-        vy: Math.sin(a) * s,
-        life,
-        maxLife: life,
-        size: rand(3, 6),
-        color: colors[randInt(0, colors.length - 1)],
-        drag: 0.6,
-        gravity: 380,
+        x, y, h: rand(20, 60),
+        vx: Math.cos(a) * s, vy: Math.sin(a) * s, vh: rand(260, 460),
+        life, maxLife: life, size: rand(4, 7),
+        color: colors[randInt(0, colors.length - 1)], drag: 0.6, gravity: 520,
       });
     }
   }
@@ -117,19 +102,27 @@ export class ParticleSystem {
       }
       const d = Math.exp(-p.drag * dt);
       p.vx *= d;
-      p.vy = p.vy * d + p.gravity * dt;
+      p.vy *= d;
+      p.vh = p.vh * d - p.gravity * dt;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
+      p.h += p.vh * dt;
+      if (p.h < 0) {
+        p.h = 0;
+        p.vh = 0;
+      }
     }
   }
 
-  /** Draw in world space (call between camera apply/reset). */
-  render(r: Renderer): void {
+  /** Draw all particles, projecting each to the screen. */
+  render(r: Renderer, project: Projector): void {
     const ctx = r.ctx;
     for (const p of this.pool) {
+      const s = project(p.x, p.y, p.h);
+      if (!s.visible) continue;
       ctx.globalAlpha = Math.max(0, Math.min(1, p.life / p.maxLife));
       ctx.fillStyle = p.color;
-      ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+      ctx.fillRect(s.x - p.size / 2, s.y - p.size / 2, p.size, p.size);
     }
     ctx.globalAlpha = 1;
   }

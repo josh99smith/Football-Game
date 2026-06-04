@@ -11,5 +11,7 @@ export default defineConfig({
   build: {
     target: "es2020",
     outDir: "dist",
+    // Three.js is a single ~500kb chunk; that's expected for a 3D game.
+    chunkSizeWarningLimit: 1200,
   },
 });

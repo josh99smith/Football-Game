@@ -66,6 +66,7 @@ export class PlayResultState implements GameState {
 
   render(): void {
     const r = this.app.r;
+    this.app.r.begin("#0a2b14");
     this.hud.render(r, this.app.match, { turbo: 1 });
 
     const w = Math.min(420, r.width - 40);

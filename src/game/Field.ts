@@ -64,6 +64,74 @@ export class Field {
     return Math.max(this.minY + 2, Math.min(this.maxY - 2, y));
   }
 
+  /**
+   * Draw the full field markings into a 2D context in field-pixel space (0..FIELD_LENGTH
+   * by 0..FIELD_WIDTH). Used to bake a texture for the 3D turf plane.
+   */
+  drawTexture(ctx: CanvasRenderingContext2D): void {
+    // Turf base + 5-yard mow stripes.
+    ctx.fillStyle = "#178a3c";
+    ctx.fillRect(LEFT_GOAL_X, 0, RIGHT_GOAL_X - LEFT_GOAL_X, FIELD_WIDTH);
+    for (let yd = 0; yd < FIELD_PLAY_YARDS; yd += 5) {
+      if ((yd / 5) % 2 === 0) {
+        ctx.fillStyle = "#149036";
+        ctx.fillRect(xFromLeftGoal(yd), 0, yards(5), FIELD_WIDTH);
+      }
+    }
+
+    // End zones.
+    ctx.fillStyle = "#0e6b8f";
+    ctx.fillRect(0, 0, ENDZONE_PX, FIELD_WIDTH);
+    ctx.fillStyle = "#b03a3a";
+    ctx.fillRect(RIGHT_GOAL_X, 0, ENDZONE_PX, FIELD_WIDTH);
+
+    // Yard lines + goal lines.
+    for (let yd = 0; yd <= FIELD_PLAY_YARDS; yd += 5) {
+      const x = xFromLeftGoal(yd);
+      const isGoal = yd === 0 || yd === FIELD_PLAY_YARDS;
+      ctx.strokeStyle = isGoal ? "#ffffff" : "rgba(255,255,255,0.85)";
+      ctx.lineWidth = isGoal ? 6 : 3;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, FIELD_WIDTH);
+      ctx.stroke();
+    }
+
+    // Hash marks.
+    const hashTop = FIELD_WIDTH * 0.36;
+    const hashBot = FIELD_WIDTH * 0.64;
+    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.lineWidth = 2;
+    for (let yd = 1; yd < FIELD_PLAY_YARDS; yd++) {
+      if (yd % 5 === 0) continue;
+      const x = xFromLeftGoal(yd);
+      ctx.beginPath();
+      ctx.moveTo(x, hashTop - 5);
+      ctx.lineTo(x, hashTop + 5);
+      ctx.moveTo(x, hashBot - 5);
+      ctx.lineTo(x, hashBot + 5);
+      ctx.stroke();
+    }
+
+    // Yard numbers near each sideline.
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.textAlign = "center";
+    for (let yd = 10; yd < FIELD_PLAY_YARDS; yd += 10) {
+      const label = String(yd <= 50 ? yd : 100 - yd);
+      const x = xFromLeftGoal(yd);
+      ctx.font = `900 30px "Trebuchet MS", system-ui, sans-serif`;
+      ctx.textBaseline = "top";
+      ctx.fillText(label, x, 16);
+      ctx.textBaseline = "bottom";
+      ctx.fillText(label, x, FIELD_WIDTH - 16);
+    }
+
+    // Sideline borders.
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 5;
+    ctx.strokeRect(0, 0, FIELD_LENGTH, FIELD_WIDTH);
+  }
+
   /** Draw the field (turf, end zones, yard lines, hash marks, numbers) in world space. */
   render(r: Renderer, cam: Camera): void {
     const ctx = r.ctx;

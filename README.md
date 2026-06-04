@@ -1,9 +1,10 @@
 # 🏈 Gridiron Blitz
 
 A **mobile-first arcade American football game** in the spirit of *NFL Blitz* and
-*Tecmo Bowl* — fast, loud, and over-the-top. Built from scratch with **HTML5 Canvas +
-TypeScript** (custom engine, no game framework) and **zero external assets**: all art
-is drawn procedurally and all sound is synthesized with the Web Audio API.
+*Tecmo Bowl* — fast, loud, and over-the-top. Rendered in **real 3D with Three.js (WebGL)**
+on a custom TypeScript game engine, with a 2D canvas HUD/controls overlay. **Zero
+external art/audio assets**: the turf texture is generated procedurally and all sound is
+synthesized with the Web Audio API.
 
 > 7-on-7. 30 yards for a first down. Turbo. Big hits. ON FIRE. Pick a play and go.
 
@@ -53,20 +54,23 @@ sprint for the burst, but pick your moments.
 
 ## How it's built
 
-A clean split between a reusable **engine** and the **game** logic:
+A clean split between a reusable **engine**, the **game** logic, and **rendering**:
 
 ```
 src/
-  engine/     fixed-timestep loop, renderer, camera, unified touch+keyboard input,
+  engine/     fixed-timestep loop, 2D overlay renderer, unified touch+keyboard input,
               synthesized audio, and FX (particles, screen shake, floating text, slow-mo)
   game/       field geometry, players/ball, playbook, steering + offense/defense AI,
-              the Match/rules model, and the state machine (menu → kickoff → play
-              select → live play → result → game over)
+              the Match/rules model, the Three.js scene (Scene3D), and the state machine
+              (menu → kickoff → play select → live play → result → game over)
   ui/         HUD scoreboard, on-screen touch controls, menu widgets
 ```
 
-- **Fixed-timestep** simulation (60 Hz) with interpolated rendering for stable feel.
-- **Camera** follows the action and scrolls the field; DPR-aware crisp rendering.
+- **2D simulation, 3D presentation**: all gameplay (AI, rules, physics) runs in 2D field
+  space; `Scene3D` renders it as a real 3D world (perspective camera, 3D player models,
+  lit turf, blob shadows) and projects FX/text back onto the 2D overlay.
+- **Fixed-timestep** simulation (60 Hz) with a high camera that follows the ball from
+  behind the offense.
 - **Steering-based AI**: blockers wall rushers via mass-weighted body collisions,
   receivers run routes, defenders cover/blitz/spy and pursue ball carriers.
 - **PWA-ready** (`manifest.webmanifest`) so it can be installed to a phone home screen.

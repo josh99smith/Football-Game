@@ -26,11 +26,25 @@ body {
   height: 100%;
 }
 
+#game3d,
 #game {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
   touch-action: none;
+}
+
+/* WebGL field sits behind the 2D overlay (HUD, controls, menus, FX). */
+#game3d {
+  z-index: 0;
+  background: #06210e;
+}
+
+#game {
+  z-index: 1;
+  background: transparent;
 }
 
 .overlay {
