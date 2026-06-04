@@ -10,6 +10,10 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
   const { offense, carrier } = ctx;
   const carrierRunning = !!carrier && carrier.role !== "QB";
 
+  // Coordinate blocking: assign each blocker to the most dangerous unclaimed rusher
+  // (closest to whoever we're protecting), so free blitzers actually get picked up.
+  assignBlocks(ctx, carrierRunning);
+
   for (const o of offense) {
     if (o === controlled || o.isDown) continue;
     if (o === carrier) continue; // the ball carrier is driven by player/CPU controller
@@ -21,16 +25,15 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
     switch (job) {
       case "block": {
         const protect = carrier ?? ctx.qb;
-        // Each blocker engages the nearest rusher to itself so they spread across
-        // threats and form a wall, then stays on the protected-player side of them.
-        const threat = nearestDefenderTo(ctx, o.pos);
+        const threat = o.blockTarget && !o.blockTarget.isDown ? o.blockTarget : nearestDefenderTo(ctx, o.pos);
         if (threat && protect) {
+          // Get on the protected-player side of the rusher and wall them off.
           const block: Vec2 = {
             x: threat.pos.x + Math.sign(protect.pos.x - threat.pos.x) * 8,
             y: threat.pos.y,
           };
           steer = seek(o.pos, block);
-          o.turbo = dist(o.pos, threat.pos) > 60;
+          o.turbo = dist(o.pos, threat.pos) > 55;
         }
         break;
       }
@@ -60,6 +63,40 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
 
     const sep = separation(o, offense, 24);
     o.desired = addSteer(steer, sep, 0.35);
+  }
+}
+
+/** Greedily pair each blocker with the most threatening unclaimed rusher. */
+function assignBlocks(ctx: PlayContext, carrierRunning: boolean): void {
+  const protect = ctx.carrier ?? ctx.qb;
+  const blockers = ctx.offense.filter(
+    (o) => !o.isDown && (o.job === "block" || (carrierRunning && o.job !== "qb")),
+  );
+  for (const b of blockers) b.blockTarget = null;
+  if (!protect) return;
+
+  // Threats: defenders nearest to whoever we're protecting come first.
+  const threats = ctx.defense
+    .filter((d) => !d.isDown)
+    .sort((a, b) => dist(a.pos, protect.pos) - dist(b.pos, protect.pos));
+
+  const taken = new Set<Player>();
+  for (const threat of threats) {
+    let best: Player | null = null;
+    let bestD = Infinity;
+    for (const b of blockers) {
+      if (taken.has(b)) continue;
+      const d = dist(b.pos, threat.pos);
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
+    }
+    if (best) {
+      best.blockTarget = threat;
+      taken.add(best);
+    }
+    if (taken.size === blockers.length) break;
   }
 }
 

@@ -20,9 +20,11 @@ type Phase = "presnap" | "live" | "dead";
 const PRESNAP_TIME = 0.9;
 const MAX_PLAY_TIME = 16;
 const DIFFICULTY = {
-  rookie: { pick: 0.1, cpuSpeed: 0.92 },
-  pro: { pick: 0.18, cpuSpeed: 0.97 },
-  allpro: { pick: 0.3, cpuSpeed: 1.02 },
+  // reactBase/reactRate control how fast the pass rush + pursuit ramp up after the
+  // snap — lower = more time in the pocket and bigger running lanes.
+  rookie: { pick: 0.1, cpuSpeed: 0.92, reactBase: 0.28, reactRate: 0.9 },
+  pro: { pick: 0.18, cpuSpeed: 0.97, reactBase: 0.4, reactRate: 1.2 },
+  allpro: { pick: 0.3, cpuSpeed: 1.02, reactBase: 0.52, reactRate: 1.55 },
 };
 
 /**
@@ -406,8 +408,10 @@ export class LivePlayState implements GameState {
 
   private moveAll(dt: number): void {
     const m = this.app.match;
-    // Defense ramps up over the first ~0.5s after the snap so plays can develop.
-    const react = Math.min(1, 0.4 + this.playTime * 1.2);
+    // Defense ramps up after the snap so plays can develop; the rate scales with
+    // difficulty (Rookie gives more pocket time and bigger lanes).
+    const diff = DIFFICULTY[m.difficulty];
+    const react = Math.min(1, diff.reactBase + this.playTime * diff.reactRate);
     for (const p of this.all) {
       if (p.isDown) {
         p.step(dt, 0);
@@ -721,6 +725,7 @@ export class LivePlayState implements GameState {
     this.hud.render(r, m, {
       turbo: this.turbo,
       possessionLabel: this.phase === "presnap" ? (this.humanIsOffense ? "TAP ACTION TO HIKE" : "DEFENSE — TAP TO SWITCH") : undefined,
+      playClock: this.phase === "presnap" ? this.snapTimer : undefined,
     });
     app.input.setLayout(this.controls.computeLayout(r));
     this.controls.render(r, app.input, this.controlLabels());

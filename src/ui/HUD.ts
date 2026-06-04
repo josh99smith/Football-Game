@@ -1,14 +1,18 @@
 import type { Renderer } from "../engine/Renderer";
 import type { Match } from "../game/Match";
+import { LEFT_GOAL_X, RIGHT_GOAL_X } from "../game/Field";
 
-/** Top scoreboard: score, quarter, clock, down & distance, possession, fire, turbo. */
+/** Top scoreboard: score, quarter, clock, down & distance, possession, field bar. */
 export class HUD {
-  render(r: Renderer, match: Match, opts: { turbo: number; possessionLabel?: string }): void {
+  render(
+    r: Renderer,
+    match: Match,
+    opts: { turbo: number; possessionLabel?: string; playClock?: number },
+  ): void {
     const ctx = r.ctx;
     const w = r.width;
     const barH = 46;
 
-    // Scoreboard background.
     ctx.fillStyle = "rgba(8, 20, 12, 0.86)";
     ctx.fillRect(0, 0, w, barH);
     ctx.fillStyle = "rgba(255,255,255,0.12)";
@@ -16,23 +20,16 @@ export class HUD {
 
     const home = match.home;
     const away = match.away;
+    this.teamChip(r, 12, 8, home.config.abbr, home.config.colors.jersey, home.score, home.onFire, "left", match.possession === "HOME");
+    this.teamChip(r, w - 12, 8, away.config.abbr, away.config.colors.jersey, away.score, away.onFire, "right", match.possession === "AWAY");
 
-    // Home (left).
-    this.teamChip(r, 12, 8, home.config.abbr, home.config.colors.jersey, home.score, home.onFire, "left");
-    // Away (right).
-    this.teamChip(r, w - 12, 8, away.config.abbr, away.config.colors.jersey, away.score, away.onFire, "right");
-
-    // Center: quarter + clock.
     const mins = Math.floor(match.clock / 60);
     const secs = Math.floor(match.clock % 60);
-    const clockStr = `${mins}:${secs.toString().padStart(2, "0")}`;
-    r.text(`Q${match.quarter}`, w / 2, 12, { size: 13, align: "center", color: "#ffd23a", baseline: "top" });
-    r.text(clockStr, w / 2, 26, { size: 20, align: "center", color: "#fff", baseline: "top" });
+    r.text(`Q${match.quarter}`, w / 2, 8, { size: 13, align: "center", color: "#ffd23a", baseline: "top" });
+    r.text(`${mins}:${secs.toString().padStart(2, "0")}`, w / 2, 22, { size: 20, align: "center", color: "#fff", baseline: "top" });
 
-    // Down & distance + ball spot, just under center.
-    const dd = match.isGoalToGo()
-      ? `${ordinal(match.down)} & GOAL`
-      : `${ordinal(match.down)} & ${match.distanceYards}`;
+    // Down & distance.
+    const dd = match.isGoalToGo() ? `${ordinal(match.down)} & GOAL` : `${ordinal(match.down)} & ${match.distanceYards}`;
     const possName = match.team(match.possession).config.abbr;
     r.text(`${possName}  ${dd}  ·  ${match.fieldSideLabel()}`, w / 2, barH + 6, {
       size: 13,
@@ -41,17 +38,67 @@ export class HUD {
       baseline: "top",
     });
 
+    this.fieldBar(r, match, barH + 24);
+
     if (opts.possessionLabel) {
-      r.text(opts.possessionLabel, w / 2, barH + 24, {
-        size: 12,
-        align: "center",
-        color: "#ffd23a",
+      r.text(opts.possessionLabel, w / 2, barH + 48, { size: 12, align: "center", color: "#ffd23a", baseline: "top" });
+    }
+    if (opts.playClock !== undefined) {
+      r.text(`:${Math.ceil(opts.playClock).toString().padStart(2, "0")}`, w / 2 + 64, 22, {
+        size: 16,
+        align: "left",
+        color: opts.playClock < 1 ? "#ff6a6a" : "#9fd9b0",
         baseline: "top",
       });
     }
 
-    // Turbo meter (bottom-left).
     this.turboMeter(r, opts.turbo);
+  }
+
+  /** A compact field showing the ball spot and first-down line for orientation. */
+  private fieldBar(r: Renderer, match: Match, y: number): void {
+    const ctx = r.ctx;
+    const bw = Math.min(360, r.width * 0.5);
+    const x = (r.width - bw) / 2;
+    const h = 9;
+    const span = RIGHT_GOAL_X - LEFT_GOAL_X;
+    const frac = (wx: number) => (Math.max(LEFT_GOAL_X, Math.min(RIGHT_GOAL_X, wx)) - LEFT_GOAL_X) / span;
+
+    // Field + end-zone caps (left = HOME's own goal, right = HOME's target).
+    ctx.fillStyle = "#0f5a2a";
+    ctx.fillRect(x, y, bw, h);
+    ctx.fillStyle = "#0e6b8f";
+    ctx.fillRect(x - 7, y, 7, h);
+    ctx.fillStyle = "#b03a3a";
+    ctx.fillRect(x + bw, y, 7, h);
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 7, y, bw + 14, h);
+
+    // First-down line (yellow) + ball spot (white).
+    const fdx = x + frac(match.firstDownX) * bw;
+    ctx.fillStyle = "#ffd23a";
+    ctx.fillRect(fdx - 1, y - 2, 2, h + 4);
+    const bx = x + frac(match.losX) * bw;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.moveTo(bx, y - 3);
+    ctx.lineTo(bx - 4, y - 8);
+    ctx.lineTo(bx + 4, y - 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(bx - 1, y - 3, 2, h + 3);
+
+    // Possession direction arrow.
+    const dir = match.attackDir(match.possession);
+    ctx.fillStyle = match.team(match.possession).config.colors.jersey;
+    const ay = y + h + 7;
+    ctx.beginPath();
+    ctx.moveTo(bx + dir * 7, ay);
+    ctx.lineTo(bx, ay - 4);
+    ctx.lineTo(bx, ay + 4);
+    ctx.closePath();
+    ctx.fill();
   }
 
   private teamChip(
@@ -63,12 +110,12 @@ export class HUD {
     score: number,
     onFire: boolean,
     align: "left" | "right",
+    hasBall: boolean,
   ): void {
     const ctx = r.ctx;
     ctx.save();
-    // Color swatch.
-    ctx.fillStyle = color;
     const swX = align === "left" ? x : x - 26;
+    ctx.fillStyle = color;
     ctx.fillRect(swX, y, 26, 30);
     if (onFire) {
       ctx.strokeStyle = "#ff7b1e";
@@ -87,6 +134,17 @@ export class HUD {
       align: align === "left" ? "left" : "right",
       baseline: "top",
     });
+    // Possession football icon.
+    if (hasBall) {
+      const fx = align === "left" ? x + 34 + r.measureText(String(score), 22) + 12 : x - 34 - r.measureText(String(score), 22) - 12;
+      ctx.fillStyle = "#8a4b22";
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(fx, y + 22, 7, 4.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
     ctx.restore();
   }
 

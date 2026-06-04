@@ -99,9 +99,10 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
       steer = seek(d.pos, huntTarget);
       d.turbo = true;
     } else if (carrierIsRunning && carrier) {
-      // Pursue the ball carrier; only turbo to close from real distance so runners
-      // have room to make a move instead of being instantly run down.
-      steer = pursue(d.pos, carrier);
+      // Take a proper pursuit angle: aim at an interception point on the carrier's
+      // path, biased to the goal side so defenders keep leverage and funnel the
+      // runner instead of trailing them.
+      steer = seek(d.pos, interceptPoint(d, carrier, ctx));
       d.turbo = dist2(d.pos, carrier.pos) > 95 * 95;
     } else {
       switch (d.job) {
@@ -113,6 +114,12 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
           break;
         }
         case "cover": {
+          // Break on the ball once it's in the air.
+          if (ball.state === "inAir") {
+            steer = seek(d.pos, ball.target);
+            d.turbo = true;
+            break;
+          }
           if (d.assignment && !d.assignment.isDown) {
             // Trail the receiver, staying a touch toward our own goal (downfield).
             const lead = pursue(d.pos, d.assignment, 0.12);
@@ -153,6 +160,19 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
     d.desired = addSteer(steer, sep, 0.5);
   }
   void CENTER_Y_FALLBACK;
+}
+
+/** Where a defender should aim to cut off the ball carrier (lead + goal-side leverage). */
+function interceptPoint(d: Player, carrier: Player, ctx: PlayContext): Vec2 {
+  const toX = carrier.pos.x - d.pos.x;
+  const toY = carrier.pos.y - d.pos.y;
+  const dist = Math.hypot(toX, toY) || 1;
+  const lead = Math.min(0.9, dist / (d.baseSpeed * 1.25));
+  const px = carrier.pos.x + carrier.vel.x * lead;
+  const py = carrier.pos.y + carrier.vel.y * lead;
+  // Stay on the goal side of the runner so they can't just bounce upfield past us.
+  const aheadX = carrier.pos.x + ctx.dir * 6;
+  return { x: ctx.dir > 0 ? Math.max(px, aheadX) : Math.min(px, aheadX), y: py };
 }
 
 function pastLine(p: Player, ctx: PlayContext): boolean {

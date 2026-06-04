@@ -3,13 +3,13 @@ import type { GameState } from "../../engine/GameState";
 import type { Renderer } from "../../engine/Renderer";
 import { HUD } from "../../ui/HUD";
 import { drawPanel, tappedIn, type Rect } from "../../ui/widgets";
-import { pick } from "../../engine/math/random";
 import {
   OFFENSE_PLAYS,
   DEFENSE_PLAYS,
   type OffensePlay,
   type DefensePlay,
 } from "../Playbook";
+import { cpuOffensePlay, cpuDefensePlay } from "../ai/PlayCaller";
 import { LivePlayState } from "./LivePlayState";
 
 /**
@@ -67,8 +67,9 @@ export class PlaySelectState implements GameState {
   }
 
   private choose(off?: OffensePlay, def?: DefensePlay): void {
-    const offensePlay = off ?? pick(OFFENSE_PLAYS);
-    const defensePlay = def ?? pick(DEFENSE_PLAYS);
+    // The human picks for their side; the CPU calls the opposing play situationally.
+    const offensePlay = off ?? cpuOffensePlay(this.app.match);
+    const defensePlay = def ?? cpuDefensePlay(this.app.match);
     this.app.setState(new LivePlayState(this.app, offensePlay, defensePlay));
   }
 
@@ -86,16 +87,19 @@ export class PlaySelectState implements GameState {
 
     for (const card of this.cards) {
       const name = card.off?.name ?? card.def?.name ?? "";
-      const blurb = card.off?.blurb ?? card.def?.blurb ?? "";
       drawPanel(r, card.rect, "rgba(10,40,22,0.95)");
-      r.text(name, card.rect.x + card.rect.w / 2, card.rect.y + 30, {
-        size: 22,
+      r.text(name, card.rect.x + card.rect.w / 2, card.rect.y + 26, {
+        size: 21,
         align: "center",
         color: "#fff",
       });
-      wrapText(r, blurb, card.rect.x + 12, card.rect.y + 58, card.rect.w - 24, 18);
-      const badge = card.off ? (card.off.isRun ? "RUN" : "PASS") : (card.def?.name ?? "");
-      r.text(card.off ? badge : "MAN/ZONE", card.rect.x + card.rect.w / 2, card.rect.y + card.rect.h - 18, {
+      // Diagram region.
+      const diag = { x: card.rect.x + 10, y: card.rect.y + 40, w: card.rect.w - 20, h: card.rect.h - 70 };
+      if (card.off) this.drawOffenseDiagram(r, diag, card.off);
+      else if (card.def) this.drawDefenseDiagram(r, diag, card.def);
+
+      const badge = card.off ? (card.off.isRun ? "RUN" : "PASS") : (card.def?.scheme.toUpperCase() ?? "");
+      r.text(badge, card.rect.x + card.rect.w / 2, card.rect.y + card.rect.h - 16, {
         size: 12,
         align: "center",
         color: "#9fd9b0",
@@ -103,28 +107,102 @@ export class PlaySelectState implements GameState {
       });
     }
   }
-}
 
-function wrapText(
-  r: Renderer,
-  text: string,
-  x: number,
-  y: number,
-  maxW: number,
-  lh: number,
-): void {
-  const words = text.split(" ");
-  let line = "";
-  let yy = y;
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    if (r.measureText(test, 14) > maxW && line) {
-      r.text(line, x, yy, { size: 14, color: "#cfe", weight: "normal" });
-      line = word;
-      yy += lh;
-    } else {
-      line = test;
+  /** Mini route diagram: dots at the snap, lines tracing each receiver's route. */
+  private drawOffenseDiagram(r: Renderer, d: Rect, play: OffensePlay): void {
+    const ctx = r.ctx;
+    const cx = d.x + d.w / 2;
+    const losY = d.y + d.h * 0.74;
+    let maxFwd = 12;
+    for (const s of play.slots) for (const wp of s.route ?? []) maxFwd = Math.max(maxFwd, wp.fwd);
+    const sy = (d.h * 0.66) / maxFwd;
+    const sx = d.w / 46;
+    const px = (lat: number) => cx + lat * sx;
+    const py = (fwd: number) => losY - fwd * sy;
+
+    // Line of scrimmage.
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(d.x, losY);
+    ctx.lineTo(d.x + d.w, losY);
+    ctx.stroke();
+
+    for (const slot of play.slots) {
+      const startX = px(slot.start.lat);
+      const startY = py(slot.start.fwd);
+      if (slot.route && slot.route.length) {
+        ctx.strokeStyle = "#ffd23a";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        for (const wp of slot.route) ctx.lineTo(px(wp.lat), py(wp.fwd));
+        ctx.stroke();
+      }
+      // Player dot (QB/run highlighted).
+      ctx.fillStyle = slot.job === "qb" ? "#ff7b1e" : slot.job === "run" ? "#28c0ff" : "#fff";
+      ctx.beginPath();
+      ctx.arc(startX, startY, slot.job === "block" ? 2 : 3, 0, Math.PI * 2);
+      ctx.fill();
+      if (slot.job === "run") {
+        ctx.strokeStyle = "#28c0ff";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(startX, py(8));
+        ctx.stroke();
+      }
     }
   }
-  if (line) r.text(line, x, yy, { size: 14, color: "#cfe", weight: "normal" });
+
+  /** Simple defensive scheme icon. */
+  private drawDefenseDiagram(r: Renderer, d: Rect, play: DefensePlay): void {
+    const ctx = r.ctx;
+    const cx = d.x + d.w / 2;
+    const losY = d.y + d.h * 0.4;
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(d.x, losY);
+    ctx.lineTo(d.x + d.w, losY);
+    ctx.stroke();
+
+    const reds = [-1.6, -0.6, 0.6, 1.6];
+    if (play.scheme === "blitz") {
+      // Arrows charging the line.
+      ctx.strokeStyle = "#ff5a5a";
+      ctx.lineWidth = 2;
+      for (const k of reds) {
+        const x = cx + k * 26;
+        ctx.beginPath();
+        ctx.moveTo(x, losY + 34);
+        ctx.lineTo(x, losY + 6);
+        ctx.moveTo(x - 4, losY + 12);
+        ctx.lineTo(x, losY + 6);
+        ctx.lineTo(x + 4, losY + 12);
+        ctx.stroke();
+      }
+    } else if (play.scheme === "spy") {
+      ctx.fillStyle = "#ff5a5a";
+      ctx.beginPath();
+      ctx.arc(cx, losY + 22, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#ff5a5a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, losY + 16);
+      ctx.lineTo(cx, losY + 2);
+      ctx.stroke();
+    } else {
+      // Coverage hooks.
+      ctx.strokeStyle = "#5aa9ff";
+      ctx.lineWidth = 2;
+      for (const k of [-1.4, 0, 1.4]) {
+        const x = cx + k * 30;
+        ctx.beginPath();
+        ctx.arc(x, losY + 20, 8, Math.PI, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }
 }
