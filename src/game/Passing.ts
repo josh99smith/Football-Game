@@ -81,43 +81,45 @@ export function resolveAir(
 ): CatchResult | null {
   if (ball.state !== "inAir") return null;
 
-  // Only contest the ball as it ARRIVES (past the apex / near the target). This stops
-  // rushers next to the QB from "catching" the pass the instant it's released.
-  const arriving = ball.flightProgress > 0.5 || ball.distToTarget < 60;
-  const reachable = arriving && ball.z < CATCH_HEIGHT;
-
-  if (reachable) {
-    const def = nearestInRange(ball.pos, defense, CATCH_RADIUS);
-    // The targeted receiver gets a larger, more forgiving catch window (good reads
-    // shouldn't drop), otherwise fall back to the nearest eligible receiver.
-    let rcv: Player | null = null;
-    if (intended && !intended.isDown && dist(ball.pos, intended.pos) < CATCH_RADIUS * 1.35) {
-      rcv = intended;
-    } else {
-      rcv = nearestInRange(
-        ball.pos,
-        offense.filter((p) => p !== ball.thrownBy && p.job !== "block"),
-        CATCH_RADIUS,
-      );
-    }
-
-    if (def && rcv) {
-      const dDef = dist(ball.pos, def.pos);
-      const dRcv = dist(ball.pos, rcv.pos);
-      // The defender must clearly beat the receiver to the ball; the targeted man
-      // gets extra benefit of the doubt on contested balls.
-      const margin = rcv === intended ? 18 : 4;
-      if (dDef < dRcv - margin) {
-        return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
-      }
-      return Math.random() < pickChance * 0.2 ? { intercepted: def } : { caught: rcv };
-    }
-    if (rcv) return { caught: rcv };
-    if (def) return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
+  // Resolve the pass ONLY once the ball actually arrives at the catch point — near its
+  // target spot, or on the ground — and is low enough to be caught. Resolving mid-flight
+  // (the old flightProgress>0.5 check) let a trailing defender by the QB force an
+  // incomplete on flat passes before the receiver ever got there.
+  const atCatchPoint = ball.distToTarget < CATCH_RADIUS || landed;
+  if (!atCatchPoint || ball.z >= CATCH_HEIGHT) {
+    return landed ? { incomplete: true } : null;
   }
 
-  if (landed) return { incomplete: true };
-  return null;
+  // Find the catcher and nearest defender around the arrival point. Receivers are led
+  // to the target, so search generously; the targeted man gets the most benefit.
+  const def = nearestInRange(ball.pos, defense, CATCH_RADIUS);
+  let rcv: Player | null = null;
+  if (intended && !intended.isDown && dist(ball.pos, intended.pos) < CATCH_RADIUS * 1.6) {
+    rcv = intended;
+  } else {
+    rcv = nearestInRange(
+      ball.pos,
+      offense.filter((p) => p !== ball.thrownBy && p.job !== "block"),
+      CATCH_RADIUS * 1.2,
+    );
+  }
+
+  if (def && rcv) {
+    const dDef = dist(ball.pos, def.pos);
+    const dRcv = dist(ball.pos, rcv.pos);
+    // The defender must clearly beat the receiver to the ball; the targeted man
+    // gets extra benefit of the doubt on contested balls.
+    const margin = rcv === intended ? 18 : 4;
+    if (dDef < dRcv - margin) {
+      return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
+    }
+    return Math.random() < pickChance * 0.2 ? { intercepted: def } : { caught: rcv };
+  }
+  if (rcv) return { caught: rcv };
+  if (def) return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
+
+  // Nobody's there yet — let the ball keep traveling; only an actual landing is incomplete.
+  return landed ? { incomplete: true } : null;
 }
 
 function nearestInRange(point: Vec2, players: Player[], radius: number): Player | null {
