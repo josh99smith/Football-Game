@@ -161,7 +161,7 @@ function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: numb
 }
 
 /** Facing offset so the model's front points along its movement direction. */
-const MODEL_FORWARD = Math.PI;
+const MODEL_FORWARD = 0;
 
 /** A skinned, animated FBX avatar, tinted to the team color. */
 class FbxAvatar implements Avatar {
