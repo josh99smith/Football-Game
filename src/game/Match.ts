@@ -141,6 +141,7 @@ export class Match {
     changedPossession: boolean;
     kickoff: boolean;
     scoringTeam?: TeamId;
+    kickReceiver?: TeamId;
   } {
     const offense = this.possession;
     const defense = this.opponent(offense);
@@ -149,12 +150,14 @@ export class Match {
       const t = this.team(offense);
       t.score += TOUCHDOWN_POINTS + PAT_POINTS; // auto PAT for v1
       this.team(defense).extinguish(); // opponent scoring puts out their fire
-      return { scored: true, changedPossession: true, kickoff: true, scoringTeam: offense };
+      // Scoring team kicks off; the team that was on defense receives.
+      return { scored: true, changedPossession: true, kickoff: true, scoringTeam: offense, kickReceiver: defense };
     }
 
     if (o.type === "safety") {
       this.team(defense).score += SAFETY_POINTS;
-      return { scored: true, changedPossession: true, kickoff: true, scoringTeam: defense };
+      // The team that conceded (offense) free-kicks; the scoring team (defense) receives.
+      return { scored: true, changedPossession: true, kickoff: true, scoringTeam: defense, kickReceiver: defense };
     }
 
     if (o.type === "interception" || o.type === "fumbleLost" || o.type === "turnoverOnDowns") {

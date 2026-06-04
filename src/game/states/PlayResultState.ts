@@ -58,9 +58,9 @@ export class PlayResultState implements GameState {
       this.app.setState(new GameOverState(this.app));
       return;
     }
-    if (this.result.kickoff && this.result.scoringTeam) {
-      const receiving = m.opponent(this.result.scoringTeam);
-      this.app.setState(new KickoffState(this.app, receiving));
+    if (this.result.kickoff && this.result.kickReceiver) {
+      // applyOutcome decides who receives (after a safety the conceding team kicks).
+      this.app.setState(new KickoffState(this.app, this.result.kickReceiver));
       return;
     }
     this.app.setState(new PlaySelectState(this.app));

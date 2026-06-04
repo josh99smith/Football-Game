@@ -325,7 +325,7 @@ class FbxAvatar implements Avatar {
     this.defTackleAction = clips.defTackle ? this.mixer.clipAction(clips.defTackle) : null;
     this.defSwatAction = clips.defSwat ? this.mixer.clipAction(clips.defSwat) : null;
     this.celebrateAction = clips.celebrate ? this.mixer.clipAction(clips.celebrate) : null;
-    for (const a of [this.idleAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
+    for (const a of [this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
       a?.setLoop(THREE.LoopRepeat, Infinity);
       a?.play();
       a?.setEffectiveWeight(0);
@@ -333,6 +333,14 @@ class FbxAvatar implements Avatar {
     for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction]) {
       a?.setLoop(THREE.LoopOnce, 1);
       if (a) a.clampWhenFinished = true;
+    }
+    // The stance settles into a 3-point and HOLDS — play it once and clamp the final
+    // (hand-down) pose so players don't loop back up to standing and re-bend.
+    if (this.idleAction) {
+      this.idleAction.setLoop(THREE.LoopOnce, 1);
+      this.idleAction.clampWhenFinished = true;
+      this.idleAction.play();
+      this.idleAction.setEffectiveWeight(0);
     }
     (this.idleAction ?? this.runAction)?.setEffectiveWeight(1);
 
@@ -397,6 +405,9 @@ class FbxAvatar implements Avatar {
     for (const a of [this.idleAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
       a?.setEffectiveWeight(0);
     }
+    // Restart the stance so it bends down once this play, then clamps/holds the pose.
+    this.idleAction?.reset();
+    this.idleAction?.setEffectiveWeight(0);
     this.interp.reset();
   }
 

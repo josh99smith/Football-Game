@@ -12,6 +12,7 @@ import { CPUOffense } from "../ai/CPUOffense";
 import { chooseTarget, resolveAir } from "../Passing";
 import { HUD } from "../../ui/HUD";
 import { TouchControls, type ControlLabels } from "../../ui/TouchControls";
+import { FONT } from "../../ui/Theme";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
 import type { PlayOutcome, OutcomeType } from "../Match";
 import { PlayResultState } from "./PlayResultState";
@@ -22,6 +23,8 @@ type Phase = "presnap" | "live" | "dead";
 // hard-stall if the hike is never pressed.
 const PRESNAP_TIME = 20;
 const MAX_PLAY_TIME = 16;
+/** Hard cap on the post-play beat so it can't hang if the player never taps. */
+const POSTPLAY_MAX = 9;
 /** Hold this long (s) to fully charge a bullet pass; a quick tap throws a lob. */
 const THROW_CHARGE_MAX = 0.5;
 /** Hold the ACTION button this long (s) as a ball carrier to dive instead of juke. */
@@ -91,7 +94,14 @@ export class LivePlayState implements GameState {
   private passTarget: Player | null = null;
   /** Post-whistle beat so the player SEES the catch/tackle before the result banner. */
   private pendingOutcome: PlayOutcome | null = null;
+  /** Minimum settle/celebration time before players regroup toward the huddle. */
   private deadTimer = 0;
+  /** Total time spent post-whistle (drives the regroup + the hard auto-advance). */
+  private deadElapsed = 0;
+  /** Where each player ambles back to during the post-play regroup (lazy). */
+  private regroupTargets: Map<Player, Vec2> | null = null;
+  /** Ball spot the play ended at (anchors the regroup huddle). */
+  private endSpot: Vec2 = { x: 0, y: 0 };
   /** Cooldown so broken tackles can't chain every frame. */
   private lastBreak = -1;
   /** A tackle is wrapping up; endPlay fires when this timer elapses (the contact beat). */
@@ -888,7 +898,14 @@ export class LivePlayState implements GameState {
     this.pendingTackleTimer = beat;
   }
 
+  /** Classify a tackle at `spot`: a safety if downed in the offense's own end zone, a
+   * sack if the QB is dropped behind the line, otherwise a normal tackle. */
   private sackIfBehindLine(spot: Vec2): OutcomeType {
+    const inOwnEndzone = this.offenseTeamId === "HOME" ? spot.x <= LEFT_GOAL_X : spot.x >= RIGHT_GOAL_X;
+    if (inOwnEndzone) {
+      this.app.floating.add("SAFETY!", spot.x, spot.y - 20, { size: 24, color: "#ff9a9a" });
+      return "safety";
+    }
     const carrierWasQB = this.ball.carrier?.role === "QB";
     const behind = this.dir > 0 ? spot.x < this.startLosX : spot.x > this.startLosX;
     if (carrierWasQB && behind && this.sackPossible) return "sack";
@@ -917,15 +934,9 @@ export class LivePlayState implements GameState {
       return;
     }
 
-    // Safety: ball carrier down in their own end zone is handled by tackle spot;
-    // detect crossing into own end zone here as an immediate safety.
-    const inOwnEndzone =
-      this.offenseTeamId === "HOME" ? carrier.pos.x <= LEFT_GOAL_X : carrier.pos.x >= RIGHT_GOAL_X;
-    if (inOwnEndzone) {
-      this.app.floating.add("SAFETY!", carrier.pos.x, carrier.pos.y - 20, { size: 24, color: "#ff9a9a" });
-      this.endPlay("safety", { x: carrier.pos.x, y: carrier.pos.y });
-      return;
-    }
+    // A safety is NOT called just for being in your own end zone (the QB can snap or
+    // drop back there) — only when the carrier is tackled/downed there. That's handled
+    // at the tackle spot in classifyTackle().
 
     // Out of bounds (sidelines).
     if (carrier.pos.y <= this.app.field.minY + 3 || carrier.pos.y >= this.app.field.maxY - 3) {
@@ -992,24 +1003,78 @@ export class LivePlayState implements GameState {
       firstDown: false,
       headline: headlineFor(type, Math.round(gained)),
     };
-    // Post-play: stay on the field a few moments so the tackle settles / the score is
-    // celebrated before cutting to the result + next play call.
+    // Post-play: a short settle/celebration, then players regroup and amble toward the
+    // huddle until the player taps to continue (or the hard cap elapses).
     this.deadTimer =
-      type === "touchdown" ? 2.8 : type === "interception" || type === "fumbleLost" ? 1.6 : 1.1;
+      type === "touchdown" ? 2.4 : type === "interception" || type === "fumbleLost" ? 1.6 : 1.0;
+    this.deadElapsed = 0;
+    this.endSpot = { x: spot.x, y: spot.y };
+    this.regroupTargets = null;
   }
 
-  /** Post-whistle beat: bodies settle and FX play out before the result screen. */
+  /**
+   * Post-whistle beat: bodies settle / the score is celebrated, then players amble back
+   * toward the huddle while the result lingers on the field. It waits for a tap to skip
+   * to the result + play call, with a hard cap so it can never hang.
+   */
   private updateDeadBeat(dt: number): void {
     this.deadTimer -= dt;
-    for (const p of this.all) p.step(dt, 0); // coast to a stop
+    this.deadElapsed += dt;
+    const regrouping = this.deadTimer <= 0;
+    for (const p of this.all) {
+      if (regrouping && !p.isDown) this.walkToRegroup(p, dt);
+      else p.step(dt, 0); // settle / celebrate / lie tackled
+    }
     this.ball.update(dt);
     this.spawnFireFx();
-    // Tap/ACTION skips straight to the result.
-    if (this.deadTimer <= 0 || this.app.input.actionPressed) {
+    // A tap anywhere (or ACTION) skips ahead; otherwise it auto-advances at the hard cap.
+    const tapped = this.app.input.consumeTaps().length > 0 || this.app.input.actionPressed;
+    if (tapped || this.deadElapsed >= POSTPLAY_MAX) {
       this.commitOutcome();
       return;
     }
     this.syncScene(dt);
+  }
+
+  /** Amble a player back toward a loose post-play huddle (offense) / their side (defense). */
+  private walkToRegroup(p: Player, dt: number): void {
+    if (!this.regroupTargets) this.computeRegroupTargets();
+    const t = this.regroupTargets!.get(p);
+    if (!t) {
+      p.step(dt, 0);
+      return;
+    }
+    const dx = t.x - p.pos.x;
+    const dy = t.y - p.pos.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 8) {
+      p.desired = { x: dx / d, y: dy / d };
+      p.lookDir = null;
+      p.step(dt, p.baseSpeed * 0.45); // a relaxed walk back
+      p.pos.y = this.app.field.clampY(p.pos.y);
+    } else {
+      p.desired = { x: 0, y: 0 };
+      p.step(dt, 0);
+    }
+  }
+
+  /** Place a loose huddle a few yards behind the dead-ball spot (offense side) and let
+   * the defense drift to their side, clamped to the field. */
+  private computeRegroupTargets(): void {
+    const targets = new Map<Player, Vec2>();
+    const f = this.app.field;
+    const cy = f.maxY / 2;
+    const clampX = (x: number) => Math.max(LEFT_GOAL_X + 16, Math.min(RIGHT_GOAL_X - 16, x));
+    const huddleX = clampX(this.endSpot.x - this.dir * PX_PER_YARD * 7);
+    this.offense.forEach((o, i) => {
+      const ang = (i / this.offense.length) * Math.PI * 2;
+      targets.set(o, { x: huddleX + Math.cos(ang) * PX_PER_YARD * 2, y: cy + Math.sin(ang) * PX_PER_YARD * 2 });
+    });
+    const defX = clampX(this.endSpot.x + this.dir * PX_PER_YARD * 6);
+    this.defense.forEach((dpl, i) => {
+      targets.set(dpl, { x: defX, y: f.clampY(cy + (i - this.defense.length / 2) * PX_PER_YARD * 4) });
+    });
+    this.regroupTargets = targets;
   }
 
   private committed = false;
@@ -1060,8 +1125,22 @@ export class LivePlayState implements GameState {
       possessionLabel: this.phase === "presnap" ? this.preSnapLabel() : undefined,
       playClock: this.phase === "presnap" ? this.snapTimer : undefined,
     });
-    app.input.setLayout(this.controls.computeLayout(r));
-    this.controls.render(r, app.input, this.controlLabels());
+
+    if (this.phase === "dead") {
+      // Post-play: prompt to continue; the on-field action keeps animating until then.
+      const a = 0.55 + 0.45 * Math.sin(this.deadElapsed * 4);
+      r.text("TAP TO CONTINUE", r.width / 2, r.height - 26, {
+        size: 16,
+        align: "center",
+        color: "#ece6d8",
+        baseline: "middle",
+        alpha: a,
+        font: FONT.display,
+      });
+    } else {
+      app.input.setLayout(this.controls.computeLayout(r));
+      this.controls.render(r, app.input, this.controlLabels());
+    }
   }
 
   /** Pre-snap HUD prompt: break-the-huddle while walking, hike prompt once set. */
