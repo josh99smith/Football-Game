@@ -1,6 +1,8 @@
 import type { Renderer } from "../engine/Renderer";
 import type { Match } from "../game/Match";
+import type { TeamConfig } from "../game/Team";
 import { LEFT_GOAL_X, RIGHT_GOAL_X } from "../game/Field";
+import { drawCrest } from "./Emblems";
 
 /** Top scoreboard: score, quarter, clock, down & distance, possession, field bar. */
 export class HUD {
@@ -20,8 +22,8 @@ export class HUD {
 
     const home = match.home;
     const away = match.away;
-    this.teamChip(r, 12, 8, home.config.abbr, home.config.colors.jersey, home.score, home.onFire, "left", match.possession === "HOME");
-    this.teamChip(r, w - 12, 8, away.config.abbr, away.config.colors.jersey, away.score, away.onFire, "right", match.possession === "AWAY");
+    this.teamChip(r, 10, 6, home.config, home.score, home.onFire, "left", match.possession === "HOME");
+    this.teamChip(r, w - 10, 6, away.config, away.score, away.onFire, "right", match.possession === "AWAY");
 
     const mins = Math.floor(match.clock / 60);
     const secs = Math.floor(match.clock % 60);
@@ -105,8 +107,7 @@ export class HUD {
     r: Renderer,
     x: number,
     y: number,
-    abbr: string,
-    color: string,
+    team: TeamConfig,
     score: number,
     onFire: boolean,
     align: "left" | "right",
@@ -114,34 +115,30 @@ export class HUD {
   ): void {
     const ctx = r.ctx;
     ctx.save();
-    const swX = align === "left" ? x : x - 26;
-    ctx.fillStyle = color;
-    ctx.fillRect(swX, y, 26, 30);
+    const cR = 16;
+    const crestX = align === "left" ? x + cR : x - cR;
+    const crestY = y + cR + 1;
     if (onFire) {
       ctx.strokeStyle = "#ff7b1e";
       ctx.lineWidth = 3;
-      ctx.strokeRect(swX - 1.5, y - 1.5, 29, 33);
+      ctx.beginPath();
+      ctx.arc(crestX, crestY, cR + 3, 0, Math.PI * 2);
+      ctx.stroke();
     }
-    r.text(abbr, align === "left" ? x + 34 : x - 34, y + 4, {
-      size: 14,
-      color: "#cfe",
-      align: align === "left" ? "left" : "right",
-      baseline: "top",
-    });
-    r.text(String(score), align === "left" ? x + 34 : x - 34, y + 18, {
-      size: 22,
-      color: "#fff",
-      align: align === "left" ? "left" : "right",
-      baseline: "top",
-    });
-    // Possession football icon.
+    drawCrest(ctx, crestX, crestY, cR, team);
+
+    const textX = align === "left" ? x + cR * 2 + 8 : x - cR * 2 - 8;
+    const tAlign: CanvasTextAlign = align === "left" ? "left" : "right";
+    r.text(String(score), textX, y + 7, { size: 24, color: "#fff", align: tAlign, baseline: "top" });
+
     if (hasBall) {
-      const fx = align === "left" ? x + 34 + r.measureText(String(score), 22) + 12 : x - 34 - r.measureText(String(score), 22) - 12;
+      const sw = r.measureText(String(score), 24);
+      const fx = align === "left" ? textX + sw + 11 : textX - sw - 11;
       ctx.fillStyle = "#8a4b22";
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.ellipse(fx, y + 22, 7, 4.4, 0, 0, Math.PI * 2);
+      ctx.ellipse(fx, y + 20, 7, 4.4, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }

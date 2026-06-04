@@ -2,16 +2,29 @@ import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import { TEAMS } from "../Team";
 import { drawButton, tappedIn, type Rect } from "../../ui/widgets";
+import { drawCrest, drawGameBadge } from "../../ui/Emblems";
 import { saveSettings, loadSettings } from "../storage";
 import { KickoffState } from "./KickoffState";
 
 const DIFFS: GameApp["config"]["difficulty"][] = ["rookie", "pro", "allpro"];
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
 
 /** Title screen: pick your team, opponent, difficulty, then kick off. */
 export class MenuState implements GameState {
   private readonly app: GameApp;
   private rects: Record<string, Rect> = {};
   private t = 0;
+
+  // Layout values shared between layout() and render().
+  private crestR = 40;
+  private teamY = 0;
+  private cxL = 0;
+  private cxR = 0;
+  private titleY = 0;
+  private badgeR = 24;
 
   constructor(app: GameApp) {
     this.app = app;
@@ -27,19 +40,50 @@ export class MenuState implements GameState {
     this.app.audio.setMuted(this.app.config.muted);
   }
 
+  /**
+   * Fully responsive, computed bottom-up so nothing ever overlaps — the previous
+   * fixed-pixel layout collapsed the PLAY button onto the SOUND button in short
+   * landscape viewports, which is why the start button "barely worked".
+   */
   private layout(): void {
     const r = this.app.r;
-    const cx = r.width / 2;
-    const bw = Math.min(260, r.width * 0.6);
-    const rowY = r.height * 0.42;
+    const W = r.width;
+    const H = r.height;
+    const cx = W / 2;
+
+    const margin = clamp(H * 0.05, 12, 34);
+    const playH = clamp(H * 0.13, 46, 66);
+    const playY = H - playH - margin;
+    const playW = clamp(W * 0.5, 200, 360);
+
+    const optH = clamp(H * 0.085, 30, 44);
+    const optY = playY - optH - clamp(H * 0.04, 10, 22);
+    const optW = clamp(W * 0.3, 140, 240);
+
+    this.crestR = clamp(Math.min(H * 0.13, W * 0.085), 22, 54);
+    const aw = clamp(Math.min(H * 0.1, W * 0.07), 28, 44);
+    const gap = 8;
+    this.cxL = W * 0.28;
+    this.cxR = W * 0.72;
+    this.teamY = optY - optH * 0.3 - 22 - this.crestR;
+    this.badgeR = clamp(Math.min(H * 0.07, W * 0.06), 16, 30);
+    this.titleY = clamp(this.teamY - this.crestR - 64, this.badgeR * 2 + 10, H * 0.3);
+
+    const arrow = (centre: number, side: number): Rect => ({
+      x: side < 0 ? centre - this.crestR - gap - aw : centre + this.crestR + gap,
+      y: this.teamY - aw / 2,
+      w: aw,
+      h: aw,
+    });
+
     this.rects = {
-      teamPrev: { x: cx - bw / 2 - 44, y: rowY, w: 38, h: 38 },
-      teamNext: { x: cx + bw / 2 + 6, y: rowY, w: 38, h: 38 },
-      oppPrev: { x: cx - bw / 2 - 44, y: rowY + 56, w: 38, h: 38 },
-      oppNext: { x: cx + bw / 2 + 6, y: rowY + 56, w: 38, h: 38 },
-      diff: { x: cx - bw / 2, y: rowY + 112, w: bw, h: 40 },
-      mute: { x: cx - bw / 2, y: rowY + 160, w: bw, h: 36 },
-      play: { x: cx - bw / 2, y: r.height - 80, w: bw, h: 56 },
+      teamPrev: arrow(this.cxL, -1),
+      teamNext: arrow(this.cxL, 1),
+      oppPrev: arrow(this.cxR, -1),
+      oppNext: arrow(this.cxR, 1),
+      diff: { x: cx - optW - 6, y: optY, w: optW, h: optH },
+      mute: { x: cx + 6, y: optY, w: optW, h: optH },
+      play: { x: cx - playW / 2, y: playY, w: playW, h: playH },
     };
   }
 
@@ -74,62 +118,57 @@ export class MenuState implements GameState {
   private startGame(): void {
     this.app.audio.uiConfirm();
     this.app.newMatch();
-    // Coin toss: the human team receives first.
     this.app.setState(new KickoffState(this.app, "HOME"));
   }
 
   render(): void {
     const r = this.app.r;
+    const W = r.width;
     this.app.r.begin("#06210e");
     this.drawBackground(r);
     this.layout();
-    const cx = r.width / 2;
-
-    // Animated, glowing title.
-    const bob = Math.sin(this.t * 2) * 4;
+    const cx = W / 2;
     const ctx = r.ctx;
+
+    // Badge + glowing wordmark on a single line (compact for landscape).
+    drawGameBadge(ctx, cx, this.titleY - this.badgeR * 0.2, this.badgeR);
+    const titleSize = clamp(Math.min(W * 0.075, this.crestR * 1.1), 22, 46);
+    const wordY = this.titleY + this.badgeR + titleSize * 0.5;
     ctx.save();
     ctx.shadowColor = "rgba(255,140,30,0.6)";
-    ctx.shadowBlur = 24;
-    r.text("GRIDIRON", cx, r.height * 0.15 + bob, { size: 46, align: "center", color: "#ffd23a" });
-    r.text("BLITZ", cx, r.height * 0.15 + 48 + bob, { size: 56, align: "center", color: "#ff7b1e" });
+    ctx.shadowBlur = 22;
+    r.text("GRIDIRON ", cx, wordY, { size: titleSize, align: "right", color: "#ffd23a", baseline: "middle" });
+    r.text(" BLITZ", cx, wordY, { size: titleSize, align: "left", color: "#ff7b1e", baseline: "middle" });
     ctx.restore();
-    r.text("· ARCADE FOOTBALL ·", cx, r.height * 0.15 + 90 + bob, {
-      size: 13,
-      align: "center",
-      color: "#9fd9b0",
-      weight: "normal",
-    });
+
+    if (this.app.highScores.length > 0) {
+      const hs = this.app.highScores[0];
+      r.text(`BEST: ${hs.team} ${hs.points}–${hs.opponentPoints} ${hs.opponent}`, cx, wordY + titleSize * 0.7, {
+        size: 11,
+        align: "center",
+        color: "rgba(200,230,210,0.7)",
+        weight: "normal",
+        baseline: "middle",
+      });
+    }
 
     const c = this.app.config;
     const home = TEAMS[c.homeTeamIndex % TEAMS.length];
     const away = TEAMS[c.awayTeamIndex % TEAMS.length];
+    this.teamColumn(r, this.cxL, "YOU", home, this.rects.teamPrev, this.rects.teamNext);
+    this.teamColumn(r, this.cxR, "OPPONENT", away, this.rects.oppPrev, this.rects.oppNext);
 
-    this.teamRow(r, this.rects.teamPrev, this.rects.teamNext, "YOU", home);
-    this.teamRow(r, this.rects.oppPrev, this.rects.oppNext, "VS", away);
-
-    drawButton(r, this.rects.diff, `DIFFICULTY: ${c.difficulty.toUpperCase()}`, { fill: "#175a30", size: 16 });
+    drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: "#175a30", size: 15 });
     drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: "#244", size: 14 });
-    drawButton(r, this.rects.play, "KICK OFF!", { fill: "#d03a3a", size: 26 });
+    drawButton(r, this.rects.play, "KICK OFF!", { fill: "#d03a3a", size: clamp(this.rects.play.h * 0.42, 20, 30) });
+  }
 
-    // Controls hint.
-    r.text("MOVE: stick / WASD   ·   TURBO   ·   PASS / SWITCH", cx, r.height - 30, {
-      size: 11,
-      align: "center",
-      color: "rgba(180,220,190,0.75)",
-      weight: "normal",
-      baseline: "bottom",
-    });
-    if (this.app.highScores.length > 0) {
-      const hs = this.app.highScores[0];
-      r.text(`BEST: ${hs.team} ${hs.points}–${hs.opponentPoints} ${hs.opponent}`, cx, r.height - 12, {
-        size: 12,
-        align: "center",
-        color: "rgba(255,255,255,0.55)",
-        weight: "normal",
-        baseline: "bottom",
-      });
-    }
+  private teamColumn(r: GameApp["r"], cx: number, label: string, team: (typeof TEAMS)[number], prev: Rect, next: Rect): void {
+    r.text(label, cx, this.teamY - this.crestR - 8, { size: 12, align: "center", color: "#9fd9b0", baseline: "bottom", weight: "normal" });
+    drawCrest(r.ctx, cx, this.teamY, this.crestR, team);
+    drawButton(r, prev, "‹", { fill: "#21384a", size: 24 });
+    drawButton(r, next, "›", { fill: "#21384a", size: 24 });
+    r.text(team.name, cx, this.teamY + this.crestR + 16, { size: clamp(this.crestR * 0.42, 13, 19), align: "center", color: "#fff", baseline: "middle" });
   }
 
   /** Subtle animated gridiron backdrop (scrolling yard lines + a sweeping glow). */
@@ -151,7 +190,6 @@ export class MenuState implements GameState {
       ctx.lineTo(x + off, r.height);
       ctx.stroke();
     }
-    // Sweeping highlight band.
     const bx = ((this.t * 90) % (r.width + 300)) - 150;
     const g2 = ctx.createLinearGradient(bx - 120, 0, bx + 120, 0);
     g2.addColorStop(0, "rgba(255,210,60,0)");
@@ -160,39 +198,6 @@ export class MenuState implements GameState {
     ctx.fillStyle = g2;
     ctx.fillRect(0, 0, r.width, r.height);
   }
-
-  private teamRow(r: GameApp["r"], prev: Rect, next: Rect, label: string, team: (typeof TEAMS)[number]): void {
-    const cx = r.width / 2;
-    drawButton(r, prev, "‹", { fill: "#234", size: 24 });
-    drawButton(r, next, "›", { fill: "#234", size: 24 });
-    drawHelmet(r, prev.x + prev.w + 22, prev.y + prev.h / 2, 15, team.colors.jersey, team.colors.trim);
-    r.text(label, cx, prev.y - 2, { size: 11, align: "center", color: "#9fd9b0", baseline: "bottom", weight: "normal" });
-    r.text(team.name, cx + 22, prev.y + prev.h / 2, { size: 20, align: "center", color: "#fff", baseline: "middle" });
-  }
-}
-
-/** A small team helmet icon (dome + facemask) for menus. */
-function drawHelmet(r: GameApp["r"], x: number, y: number, rad: number, jersey: string, trim: string): void {
-  const ctx = r.ctx;
-  ctx.save();
-  ctx.fillStyle = jersey;
-  ctx.beginPath();
-  ctx.arc(x, y, rad, Math.PI * 0.9, Math.PI * 2.1);
-  ctx.fill();
-  // Facemask.
-  ctx.strokeStyle = trim;
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(x + rad * 0.5, y + rad * 0.2);
-  ctx.lineTo(x + rad * 1.05, y + rad * 0.2);
-  ctx.stroke();
-  // Stripe.
-  ctx.strokeStyle = trim;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(x, y, rad * 0.55, Math.PI * 1.1, Math.PI * 1.9);
-  ctx.stroke();
-  ctx.restore();
 }
 
 function wrap(i: number): number {

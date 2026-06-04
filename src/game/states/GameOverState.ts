@@ -1,6 +1,7 @@
 import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import { drawButton, drawPanel, tappedIn, type Rect } from "../../ui/widgets";
+import { drawCrest } from "../../ui/Emblems";
 import { saveHighScore } from "../storage";
 import { MenuState } from "./MenuState";
 
@@ -53,15 +54,20 @@ export class GameOverState implements GameState {
     const y = r.height / 2 - h / 2 - 20;
     drawPanel(r, { x, y, w, h });
 
-    r.text(this.headline, r.width / 2, y + 46, { size: 38, align: "center", color: "#ffd23a" });
-    r.text(
-      `${m.home.config.abbr}  ${m.home.score}  —  ${m.away.score}  ${m.away.config.abbr}`,
-      r.width / 2,
-      y + 100,
-      { size: 30, align: "center", color: "#fff" },
-    );
-    r.text(`${m.home.config.name} vs ${m.away.config.name}`, r.width / 2, y + 138, {
-      size: 14,
+    r.text(this.headline, r.width / 2, y + 40, { size: 36, align: "center", color: "#ffd23a" });
+
+    // Final score flanked by both team crests.
+    const ctx = r.ctx;
+    drawCrest(ctx, r.width / 2 - 110, y + 104, 30, m.home.config);
+    drawCrest(ctx, r.width / 2 + 110, y + 104, 30, m.away.config);
+    r.text(`${m.home.score}  —  ${m.away.score}`, r.width / 2, y + 104, {
+      size: 40,
+      align: "center",
+      color: "#fff",
+      baseline: "middle",
+    });
+    r.text(`${m.home.config.name}  vs  ${m.away.config.name}`, r.width / 2, y + 150, {
+      size: 13,
       align: "center",
       color: "#9fd9b0",
       weight: "normal",
