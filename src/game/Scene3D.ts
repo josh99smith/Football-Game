@@ -72,8 +72,8 @@ const G = {
   pads: new THREE.BoxGeometry(0.92, 0.3, 0.56),
   helmet: new THREE.SphereGeometry(0.27, 14, 12),
   mask: new THREE.BoxGeometry(0.06, 0.16, 0.34),
-  ring: new THREE.TorusGeometry(0.85, 0.1, 8, 22),
-  chevron: new THREE.ConeGeometry(0.32, 0.5, 4),
+  ring: new THREE.TorusGeometry(0.98, 0.17, 8, 26),
+  chevron: new THREE.ConeGeometry(0.42, 0.78, 4),
   nub: new THREE.SphereGeometry(0.17, 8, 6),
 };
 
@@ -960,9 +960,9 @@ export class Scene3D {
   ): void {
     const fx = focusX * U;
     const fz = focusY * U;
-    // Lower + closer "over the shoulder" angle: bigger players, dramatic downfield view.
-    outPos.set(fx - dir * 10.5, 8.6, fz);
-    outLook.set(fx + dir * 13, 1.1, fz);
+    // Tight, low "over the shoulder" angle: big readable players + the action up close.
+    outPos.set(fx - dir * 7.5, 6.0, fz);
+    outLook.set(fx + dir * 10, 0.9, fz);
   }
 
   sync(opts: {

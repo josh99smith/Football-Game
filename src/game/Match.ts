@@ -193,11 +193,19 @@ export class Match {
     return { scored: false, changedPossession: false, kickoff: false };
   }
 
-  /** Tick the game clock; returns "quarter" or "game" when a boundary is crossed. */
-  tickClock(dt: number): "none" | "quarter" | "half" | "game" {
-    this.clock -= dt;
-    if (this.clock > 0) return "none";
-    this.clock = 0;
+  /** Run the play clock down, clamped at 0. The quarter is NOT advanced here — the
+   * clock simply stops at 0 mid-play; the caller advances the quarter between plays. */
+  tickClock(dt: number): void {
+    this.clock = Math.max(0, this.clock - dt);
+  }
+
+  get clockExpired(): boolean {
+    return this.clock <= 0;
+  }
+
+  /** Advance to the next quarter (called between plays once the clock hits 0). Returns
+   * the boundary crossed, or "game" if that was the final quarter. */
+  advanceQuarter(): "quarter" | "half" | "game" {
     if (this.quarter >= this.totalQuarters) return "game";
     const wasHalf = this.quarter === 2;
     this.quarter++;

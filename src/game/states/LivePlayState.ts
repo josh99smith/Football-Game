@@ -12,10 +12,13 @@ import { CPUOffense } from "../ai/CPUOffense";
 import { chooseTarget, resolveAir } from "../Passing";
 import { HUD } from "../../ui/HUD";
 import { TouchControls, type ControlLabels } from "../../ui/TouchControls";
-import { FONT } from "../../ui/Theme";
+import { FONT, COLORS } from "../../ui/Theme";
+import { drawPanel } from "../../ui/widgets";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
-import type { PlayOutcome, OutcomeType } from "../Match";
-import { PlayResultState } from "./PlayResultState";
+import type { Match, PlayOutcome, OutcomeType } from "../Match";
+import { PlaySelectState } from "./PlaySelectState";
+import { KickoffState } from "./KickoffState";
+import { GameOverState } from "./GameOverState";
 
 type Phase = "presnap" | "live" | "dead";
 
@@ -94,6 +97,10 @@ export class LivePlayState implements GameState {
   private passTarget: Player | null = null;
   /** Post-whistle beat so the player SEES the catch/tackle before the result banner. */
   private pendingOutcome: PlayOutcome | null = null;
+  /** Applied-outcome result (drives the on-field result banner + routing). */
+  private playResult: ReturnType<Match["applyOutcome"]> | null = null;
+  /** Secondary line under the result headline (FIRST DOWN! / TURNOVER! / down & dist). */
+  private resultDetail = "";
   /** Minimum settle/celebration time before players regroup toward the huddle. */
   private deadTimer = 0;
   /** Total time spent post-whistle (drives the regroup + the hard auto-advance). */
@@ -159,6 +166,7 @@ export class LivePlayState implements GameState {
     if (this.qb) this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir);
     this.app.input.setLayout(this.controls.computeLayout(this.app.r));
     this.app.audio.startCrowd();
+    this.showHint = !LivePlayState.hintShown;
   }
 
   private context(): PlayContext {
@@ -324,13 +332,13 @@ export class LivePlayState implements GameState {
    * p.home) so they walk to the line during pre-snap. */
   private setupPreSnap(): void {
     const cy = this.app.field.maxY / 2;
-    const huddleX = this.startLosX - this.dir * PX_PER_YARD * 7;
+    const huddleX = this.startLosX - this.dir * PX_PER_YARD * 5;
     this.offense.forEach((p, i) => {
       if (p.role === "QB") {
         p.pos = { x: this.startLosX - this.dir * PX_PER_YARD * 4, y: cy };
       } else {
         const ang = (i / this.offense.length) * Math.PI * 2;
-        p.pos = { x: huddleX + Math.cos(ang) * PX_PER_YARD * 2.2, y: cy + Math.sin(ang) * PX_PER_YARD * 2.2 };
+        p.pos = { x: huddleX + Math.cos(ang) * PX_PER_YARD * 1.6, y: cy + Math.sin(ang) * PX_PER_YARD * 1.6 };
       }
       p.vel.x = 0;
       p.vel.y = 0;
@@ -339,7 +347,7 @@ export class LivePlayState implements GameState {
     });
     // Defense jogs up to the line from a couple of yards downfield.
     for (const d of this.defense) {
-      d.pos = { x: d.home.x + this.dir * PX_PER_YARD * 3, y: d.home.y };
+      d.pos = { x: d.home.x + this.dir * PX_PER_YARD * 2.5, y: d.home.y };
       d.vel.x = 0;
       d.vel.y = 0;
       this.faceTowardHome(d);
@@ -366,9 +374,8 @@ export class LivePlayState implements GameState {
       if (d > 6) {
         p.desired = { x: dx / d, y: dy / d };
         p.lookDir = null; // face the way they're walking
-        // Per-role pace keyed to base speed, tuned to land in the walk-cycle band so
-        // breaking the huddle reads as a deliberate walk to the line.
-        p.step(dt, p.baseSpeed * 0.5);
+        // Brisk jog to the line — keep the break-the-huddle read but don't dawdle.
+        p.step(dt, p.baseSpeed * 0.62);
         allSet = false;
       } else {
         // Arrived: hard-stop and set facing so the player stands cleanly in idle,
@@ -382,15 +389,16 @@ export class LivePlayState implements GameState {
       }
     }
     this.preSnapReady = allSet;
+    const elapsed = PRESNAP_TIME - this.snapTimer;
 
-    // Defenders can cycle which man they'll control before the snap (pick your matchup).
-    if (!this.humanIsOffense && this.app.input.actionPressed) this.cycleDefender();
-
-    if (allSet) {
-      if (this.humanIsOffense) {
-        if (this.app.input.actionPressed) this.snap();
-      } else {
-        if (this.cpuHikeTimer < 0) this.cpuHikeTimer = 0.7 + Math.random() * 0.8;
+    if (this.humanIsOffense) {
+      // Hurry-up: hike the instant you're set, or after a brief grace if you're impatient.
+      if (this.app.input.actionPressed && (allSet || elapsed > 0.8)) this.snap();
+    } else {
+      // On defense, ACTION cycles which man you'll control; the CPU hikes once set.
+      if (this.app.input.actionPressed) this.cycleDefender();
+      if (allSet) {
+        if (this.cpuHikeTimer < 0) this.cpuHikeTimer = 0.5 + Math.random() * 0.5;
         this.cpuHikeTimer -= dt;
         if (this.cpuHikeTimer <= 0) this.snap();
       }
@@ -994,7 +1002,7 @@ export class LivePlayState implements GameState {
         ? m.opponent(this.offenseTeamId)
         : this.offenseTeamId;
 
-    this.pendingOutcome = {
+    const outcome: PlayOutcome = {
       type,
       ballX: spot.x,
       ballY: spot.y,
@@ -1003,6 +1011,21 @@ export class LivePlayState implements GameState {
       firstDown: false,
       headline: headlineFor(type, Math.round(gained)),
     };
+    this.pendingOutcome = outcome;
+
+    // Apply the result to the rules NOW (so the HUD reflects it during the on-field
+    // beat) and build the result lines shown on the field — there's no separate banner
+    // screen anymore; a single tap goes straight to the next play.
+    this.playResult = m.applyOutcome(outcome);
+    this.resultDetail = this.buildResultDetail();
+
+    // Clock: the quarter only advances between plays (not mid-down). Show a beat.
+    if (m.clockExpired && !m.isOver) {
+      const ev = m.advanceQuarter();
+      const label = ev === "half" ? "HALFTIME" : ev === "game" ? "FINAL" : `END OF Q${m.quarter - 1}`;
+      this.app.floating.add(label, this.app.field.maxX / 2, this.app.field.maxY / 2, { size: 30, color: COLORS.hazard, life: 2 });
+    }
+
     // Post-play: a short settle/celebration, then players regroup and amble toward the
     // huddle until the player taps to continue (or the hard cap elapses).
     this.deadTimer =
@@ -1010,6 +1033,19 @@ export class LivePlayState implements GameState {
     this.deadElapsed = 0;
     this.endSpot = { x: spot.x, y: spot.y };
     this.regroupTargets = null;
+  }
+
+  /** The line under the result headline, read from the applied match state. */
+  private buildResultDetail(): string {
+    const m = this.app.match;
+    const res = this.playResult;
+    if (res?.scored && res.scoringTeam) return `${m.team(res.scoringTeam).config.name.toUpperCase()} SCORE!`;
+    if (this.pendingOutcome?.firstDown) {
+      this.app.audio.firstDownChime();
+      return "FIRST DOWN!";
+    }
+    if (res?.changedPossession) return "TURNOVER!";
+    return `${ordinal(m.down)} & ${m.distanceYards}`;
   }
 
   /**
@@ -1077,12 +1113,51 @@ export class LivePlayState implements GameState {
     this.regroupTargets = targets;
   }
 
+  /** Show the one-time controls hint on the first live play of the session. */
+  private static hintShown = false;
+  private showHint = false;
+
+  /** A fading, contextual controls hint shown once at the start of a session. */
+  private renderControlHint(r: Renderer): void {
+    if (!this.showHint) return;
+    // Fade out once the play has been live a few seconds, then retire it for good.
+    const fade = this.phase === "live" ? Math.max(0, 1 - (this.playTime - 2) / 2) : 1;
+    if (this.phase === "live" && this.playTime > 4) {
+      this.showHint = false;
+      LivePlayState.hintShown = true;
+      return;
+    }
+    const msg = this.humanIsOffense
+      ? "STICK: MOVE   ·   HOLD: PASS / TAP: JUKE   ·   TURBO: SPRINT"
+      : "STICK: MOVE   ·   TAP: SWITCH / TACKLE   ·   TURBO: SPRINT";
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.letterSpacing = "1px";
+    r.text(msg, r.width / 2, r.height - 84, {
+      size: 13,
+      align: "center",
+      color: COLORS.bone,
+      baseline: "middle",
+      alpha: 0.85 * fade,
+      font: FONT.ui,
+    });
+    ctx.restore();
+  }
+
   private committed = false;
   private commitOutcome(): void {
-    if (this.committed || !this.pendingOutcome) return;
+    if (this.committed || !this.playResult) return;
     this.committed = true;
     this.app.audio.stopCrowd();
-    this.app.setState(new PlayResultState(this.app, this.pendingOutcome));
+    const m = this.app.match;
+    const res = this.playResult;
+    if (m.isOver) {
+      this.app.setState(new GameOverState(this.app));
+    } else if (res.kickoff && res.kickReceiver) {
+      this.app.setState(new KickoffState(this.app, res.kickReceiver));
+    } else {
+      this.app.setState(new PlaySelectState(this.app));
+    }
   }
 
   private spawnTurboTrail(): void {
@@ -1127,20 +1202,43 @@ export class LivePlayState implements GameState {
     });
 
     if (this.phase === "dead") {
-      // Post-play: prompt to continue; the on-field action keeps animating until then.
-      const a = 0.55 + 0.45 * Math.sin(this.deadElapsed * 4);
-      r.text("TAP TO CONTINUE", r.width / 2, r.height - 26, {
-        size: 16,
-        align: "center",
-        color: "#ece6d8",
-        baseline: "middle",
-        alpha: a,
-        font: FONT.display,
-      });
+      this.renderResultBanner(r);
     } else {
       app.input.setLayout(this.controls.computeLayout(r));
       this.controls.render(r, app.input, this.controlLabels());
+      if (this.phase === "live" || this.phase === "presnap") this.renderControlHint(r);
     }
+  }
+
+  /** On-field result banner during the post-play beat (replaces the old banner screen). */
+  private renderResultBanner(r: Renderer): void {
+    if (!this.pendingOutcome) return;
+    const w = Math.min(440, r.width - 48);
+    const h = 92;
+    const x = (r.width - w) / 2;
+    const y = 54;
+    drawPanel(r, { x, y, w, h });
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.letterSpacing = "1px";
+    r.text(this.pendingOutcome.headline.toUpperCase(), r.width / 2, y + 34, {
+      size: 30,
+      align: "center",
+      color: COLORS.bone,
+      baseline: "middle",
+      font: FONT.display,
+    });
+    ctx.restore();
+    r.text(this.resultDetail, r.width / 2, y + 68, { size: 17, align: "center", color: COLORS.blood, baseline: "middle", font: FONT.ui });
+    const a = 0.5 + 0.5 * Math.sin(this.deadElapsed * 4);
+    r.text("TAP TO CONTINUE", r.width / 2, r.height - 24, {
+      size: 15,
+      align: "center",
+      color: COLORS.bone,
+      baseline: "middle",
+      alpha: a,
+      font: FONT.display,
+    });
   }
 
   /** Pre-snap HUD prompt: break-the-huddle while walking, hike prompt once set. */
@@ -1276,6 +1374,10 @@ function hexNum(css: string): number {
 function pickHitWord(): string {
   const words = ["BOOM!", "POW!", "CRUNCH!", "WHAM!", "LEVELED!"];
   return words[Math.floor(Math.random() * words.length)];
+}
+
+function ordinal(n: number): string {
+  return n === 1 ? "1ST" : n === 2 ? "2ND" : n === 3 ? "3RD" : `${n}TH`;
 }
 
 function headlineFor(type: OutcomeType, yards: number): string {
