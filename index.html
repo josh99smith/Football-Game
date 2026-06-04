@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0b3d18" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <title>Gridiron Blitz</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+      <div id="rotate-prompt" class="overlay hidden">
+        <div class="rotate-inner">
+          <div class="rotate-icon">📱↻</div>
+          <p>Rotate your device to <strong>landscape</strong> to play.</p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

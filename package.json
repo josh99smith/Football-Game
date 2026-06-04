@@ -1,0 +1,25 @@
+{
+  "name": "gridiron-blitz",
+  "version": "0.1.0",
+  "description": "Gridiron Blitz — a mobile-first arcade American football game (NFL Blitz-style) built with HTML5 Canvas + TypeScript.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "game",
+    "football",
+    "arcade",
+    "canvas",
+    "typescript",
+    "mobile"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}

@@ -1,0 +1,76 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #06210e;
+  /* Disable browser touch gestures (scroll/zoom/pull-to-refresh) so the game owns input. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#game {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 18, 9, 0.96);
+  color: #f5f5f5;
+  z-index: 10;
+  text-align: center;
+  padding: 24px;
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.rotate-inner {
+  max-width: 360px;
+}
+
+.rotate-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  animation: wiggle 1.6s ease-in-out infinite;
+}
+
+.rotate-inner p {
+  font-size: 20px;
+  line-height: 1.5;
+}
+
+@keyframes wiggle {
+  0%,
+  100% {
+    transform: rotate(-12deg);
+  }
+  50% {
+    transform: rotate(12deg);
+  }
+}

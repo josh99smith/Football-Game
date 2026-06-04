@@ -1,0 +1,18 @@
+{
+  "name": "Gridiron Blitz",
+  "short_name": "Blitz",
+  "description": "A mobile-first arcade American football game. Fast, loud, and over-the-top.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#06210e",
+  "theme_color": "#0b3d18",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
