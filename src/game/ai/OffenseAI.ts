@@ -21,15 +21,16 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
     switch (job) {
       case "block": {
         const protect = carrier ?? ctx.qb;
-        const threat = nearestDefenderTo(ctx, protect ? protect.pos : o.pos);
+        // Each blocker engages the nearest rusher to itself so they spread across
+        // threats and form a wall, then stays on the protected-player side of them.
+        const threat = nearestDefenderTo(ctx, o.pos);
         if (threat && protect) {
-          // Stand between the threat and whoever we're protecting.
           const block: Vec2 = {
-            x: threat.pos.x + Math.sign(protect.pos.x - threat.pos.x) * 10,
+            x: threat.pos.x + Math.sign(protect.pos.x - threat.pos.x) * 8,
             y: threat.pos.y,
           };
           steer = seek(o.pos, block);
-          o.turbo = dist(o.pos, threat.pos) > 90;
+          o.turbo = dist(o.pos, threat.pos) > 60;
         }
         break;
       }

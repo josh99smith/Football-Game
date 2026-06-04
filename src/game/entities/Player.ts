@@ -12,13 +12,13 @@ export type PlayerState = "set" | "active" | "tackled" | "celebrate";
  * moderate for a weightier, more readable pace (slower than a twitch arcade title).
  */
 const ROLE_STATS: Record<Role, { speed: number; accel: number; radius: number }> = {
-  QB: { speed: 140, accel: 1250, radius: 12 },
-  HB: { speed: 158, accel: 1400, radius: 12 },
-  WR: { speed: 164, accel: 1350, radius: 11.5 },
-  OL: { speed: 124, accel: 1050, radius: 14 },
-  DL: { speed: 134, accel: 1150, radius: 14 },
-  LB: { speed: 148, accel: 1250, radius: 13 },
-  DB: { speed: 162, accel: 1350, radius: 11.5 },
+  QB: { speed: 150, accel: 1300, radius: 12 },
+  HB: { speed: 176, accel: 1500, radius: 12 },
+  WR: { speed: 180, accel: 1450, radius: 11.5 },
+  OL: { speed: 126, accel: 1050, radius: 14 },
+  DL: { speed: 128, accel: 1100, radius: 14 },
+  LB: { speed: 150, accel: 1250, radius: 13 },
+  DB: { speed: 170, accel: 1400, radius: 11.5 },
 };
 
 export const TURBO_MULT = 1.4;

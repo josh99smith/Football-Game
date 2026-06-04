@@ -27,7 +27,7 @@ export class CPUOffense {
 
   update(
     ctx: PlayContext,
-    throwFn: (from: Player, target: Vec2) => void,
+    throwFn: (from: Player, target: Vec2, receiver: Player | null) => void,
   ): void {
     this.timer += 1 / 60;
     const carrier = ctx.carrier;
@@ -63,7 +63,7 @@ export class CPUOffense {
       this.decided = true;
       const target = bestReceiver(ctx);
       if (target) {
-        throwFn(qb, leadPoint(target));
+        throwFn(qb, leadPoint(target), target);
       } else {
         this.scrambling = true;
       }

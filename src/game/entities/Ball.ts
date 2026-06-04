@@ -55,8 +55,18 @@ export class Ball {
     this.gravity = this.vz / (t / 2);
   }
 
-  private flightTime = 0;
+  flightTime = 0;
   private gravity = 0;
+
+  /** 0 at release, 1 at the landing target. */
+  get flightProgress(): number {
+    return this.flightTime > 0 ? this.airTime / this.flightTime : 1;
+  }
+
+  /** Distance (px) from the ball to its landing target. */
+  get distToTarget(): number {
+    return Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y);
+  }
 
   /** Returns true the frame the ball reaches the ground/target (caller resolves outcome). */
   update(dt: number): boolean {

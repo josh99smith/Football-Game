@@ -99,15 +99,17 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
       steer = seek(d.pos, huntTarget);
       d.turbo = true;
     } else if (carrierIsRunning && carrier) {
-      // Pursue the ball carrier; turbo when not the contain man.
+      // Pursue the ball carrier; only turbo to close from real distance so runners
+      // have room to make a move instead of being instantly run down.
       steer = pursue(d.pos, carrier);
-      d.turbo = dist2(d.pos, carrier.pos) > 60 * 60;
+      d.turbo = dist2(d.pos, carrier.pos) > 95 * 95;
     } else {
       switch (d.job) {
         case "rush": {
           const t = qb ?? carrier;
           steer = t ? seek(d.pos, t.pos) : { x: ctx.dir, y: 0 };
-          d.turbo = true;
+          // Rushers do NOT sprint — that keeps a throwable pocket for the QB.
+          d.turbo = false;
           break;
         }
         case "cover": {

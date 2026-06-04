@@ -20,9 +20,9 @@ type Phase = "presnap" | "live" | "dead";
 const PRESNAP_TIME = 0.9;
 const MAX_PLAY_TIME = 16;
 const DIFFICULTY = {
-  rookie: { pick: 0.22, cpuSpeed: 0.95 },
-  pro: { pick: 0.34, cpuSpeed: 1.0 },
-  allpro: { pick: 0.48, cpuSpeed: 1.05 },
+  rookie: { pick: 0.1, cpuSpeed: 0.92 },
+  pro: { pick: 0.18, cpuSpeed: 0.97 },
+  allpro: { pick: 0.3, cpuSpeed: 1.02 },
 };
 
 /**
@@ -58,6 +58,13 @@ export class LivePlayState implements GameState {
   private startLosX = 0;
   private passThrown = false;
   private sackPossible = true;
+  /** The receiver the current pass is aimed at (attacks the ball in flight). */
+  private passTarget: Player | null = null;
+  /** Post-whistle beat so the player SEES the catch/tackle before the result banner. */
+  private pendingOutcome: PlayOutcome | null = null;
+  private deadTimer = 0;
+  /** Cooldown so broken tackles can't chain every frame. */
+  private lastBreak = -1;
 
   constructor(app: GameApp, offensePlay: OffensePlay, defensePlay: DefensePlay) {
     this.app = app;
@@ -146,7 +153,10 @@ export class LivePlayState implements GameState {
       this.syncScene(dt);
       return;
     }
-    if (this.phase === "dead") return;
+    if (this.phase === "dead") {
+      this.updateDeadBeat(dt);
+      return;
+    }
 
     this.playTime += dt;
     m.tickClock(dt);
@@ -157,9 +167,20 @@ export class LivePlayState implements GameState {
     // AI for everyone not under human control.
     updateOffense(ctx, this.controlled);
     if (!this.humanIsOffense) {
-      this.cpu.update(ctx, (from, target) => this.throwPass(from, target));
+      this.cpu.update(ctx, (from, target, receiver) => this.throwPass(from, target, receiver));
     }
     updateDefense(ctx, this.controlled);
+
+    // While the ball is in the air, the target receiver attacks the catch point.
+    if (this.ball.state === "inAir" && this.passTarget && !this.passTarget.isDown) {
+      const t = this.ball.target;
+      const p = this.passTarget;
+      const dx = t.x - p.pos.x;
+      const dy = t.y - p.pos.y;
+      const d = Math.hypot(dx, dy) || 1;
+      p.desired = { x: dx / d, y: dy / d };
+      p.turbo = true;
+    }
 
     // Apply on-fire flames at carriers' feet.
     this.spawnFireFx();
@@ -280,7 +301,7 @@ export class LivePlayState implements GameState {
       // QB throws to the receiver indicated by the joystick aim.
       const receivers = this.offense.filter((p) => p.role !== "QB");
       const choice = chooseTarget(this.qb, receivers, this.defense, this.dir, this.app.input.move);
-      if (choice) this.throwPass(this.qb, choice.point);
+      if (choice) this.throwPass(this.qb, choice.point, choice.receiver);
       return;
     }
 
@@ -341,12 +362,14 @@ export class LivePlayState implements GameState {
     if (p) p.controlled = true;
   }
 
-  private throwPass(from: Player, target: Vec2): void {
+  private throwPass(from: Player, target: Vec2, receiver: Player | null): void {
     const distToTarget = dist(from.pos, target);
-    const speed = 360 + Math.min(200, distToTarget * 0.6);
-    const loft = distToTarget > 360 ? 1.5 : 1.0;
+    // Slower, loftier passes give the receiver time to get under the ball.
+    const speed = 300 + Math.min(170, distToTarget * 0.5);
+    const loft = distToTarget > 300 ? 1.7 : 1.3;
     this.ball.throwTo(from, target, speed, loft);
     this.passThrown = true;
+    this.passTarget = receiver;
     this.app.audio.throwBall();
     // After the throw, no one is controlled until a catch resolves.
     this.setControlled(null);
@@ -355,6 +378,7 @@ export class LivePlayState implements GameState {
   private resolvePassResult(res: { caught?: Player; intercepted?: Player; incomplete?: boolean }): void {
     if (res.caught) {
       this.ball.attachTo(res.caught);
+      this.passTarget = null;
       this.app.audio.catchBall();
       this.app.floating.add("CAUGHT!", res.caught.pos.x, res.caught.pos.y - 20, { size: 18, color: "#bfffd0" });
       if (res.caught.team === this.app.match.humanTeam && this.humanIsOffense) {
@@ -382,6 +406,8 @@ export class LivePlayState implements GameState {
 
   private moveAll(dt: number): void {
     const m = this.app.match;
+    // Defense ramps up over the first ~0.5s after the snap so plays can develop.
+    const react = Math.min(1, 0.4 + this.playTime * 1.2);
     for (const p of this.all) {
       if (p.isDown) {
         p.step(dt, 0);
@@ -389,7 +415,11 @@ export class LivePlayState implements GameState {
       }
       const onFire = m.team(p.team).onFire;
       const diving = p.diveTimer > 0;
-      const target = p.speedFor(p.turbo || diving, onFire) * (p.team === this.offenseTeamId ? 1 : DIFFICULTY[m.difficulty].cpuSpeed);
+      const isDefense = p.team !== this.offenseTeamId;
+      let mult = isDefense ? DIFFICULTY[m.difficulty].cpuSpeed * react : 1;
+      // A blocker latched onto a defender drags them to a crawl (opens lanes).
+      if (isDefense && this.isEngagedByBlocker(p)) mult *= 0.32;
+      const target = p.speedFor(p.turbo || diving, onFire) * mult;
       if (diving) {
         // Keep momentum during a dive (don't steer).
         p.step(dt, Math.hypot(p.vel.x, p.vel.y));
@@ -398,6 +428,18 @@ export class LivePlayState implements GameState {
       }
       p.pos.y = this.app.field.clampY(p.pos.y);
     }
+  }
+
+  /** True if an offensive blocker is currently latched onto this defender. */
+  private isEngagedByBlocker(d: Player): boolean {
+    for (const o of this.offense) {
+      if (o.job !== "block" || o.isDown) continue;
+      const rr = o.radius + d.radius + 12;
+      const dx = o.pos.x - d.pos.x;
+      const dy = o.pos.y - d.pos.y;
+      if (dx * dx + dy * dy < rr * rr) return true;
+    }
+    return false;
   }
 
   /** Push overlapping bodies apart so blockers wall defenders (blocking emerges). */
@@ -438,7 +480,7 @@ export class LivePlayState implements GameState {
 
     for (const d of this.defense) {
       if (d.isDown) continue;
-      const reach = d.diveTimer > 0 ? d.radius + carrier.radius + 12 : d.radius + carrier.radius;
+      const reach = d.diveTimer > 0 ? d.radius + carrier.radius + 10 : (d.radius + carrier.radius) * 0.95;
       if (dist(d.pos, carrier.pos) > reach) continue;
 
       // Juke: the carrier shrugs the first tackler and the defender whiffs.
@@ -449,20 +491,54 @@ export class LivePlayState implements GameState {
         continue;
       }
 
-      // Tackle. Big hit if the defender is turbo/diving or closing fast.
       const closing = Math.hypot(d.vel.x - carrier.vel.x, d.vel.y - carrier.vel.y);
-      const big = d.turbo || d.diveTimer > 0 || closing > 160;
+      const big = d.turbo || d.diveTimer > 0 || closing > 150;
+
+      // Break tackle: shrug off hits (much easier on weak hits / with turbo).
+      if (this.tryBreakTackle(carrier, d, big)) continue;
+
       this.doTackle(d, carrier, big, closing);
       return;
     }
+  }
+
+  /** Attempt to break a tackle. Returns true if the carrier stays up. */
+  private tryBreakTackle(carrier: Player, tackler: Player, big: boolean): boolean {
+    if (this.playTime - this.lastBreak < 0.55) return false;
+    // Big hits can only be broken by powering through with turbo.
+    let p = big ? (carrier.turbo ? 0.25 : 0.06) : carrier.turbo ? 0.6 : 0.38;
+    if (this.defendersNear(carrier, 32) >= 2) p *= 0.4; // gang tackles still win
+    if (Math.random() >= p) return false;
+    this.lastBreak = this.playTime;
+    tackler.knockDown(0.7);
+    carrier.vel.x *= 0.78;
+    carrier.vel.y *= 0.78;
+    this.app.particles.burst(tackler.pos.x, tackler.pos.y, "#ffffff", 7, 90);
+    this.app.audio.juke();
+    this.app.shake.add(0.14);
+    this.app.floating.add("BROKE IT!", carrier.pos.x, carrier.pos.y, { size: 18, color: "#bfffd0", life: 0.8 });
+    return true;
+  }
+
+  private defendersNear(p: Player, radius: number): number {
+    let n = 0;
+    const r2 = radius * radius;
+    for (const d of this.defense) {
+      if (d.isDown) continue;
+      const dx = d.pos.x - p.pos.x;
+      const dy = d.pos.y - p.pos.y;
+      if (dx * dx + dy * dy < r2) n++;
+    }
+    return n;
   }
 
   private doTackle(tackler: Player, carrier: Player, big: boolean, closing: number): void {
     const hx = (tackler.pos.x + carrier.pos.x) / 2;
     const hy = (tackler.pos.y + carrier.pos.y) / 2;
 
-    // Fumble chance scales with hit power (Blitz-style strips).
-    const fumbleChance = big ? 0.16 : 0.04;
+    // Fumble chance scales with hit power (Blitz-style strips) — kept rare so a
+    // hard hit doesn't constantly cost possession.
+    const fumbleChance = big ? 0.08 : 0.02;
     const dirX = carrier.pos.x - tackler.pos.x;
     const dirY = carrier.pos.y - tackler.pos.y;
 
@@ -572,7 +648,7 @@ export class LivePlayState implements GameState {
     if (this.phase === "dead") return;
     this.phase = "dead";
     if (this.controlled) this.controlled.controlled = false;
-    this.app.audio.stopCrowd();
+    this.passTarget = null;
 
     const m = this.app.match;
     const gained = (spot.x - this.startLosX) * this.dir / PX_PER_YARD;
@@ -581,7 +657,7 @@ export class LivePlayState implements GameState {
         ? m.opponent(this.offenseTeamId)
         : this.offenseTeamId;
 
-    const outcome: PlayOutcome = {
+    this.pendingOutcome = {
       type,
       ballX: spot.x,
       ballY: spot.y,
@@ -590,7 +666,31 @@ export class LivePlayState implements GameState {
       firstDown: false,
       headline: headlineFor(type, Math.round(gained)),
     };
-    this.app.setState(new PlayResultState(this.app, outcome));
+    // Linger on the field so the player sees how the play ended, then show the banner.
+    this.deadTimer =
+      type === "touchdown" ? 1.6 : type === "interception" || type === "fumbleLost" ? 1.3 : 0.85;
+  }
+
+  /** Post-whistle beat: bodies settle and FX play out before the result screen. */
+  private updateDeadBeat(dt: number): void {
+    this.deadTimer -= dt;
+    for (const p of this.all) p.step(dt, 0); // coast to a stop
+    this.ball.update(dt);
+    this.spawnFireFx();
+    // Tap/ACTION skips straight to the result.
+    if (this.deadTimer <= 0 || this.app.input.actionPressed) {
+      this.commitOutcome();
+      return;
+    }
+    this.syncScene(dt);
+  }
+
+  private committed = false;
+  private commitOutcome(): void {
+    if (this.committed || !this.pendingOutcome) return;
+    this.committed = true;
+    this.app.audio.stopCrowd();
+    this.app.setState(new PlayResultState(this.app, this.pendingOutcome));
   }
 
   private spawnFireFx(): void {

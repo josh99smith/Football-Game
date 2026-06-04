@@ -8,8 +8,8 @@ export interface CatchResult {
   incomplete?: boolean;
 }
 
-const CATCH_RADIUS = 26;
-const CATCH_HEIGHT = 34; // ball must be low enough to be catchable
+const CATCH_RADIUS = 44; // generous so well-thrown balls are actually caught
+const CATCH_HEIGHT = 70; // ball must be low enough to be catchable
 
 /**
  * Pick the receiver to throw to. If the QB is "aiming" (joystick deflected), choose
@@ -79,7 +79,11 @@ export function resolveAir(
   pickChance: number,
 ): CatchResult | null {
   if (ball.state !== "inAir") return null;
-  const reachable = ball.z < CATCH_HEIGHT && ball.airTime > 0.12;
+
+  // Only contest the ball as it ARRIVES (past the apex / near the target). This stops
+  // rushers next to the QB from "catching" the pass the instant it's released.
+  const arriving = ball.flightProgress > 0.5 || ball.distToTarget < 60;
+  const reachable = arriving && ball.z < CATCH_HEIGHT;
 
   if (reachable) {
     const def = nearestInRange(ball.pos, defense, CATCH_RADIUS);
@@ -91,10 +95,14 @@ export function resolveAir(
 
     // Resolve the first frame anyone can reach the ball, so we never re-roll.
     if (def && rcv) {
-      const defCloser = dist(ball.pos, def.pos) < dist(ball.pos, rcv.pos);
-      if (defCloser) return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
-      // Receiver is closer but contested: small chance the defender picks it.
-      return Math.random() < pickChance * 0.5 ? { intercepted: def } : { caught: rcv };
+      const dDef = dist(ball.pos, def.pos);
+      const dRcv = dist(ball.pos, rcv.pos);
+      // Defender only wins if clearly closer to the ball than the receiver.
+      if (dDef < dRcv - 6) {
+        return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
+      }
+      // Receiver in position: catch it (tiny contested pick chance).
+      return Math.random() < pickChance * 0.25 ? { intercepted: def } : { caught: rcv };
     }
     if (rcv) return { caught: rcv };
     if (def) return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
