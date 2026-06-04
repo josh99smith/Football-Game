@@ -29,10 +29,11 @@ const DIVE_HOLD = 0.22;
 /** A defender within this distance (px) of the carrier tackles on ACTION (else switches). */
 const DEF_TACKLE_RANGE = 70;
 
-/** Map throw power (0 lob .. 1 bullet) to launch parameters. Single source of truth. */
+/** Map throw power (0 lob .. 1 bullet) to launch parameters. Single source of truth.
+ * Lobs get an exaggerated, floaty arc; bullets are flat and fast with a tighter spiral. */
 function throwParams(power: number): { speed: number; loft: number; spin: number } {
   const p = Math.max(0, Math.min(1, power));
-  return { speed: lerp(300, 580, p), loft: lerp(2.0, 0.72, p), spin: lerp(26, 52, p) };
+  return { speed: lerp(290, 590, p), loft: lerp(2.9, 0.65, p), spin: lerp(24, 54, p) };
 }
 const DIFFICULTY = {
   // reactBase/reactRate control how fast the pass rush + pursuit ramp up after the
@@ -609,7 +610,7 @@ export class LivePlayState implements GameState {
     if (this.humanIsOffense) this.setControlled(null);
   }
 
-  private resolvePassResult(res: { caught?: Player; intercepted?: Player; incomplete?: boolean }): void {
+  private resolvePassResult(res: { caught?: Player; intercepted?: Player; incomplete?: boolean; swatBy?: Player }): void {
     if (res.caught) {
       this.ball.attachTo(res.caught);
       this.passTarget = null;
@@ -635,6 +636,7 @@ export class LivePlayState implements GameState {
     } else if (res.incomplete) {
       this.app.audio.whistle();
       if (this.humanIsOffense) this.app.audio.crowdGroan();
+      if (res.swatBy) res.swatBy.animEvent = "swat"; // defender bats the pass down
       this.app.floating.add("INCOMPLETE", this.ball.pos.x, this.ball.pos.y - 10, { size: 18, color: "#ddd" });
       // Let the ball skip/bounce at the spot during the dead beat.
       this.ball.becomeLoose(this.ball.vel.x * 0.3, this.ball.vel.y * 0.3, 120);
@@ -875,8 +877,9 @@ export class LivePlayState implements GameState {
 
     // Both players wrap up and go down together; the whistle blows after the beat.
     carrier.enterContact(bvx, bvy, beat);
-    carrier.animEvent = "tackle"; // play the getting-tackled reaction clip
+    carrier.animEvent = "tackle"; // the carrier's getting-tackled reaction
     tackler.enterContact(bvx * 0.55, bvy * 0.55, beat);
+    tackler.animEvent = "tackleMade"; // the defender's tackle hit
     tackler.facing = Math.atan2(dirY, dirX);
     tackler.heading = tackler.facing;
     this.pendingTackle = { type, spot };
@@ -941,8 +944,23 @@ export class LivePlayState implements GameState {
     this.app.particles.confetti(carrier.pos.x, carrier.pos.y, 50);
     this.app.floating.add("TOUCHDOWN!", carrier.pos.x, carrier.pos.y - 30, { size: 34, color: "#ffd23a", life: 1.6 });
     this.app.time.slow(0.4, 0.5);
-    // Offense scoring extends an on-fire streak chance.
+    // The whole scoring unit breaks into a celebration during the post-play beat.
+    this.celebrate(this.scoringTeamPlayers(carrier));
     this.endPlay("touchdown", { x: carrier.pos.x, y: carrier.pos.y });
+  }
+
+  /** Players on the same team as `p` who are upright (eligible to celebrate). */
+  private scoringTeamPlayers(p: Player): Player[] {
+    return this.all.filter((q) => q.team === p.team && !q.isDown);
+  }
+
+  /** Trigger the celebration animation on a group of players (staggered a touch). */
+  private celebrate(players: Player[]): void {
+    for (const p of players) {
+      p.vel.x = 0;
+      p.vel.y = 0;
+      p.animEvent = "celebrate";
+    }
   }
 
   private ballSpot(): Vec2 {
@@ -972,9 +990,10 @@ export class LivePlayState implements GameState {
       firstDown: false,
       headline: headlineFor(type, Math.round(gained)),
     };
-    // Linger on the field so the player sees how the play ended, then show the banner.
+    // Post-play: stay on the field a few moments so the tackle settles / the score is
+    // celebrated before cutting to the result + next play call.
     this.deadTimer =
-      type === "touchdown" ? 1.6 : type === "interception" || type === "fumbleLost" ? 1.3 : 0.85;
+      type === "touchdown" ? 2.8 : type === "interception" || type === "fumbleLost" ? 1.6 : 1.1;
   }
 
   /** Post-whistle beat: bodies settle and FX play out before the result screen. */

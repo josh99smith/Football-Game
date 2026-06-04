@@ -2,10 +2,8 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 
 export interface CharacterClips {
-  /** Offense ready stance / default idle. */
+  /** Football ready stance / default idle (used by everyone when set). */
   idle: THREE.AnimationClip | null;
-  /** Defensive ready stance. */
-  defender: THREE.AnimationClip | null;
   /** Forward run (locomotion). */
   run: THREE.AnimationClip | null;
   /** Backpedal (moving opposite facing). */
@@ -20,10 +18,16 @@ export interface CharacterClips {
   juke: THREE.AnimationClip | null;
   /** Walk cycle (slow locomotion / breaking the huddle). */
   walk: THREE.AnimationClip | null;
-  /** One-shot getting-tackled / fall reaction. */
+  /** One-shot getting-tackled / fall reaction (the ball carrier). */
   tackle: THREE.AnimationClip | null;
   /** One-shot spin move. */
   spin: THREE.AnimationClip | null;
+  /** One-shot tackle attempt (the defender making the hit). */
+  defTackle: THREE.AnimationClip | null;
+  /** One-shot ball-swat / pass-breakup attempt (defender). */
+  defSwat: THREE.AnimationClip | null;
+  /** One-shot touchdown / turnover celebration. */
+  celebrate: THREE.AnimationClip | null;
 }
 
 export interface CharacterAsset {
@@ -43,11 +47,13 @@ export interface CharacterUrls {
   strafe: string;
   pass: string;
   catch: string;
-  defender: string;
   juke: string;
   walk: string;
   tackle: string;
   spin: string;
+  defTackle: string;
+  defSwat: string;
+  celebrate: string;
 }
 
 /**
@@ -72,19 +78,22 @@ async function loadClip(loader: FBXLoader, url: string): Promise<THREE.Animation
  */
 export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset> {
   const loader = new FBXLoader();
-  const [model, run, runBack, strafe, pass, catchClip, defender, juke, walk, tackle, spin] = await Promise.all([
-    loader.loadAsync(urls.model),
-    loadClip(loader, urls.run),
-    loadClip(loader, urls.runBack),
-    loadClip(loader, urls.strafe),
-    loadClip(loader, urls.pass),
-    loadClip(loader, urls.catch),
-    loadClip(loader, urls.defender),
-    loadClip(loader, urls.juke),
-    loadClip(loader, urls.walk),
-    loadClip(loader, urls.tackle),
-    loadClip(loader, urls.spin),
-  ]);
+  const [model, run, runBack, strafe, pass, catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate] =
+    await Promise.all([
+      loader.loadAsync(urls.model),
+      loadClip(loader, urls.run),
+      loadClip(loader, urls.runBack),
+      loadClip(loader, urls.strafe),
+      loadClip(loader, urls.pass),
+      loadClip(loader, urls.catch),
+      loadClip(loader, urls.juke),
+      loadClip(loader, urls.walk),
+      loadClip(loader, urls.tackle),
+      loadClip(loader, urls.spin),
+      loadClip(loader, urls.defTackle),
+      loadClip(loader, urls.defSwat),
+      loadClip(loader, urls.celebrate),
+    ]);
 
   const idle = model.animations[0] ? prep(model.animations[0]) : null;
 
@@ -95,7 +104,7 @@ export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset
 
   return {
     template: model,
-    clips: { idle, defender: defender ?? idle, run, runBack, strafe, pass, catch: catchClip, juke, walk, tackle, spin },
+    clips: { idle, run, runBack, strafe, pass, catch: catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate },
     scale: 1.95 / height,
     groundOffset: -box.min.y,
   };

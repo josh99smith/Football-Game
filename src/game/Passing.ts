@@ -6,6 +6,8 @@ export interface CatchResult {
   caught?: Player;
   intercepted?: Player;
   incomplete?: boolean;
+  /** Defender who broke the pass up (for the ball-swat animation). */
+  swatBy?: Player;
 }
 
 const CATCH_RADIUS = 48; // generous so well-thrown balls are actually caught
@@ -111,12 +113,12 @@ export function resolveAir(
     // gets extra benefit of the doubt on contested balls.
     const margin = rcv === intended ? 18 : 4;
     if (dDef < dRcv - margin) {
-      return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
+      return Math.random() < pickChance ? { intercepted: def } : { incomplete: true, swatBy: def };
     }
     return Math.random() < pickChance * 0.2 ? { intercepted: def } : { caught: rcv };
   }
   if (rcv) return { caught: rcv };
-  if (def) return Math.random() < pickChance ? { intercepted: def } : { incomplete: true };
+  if (def) return Math.random() < pickChance ? { intercepted: def } : { incomplete: true, swatBy: def };
 
   // Nobody's there yet — let the ball keep traveling; only an actual landing is incomplete.
   return landed ? { incomplete: true } : null;

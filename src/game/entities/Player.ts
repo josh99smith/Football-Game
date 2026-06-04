@@ -113,7 +113,7 @@ export class Player {
   /** Juke/cut lean signal (-1..1), consumed by the avatar for an extra bank. */
   leanTarget = 0;
   /** One-shot animation trigger consumed by the renderer. */
-  animEvent: "pass" | "catch" | "juke" | "tackle" | null = null;
+  animEvent: "pass" | "catch" | "juke" | "tackle" | "tackleMade" | "swat" | "celebrate" | null = null;
 
   // AI scratch fields (used by Offense/Defense AI; harmless when unused).
   /** High-level job assigned by the playbook at snap. */

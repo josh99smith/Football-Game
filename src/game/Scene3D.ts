@@ -255,7 +255,6 @@ class FbxAvatar implements Avatar {
   readonly group = new THREE.Group();
   private readonly mixer: THREE.AnimationMixer;
   private readonly idleAction: THREE.AnimationAction | null;
-  private readonly defAction: THREE.AnimationAction | null;
   private readonly runAction: THREE.AnimationAction | null;
   private readonly backAction: THREE.AnimationAction | null;
   private readonly strafeAction: THREE.AnimationAction | null;
@@ -265,6 +264,11 @@ class FbxAvatar implements Avatar {
   private readonly jukeAction: THREE.AnimationAction | null;
   private readonly tackleAction: THREE.AnimationAction | null;
   private readonly spinAction: THREE.AnimationAction | null;
+  private readonly defTackleAction: THREE.AnimationAction | null;
+  private readonly defSwatAction: THREE.AnimationAction | null;
+  private readonly celebrateAction: THREE.AnimationAction | null;
+  /** Right-hand bone — the held ball rides it so it follows the hand as it animates. */
+  private readonly handBone: THREE.Object3D | null;
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
@@ -309,7 +313,6 @@ class FbxAvatar implements Avatar {
     this.mixer = new THREE.AnimationMixer(inner);
     const clips = asset.clips;
     this.idleAction = clips.idle ? this.mixer.clipAction(clips.idle) : null;
-    this.defAction = clips.defender ? this.mixer.clipAction(clips.defender) : null;
     this.runAction = clips.run ? this.mixer.clipAction(clips.run) : null;
     this.backAction = clips.runBack ? this.mixer.clipAction(clips.runBack) : null;
     this.strafeAction = clips.strafe ? this.mixer.clipAction(clips.strafe) : null;
@@ -319,12 +322,15 @@ class FbxAvatar implements Avatar {
     this.jukeAction = clips.juke ? this.mixer.clipAction(clips.juke) : null;
     this.tackleAction = clips.tackle ? this.mixer.clipAction(clips.tackle) : null;
     this.spinAction = clips.spin ? this.mixer.clipAction(clips.spin) : null;
-    for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
+    this.defTackleAction = clips.defTackle ? this.mixer.clipAction(clips.defTackle) : null;
+    this.defSwatAction = clips.defSwat ? this.mixer.clipAction(clips.defSwat) : null;
+    this.celebrateAction = clips.celebrate ? this.mixer.clipAction(clips.celebrate) : null;
+    for (const a of [this.idleAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
       a?.setLoop(THREE.LoopRepeat, Infinity);
       a?.play();
       a?.setEffectiveWeight(0);
     }
-    for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction]) {
+    for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction]) {
       a?.setLoop(THREE.LoopOnce, 1);
       if (a) a.clampWhenFinished = true;
     }
@@ -347,6 +353,14 @@ class FbxAvatar implements Avatar {
     // so the ground ring / chevron / ball stay upright.
     this.lean.add(inner);
     this.group.add(this.lean, this.ring, this.chevron, this.nub);
+
+    // Locate the right-hand bone so the held ball can ride it (follows the hand as the
+    // run/throw/catch animations move the arm). Falls back to the fixed nub spot if absent.
+    let hand: THREE.Object3D | null = null;
+    inner.traverse((o) => {
+      if (!hand && /RightHand$/i.test(o.name)) hand = o;
+    });
+    this.handBone = hand;
   }
 
   /**
@@ -380,7 +394,7 @@ class FbxAvatar implements Avatar {
     this.oneShot = null;
     this.lean.rotation.set(0, 0, 0);
     this.group.position.y = 0;
-    for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
+    for (const a of [this.idleAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
       a?.setEffectiveWeight(0);
     }
     this.interp.reset();
@@ -393,17 +407,22 @@ class FbxAvatar implements Avatar {
 
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void {
     void trim;
+    void isDefense;
     const g = this.group;
     g.visible = true;
     this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
     g.position.y = 0;
 
-    // Fire one-shot overlays on game events: throw, catch, a spin-move juke, and a
-    // getting-tackled reaction. (Spin supersedes the old change-direction juke clip.)
+    // Fire one-shot overlays on game events: throw, catch, spin-move juke, the
+    // carrier's getting-tackled reaction, the defender's tackle + ball-swat attempts,
+    // and a celebration. (Spin supersedes the old change-direction juke clip.)
     if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 1.1);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
     else if (p.animEvent === "juke") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.9, 1.15, 0);
     else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.5, 1.05, 0);
+    else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.4, 1.1, 0);
+    else if (p.animEvent === "swat") this.triggerOneShot(this.defSwatAction, 0.95, 1.2, 0.3);
+    else if (p.animEvent === "celebrate") this.triggerOneShot(this.celebrateAction, 2.6, 1.0, 0);
     p.animEvent = null;
 
     const lo = p.loco;
@@ -445,7 +464,6 @@ class FbxAvatar implements Avatar {
 
     // Compute TARGET weights, then lerp toward them so every transition crossfades.
     let tIdle = 0;
-    let tDef = 0;
     let tWalk = 0;
     let tRun = 0;
     let tBack = 0;
@@ -479,8 +497,7 @@ class FbxAvatar implements Avatar {
       tRun = fwdMoving * runMix;
       tBack = back * moving01;
       tStrafe = strafe * moving01;
-      if (isDefense) tDef = 1 - moving01;
-      else tIdle = 1 - moving01;
+      tIdle = 1 - moving01; // everyone settles into the football ready stance
       this.walkAction?.setEffectiveTimeScale(walkTs);
       this.runAction?.setEffectiveTimeScale(ts);
       this.backAction?.setEffectiveTimeScale(ts);
@@ -501,7 +518,6 @@ class FbxAvatar implements Avatar {
 
     // Smoothly crossfade all locomotion/idle weights toward their targets.
     blendW(this.idleAction, tIdle * loco, dt);
-    blendW(this.defAction, tDef * loco, dt);
     blendW(this.walkAction, tWalk * loco, dt);
     blendW(this.runAction, tRun * loco, dt);
     blendW(this.backAction, tBack * loco, dt);
@@ -516,6 +532,17 @@ class FbxAvatar implements Avatar {
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
     this.nub.visible = p.hasBall && !p.isDown;
+    // Ride the ball on the right hand so it tracks the animated arm. The bone's world
+    // matrix is current after mixer.update; convert into the group's local space (both
+    // share the same ancestor chain, so the hand's offset is captured correctly).
+    if (this.nub.visible && this.handBone) {
+      this.handBone.updateWorldMatrix(true, false);
+      this.handBone.getWorldPosition(_handPos);
+      this.group.worldToLocal(_handPos);
+      this.nub.position.copy(_handPos);
+    } else if (!this.handBone) {
+      this.nub.position.set(0.34, 1.1, 0.2);
+    }
   }
 
   hide(): void {
@@ -1035,6 +1062,7 @@ const _tmpPos = new THREE.Vector3();
 const _tmpLook = new THREE.Vector3();
 const _tmpVec = new THREE.Vector3();
 // Scratch objects for the spiraling-ball orientation (no per-frame allocation).
+const _handPos = new THREE.Vector3();
 const _ballVel = new THREE.Vector3();
 const _ballQ = new THREE.Quaternion();
 const _spinQ = new THREE.Quaternion();
