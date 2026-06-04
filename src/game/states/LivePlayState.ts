@@ -24,6 +24,10 @@ const PRESNAP_TIME = 20;
 const MAX_PLAY_TIME = 16;
 /** Hold this long (s) to fully charge a bullet pass; a quick tap throws a lob. */
 const THROW_CHARGE_MAX = 0.5;
+/** Hold the ACTION button this long (s) as a ball carrier to dive instead of juke. */
+const DIVE_HOLD = 0.22;
+/** A defender within this distance (px) of the carrier tackles on ACTION (else switches). */
+const DEF_TACKLE_RANGE = 70;
 
 /** Map throw power (0 lob .. 1 bullet) to launch parameters. Single source of truth. */
 function throwParams(power: number): { speed: number; loft: number; spin: number } {
@@ -76,6 +80,9 @@ export class LivePlayState implements GameState {
   /** Throw charge (seconds ACTION held); maps tap->lob, hold->bullet. */
   private throwCharge = 0;
   private throwCharging = false;
+  /** Ball-carrier ACTION hold tracking (tap = juke, hold = dive). */
+  private carrierHeld = 0;
+  private carrierFired = false;
   private startLosX = 0;
   private passThrown = false;
   private sackPossible = true;
@@ -429,21 +436,27 @@ export class LivePlayState implements GameState {
     }
 
     if (this.humanIsOffense) {
-      // While the QB is a legal passer (behind the line, hasn't thrown), the ACTION
-      // button charges the throw: a quick tap is a lob, holding loads a bullet.
-      const behind = this.dir > 0 ? c.pos.x <= this.startLosX + 4 : c.pos.x >= this.startLosX - 4;
-      const canThrow =
-        c === this.qb && this.ball.carrier === this.qb && !this.passThrown && !this.offensePlay.isRun && behind;
-      if (canThrow) {
+      // The one ACTION button is contextual: the QB (a legal passer behind the line)
+      // charges a throw (tap = lob, hold = bullet); any ball carrier jukes/dives.
+      if (this.canThrow(c)) {
         this.updateThrowCharge(c, dt);
       } else {
         this.throwCharging = false;
         this.throwCharge = 0;
-        this.handleOffenseAction(c, input.actionPressed, input.action2Pressed);
+        if (this.ball.carrier === c) this.updateCarrierAction(c, dt);
       }
     } else {
-      this.handleDefenseAction(c, input.actionPressed, input.action2Pressed);
+      this.handleDefenseAction(c);
     }
+  }
+
+  /** True when the controlled player is the QB and may legally throw (behind the line,
+   * still holding the ball, on a pass play). */
+  private canThrow(c: Player): boolean {
+    const behind = this.dir > 0 ? c.pos.x <= this.startLosX + 4 : c.pos.x >= this.startLosX - 4;
+    return (
+      c === this.qb && this.ball.carrier === this.qb && !this.passThrown && !this.offensePlay.isRun && behind
+    );
   }
 
   /** Charge a throw while ACTION is held; release into a lob (tap) -> bullet (hold). */
@@ -473,51 +486,65 @@ export class LivePlayState implements GameState {
         this.throwPass(qb, lead, r, power);
       }
     }
-    // Allow a quick juke/scramble cue via ACTION2 even while a passer.
-    if (input.action2Pressed) this.handleOffenseAction(qb, false, true);
   }
 
-  private handleOffenseAction(c: Player, pressed: boolean, doubleTap: boolean): void {
-    if (!pressed && !doubleTap) return;
-    const carrier = this.ball.carrier;
-
-    // Ball carrier moves.
-    if (carrier === c) {
-      if (doubleTap) {
-        // Juke: brief tackle-immunity + a lateral burst in the aim direction that
-        // preserves forward momentum (a real sidestep, not a teleport).
-        c.jukeTimer = 0.45;
-        const aim = this.app.input.move;
-        const am = Math.hypot(aim.x, aim.y);
-        if (am > 0.3) {
-          c.vel.x += (aim.x / am) * 80;
-          c.vel.y += (aim.y / am) * 80;
-          // Lean toward the cut.
-          const cross = c.vel.x * (aim.y / am) - c.vel.y * (aim.x / am);
-          c.leanTarget = Math.sign(cross) || 1;
-        } else {
-          c.vel.x += Math.cos(c.facing) * 55;
-          c.vel.y += Math.sin(c.facing) * 55;
-        }
-        c.animEvent = "juke";
-        this.app.audio.juke();
-        this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
-      } else if (pressed) {
-        // Dive: lunge forward for extra yards, then you're down.
+  /** Ball-carrier ACTION: a quick tap jukes (sidestep), holding past a beat dives. */
+  private updateCarrierAction(c: Player, dt: number): void {
+    const input = this.app.input;
+    if (input.actionPressed) {
+      this.carrierHeld = 0;
+      this.carrierFired = false;
+    }
+    if (input.action) {
+      this.carrierHeld += dt;
+      if (!this.carrierFired && this.carrierHeld >= DIVE_HOLD) {
         this.startDive(c);
+        this.carrierFired = true;
       }
+    }
+    if (input.actionReleased && !this.carrierFired) {
+      this.doJuke(c);
+      this.carrierFired = true;
     }
   }
 
-  private handleDefenseAction(c: Player, pressed: boolean, doubleTap: boolean): void {
-    if (doubleTap) {
-      // Dive tackle: lunge with a larger tackle radius for a moment.
+  /** Juke: brief tackle-immunity + a lateral burst in the aim direction that preserves
+   * forward momentum (a real sidestep, not a teleport). */
+  private doJuke(c: Player): void {
+    c.jukeTimer = 0.45;
+    const aim = this.app.input.move;
+    const am = Math.hypot(aim.x, aim.y);
+    if (am > 0.3) {
+      c.vel.x += (aim.x / am) * 80;
+      c.vel.y += (aim.y / am) * 80;
+      const cross = c.vel.x * (aim.y / am) - c.vel.y * (aim.x / am);
+      c.leanTarget = Math.sign(cross) || 1;
+    } else {
+      c.vel.x += Math.cos(c.facing) * 55;
+      c.vel.y += Math.sin(c.facing) * 55;
+    }
+    c.animEvent = "juke";
+    this.app.audio.juke();
+    this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
+  }
+
+  /** Defender ACTION is contextual: a dive tackle when on top of the carrier, otherwise
+   * switch to the defender best placed to make the play. */
+  private handleDefenseAction(c: Player): void {
+    if (!this.app.input.actionPressed) return;
+    if (this.defenderInTackleRange(c)) {
       c.diveTimer = 0.32;
       c.vel.x += Math.cos(c.facing) * 95;
       c.vel.y += Math.sin(c.facing) * 95;
-    } else if (pressed) {
+    } else {
       this.switchDefender();
     }
+  }
+
+  /** Is this defender close enough to the carrier that ACTION should be a tackle? */
+  private defenderInTackleRange(c: Player): boolean {
+    const carrier = this.ball.carrier;
+    return !!carrier && !carrier.isDown && dist(c.pos, carrier.pos) < DEF_TACKLE_RANGE;
   }
 
   private startDive(c: Player): void {
@@ -1106,20 +1133,32 @@ export class LivePlayState implements GameState {
     return m;
   }
 
+  /** The single ACTION button morphs by situation (the rest is procedural in the
+   * control handlers). Keep this label in sync with what ACTION actually does. */
   private controlLabels(): ControlLabels {
     const blue = "#1c6fd0";
     const green = "#1f9d4d";
-    if (this.humanIsOffense) {
-      const isCarrier = this.ball.carrier === this.controlled;
-      if (this.controlled === this.qb && !this.passThrown && !this.offensePlay.isRun) {
-        return { action: { text: "PASS", icon: "pass", color: blue }, action2: { text: "JUKE", icon: "juke", color: green } };
-      }
-      if (isCarrier) {
-        return { action: { text: "DIVE", icon: "dive", color: blue }, action2: { text: "JUKE", icon: "juke", color: green } };
-      }
-      return { action: { text: "—", icon: "dive", color: "#566" }, action2: null };
+    const grey = "#5a6b7a";
+
+    if (this.phase === "presnap") {
+      return this.humanIsOffense
+        ? { action: { text: "HIKE", icon: "pass", color: green } }
+        : { action: { text: "SWITCH", icon: "switch", color: blue } };
     }
-    return { action: { text: "SWITCH", icon: "switch", color: blue }, action2: { text: "DIVE", icon: "tackle", color: green } };
+
+    if (this.humanIsOffense) {
+      const c = this.controlled;
+      if (c && this.canThrow(c)) return { action: { text: "PASS", icon: "pass", color: blue } };
+      if (c && this.ball.carrier === c) return { action: { text: "JUKE", icon: "juke", color: green } };
+      if (this.ball.state === "inAir") return { action: { text: "CATCH", icon: "pass", color: green } };
+      return { action: { text: "—", icon: "switch", color: grey } };
+    }
+
+    // Defense: tackle when on the carrier, otherwise switch.
+    if (this.controlled && this.defenderInTackleRange(this.controlled)) {
+      return { action: { text: "TACKLE", icon: "tackle", color: green } };
+    }
+    return { action: { text: "SWITCH", icon: "switch", color: blue } };
   }
 
   exit(): void {

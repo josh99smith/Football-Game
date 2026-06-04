@@ -4,14 +4,14 @@ import type { ControlLayout, Input, CircleRegion } from "../engine/Input";
 export type ActionIcon = "pass" | "dive" | "switch" | "juke" | "tackle" | "turbo";
 
 export interface ControlLabels {
+  /** The single contextual action button (Hike / Pass / Catch / Juke / Tackle / Switch). */
   action: { text: string; icon: ActionIcon; color: string };
-  action2: { text: string; icon: ActionIcon; color: string } | null;
 }
 
 /**
  * On-screen controls styled after arcade football: a fixed d-pad on the lower-left
- * and a diagonal cluster of round, color-coded action buttons (TURBO + two
- * context actions) on the lower-right, each with a glyph and label.
+ * and a two-button cluster on the lower-right — TURBO plus one big, context-sensitive
+ * ACTION button whose label/glyph changes with the situation.
  */
 export class TouchControls {
   visible = true;
@@ -25,15 +25,16 @@ export class TouchControls {
 
   computeLayout(r: Renderer): ControlLayout {
     const margin = 24;
-    const big = Math.max(38, Math.min(54, r.height * 0.095));
-    const small = big * 0.86;
-    // Right-hand action cluster (diagonal, like the reference).
+    const big = Math.max(40, Math.min(58, r.height * 0.1));
+    const small = big * 0.9;
+    // Right-hand cluster: the big ACTION button sits in the corner (primary thumb
+    // position) with TURBO up and to its left.
     const ax = r.width - margin - big;
     const ay = r.height - margin - big;
     this.layout = {
-      turbo: { x: ax - big * 0.2, y: ay - big * 1.7, r: small },
-      action: { x: ax - big * 1.9, y: ay - big * 0.5, r: big },
-      action2: { x: ax, y: ay, r: big },
+      action: { x: ax, y: ay, r: big },
+      turbo: { x: ax - big * 1.7, y: ay - big * 0.5, r: small },
+      action2: { x: 0, y: 0, r: 0 }, // unused in the two-button setup (never hit-tests)
       joystick: { x: margin + 64, y: r.height - margin - 64, r: 56 },
       joystickZoneRight: r.width * 0.5,
     };
@@ -45,9 +46,6 @@ export class TouchControls {
     this.dpad(r, input);
     this.button(r, this.layout.turbo, "TURBO", "turbo", "#e23b3b", input.turbo);
     this.button(r, this.layout.action, labels.action.text, labels.action.icon, labels.action.color, input.action);
-    if (labels.action2) {
-      this.button(r, this.layout.action2, labels.action2.text, labels.action2.icon, labels.action2.color, input.action2);
-    }
   }
 
   private dpad(r: Renderer, input: Input): void {
