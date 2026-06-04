@@ -190,6 +190,11 @@ function smoothstep(e0: number, e1: number, x: number): number {
   const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
 }
+/** Lerp an action's weight toward a target (~0.12s to fully change) for smooth crossfades. */
+function blendW(a: THREE.AnimationAction | null, target: number, dt: number): void {
+  if (!a) return;
+  a.setEffectiveWeight(moveToward(a.getEffectiveWeight(), target, dt / 0.12));
+}
 
 /** A skinned, animated player using the rigged model's own textured uniform. */
 class FbxAvatar implements Avatar {
@@ -300,6 +305,9 @@ class FbxAvatar implements Avatar {
     this.oneShot = null;
     this.lean.rotation.set(0, 0, 0);
     this.group.position.y = 0;
+    for (const a of [this.idleAction, this.defAction, this.runAction, this.backAction, this.strafeAction]) {
+      a?.setEffectiveWeight(0);
+    }
   }
 
   update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void {
@@ -344,18 +352,19 @@ class FbxAvatar implements Avatar {
     const fallTarget = lo.down ? 1 : lo.contact ? 0.55 : 0;
     this.fallT = moveToward(this.fallT, fallTarget, (fallTarget > this.fallT ? 1 / 0.25 : 1 / 0.4) * dt);
 
-    const idle = isDefense ? this.defAction : this.idleAction;
-    const otherIdle = isDefense ? this.idleAction : this.defAction;
-    if (otherIdle && otherIdle !== idle) otherIdle.setEffectiveWeight(0);
+    // Procedural fall pose (applies whether or not locomotion is muted).
+    this.lean.rotation.x = -this.fallT * (Math.PI / 2.1);
+
+    // Compute TARGET weights, then lerp toward them so every transition crossfades.
+    let tIdle = 0;
+    let tDef = 0;
+    let tRun = 0;
+    let tBack = 0;
+    let tStrafe = 0;
 
     if (this.fallT > 0.02) {
-      // Falling / on the ground: procedural pose, locomotion muted.
-      this.lean.rotation.set(-this.fallT * (Math.PI / 2.1), 0, 0);
+      // Falling / on the ground: procedural pose, locomotion fades out.
       g.position.y = this.fallT * 0.25;
-      this.runAction?.setEffectiveWeight(0);
-      this.backAction?.setEffectiveWeight(0);
-      this.strafeAction?.setEffectiveWeight(0);
-      idle?.setEffectiveWeight(0);
       this.ring.visible = false;
       this.chevron.visible = false;
     } else {
@@ -369,23 +378,34 @@ class FbxAvatar implements Avatar {
       let strafe = Math.abs(Math.sin(lo.moveRel));
       const sum = fwd + back + strafe || 1;
       fwd /= sum; back /= sum; strafe /= sum;
-      this.runAction?.setEffectiveWeight(fwd * moving01 * loco);
+      tRun = fwd * moving01;
+      tBack = back * moving01;
+      tStrafe = strafe * moving01;
+      if (isDefense) tDef = 1 - moving01;
+      else tIdle = 1 - moving01;
       this.runAction?.setEffectiveTimeScale(ts);
-      this.backAction?.setEffectiveWeight(back * moving01 * loco);
       this.backAction?.setEffectiveTimeScale(ts);
-      this.strafeAction?.setEffectiveWeight(strafe * moving01 * loco);
       this.strafeAction?.setEffectiveTimeScale(ts);
-      idle?.setEffectiveWeight((1 - moving01) * loco);
-      idle?.setEffectiveTimeScale(1);
       // Lean forward when running ahead, back slightly when backpedaling; bank into turns/cuts.
       g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd;
       const bank = clamp(clamp(-lo.turnRate * 0.05, -0.4, 0.4) + p.leanTarget * 0.35, -0.55, 0.55);
-      this.lean.rotation.set((fwd - back) * 0.16 * moving01, 0, bank);
+      // Forward lean while running ahead, slight backward lean when backpedaling
+      // (added on top of the fall pitch, which is ~0 while upright).
+      this.lean.rotation.x += (fwd - back) * 0.16 * moving01;
+      this.lean.rotation.z = bank;
+      this.lean.rotation.y = 0;
       this.phase += dt;
       this.ring.visible = p.controlled;
       this.chevron.visible = p.controlled;
       if (p.controlled) this.chevron.position.y = 2.8 + Math.sin(this.phase * 4) * 0.12;
     }
+
+    // Smoothly crossfade all locomotion/idle weights toward their targets.
+    blendW(this.idleAction, tIdle * loco, dt);
+    blendW(this.defAction, tDef * loco, dt);
+    blendW(this.runAction, tRun * loco, dt);
+    blendW(this.backAction, tBack * loco, dt);
+    blendW(this.strafeAction, tStrafe * loco, dt);
 
     this.mixer.update(dt);
 

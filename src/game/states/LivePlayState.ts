@@ -18,7 +18,10 @@ import { PlayResultState } from "./PlayResultState";
 
 type Phase = "presnap" | "live" | "dead";
 
-const PRESNAP_TIME = 0.9;
+// Pre-snap is player-controlled now; this is only a safety fallback so a play can't
+// hard-stall if the hike is never pressed.
+const PRESNAP_TIME = 20;
+const PRESNAP_WALK = 130; // px/s break-the-huddle / walk-to-the-line speed
 const MAX_PLAY_TIME = 16;
 const DIFFICULTY = {
   // reactBase/reactRate control how fast the pass rush + pursuit ramp up after the
@@ -44,7 +47,12 @@ export class LivePlayState implements GameState {
   private ball = new Ball();
 
   private phase: Phase = "presnap";
+  /** Safety fallback so a play never hard-stalls in pre-snap. */
   private snapTimer = PRESNAP_TIME;
+  /** True once everyone has broken the huddle and reached their spot. */
+  private preSnapReady = false;
+  /** Countdown for the CPU offense to hike once set (defense games). */
+  private cpuHikeTimer = -1;
   private playTime = 0;
 
   private dir = 1;
@@ -108,10 +116,15 @@ export class LivePlayState implements GameState {
 
     this.phase = "presnap";
     this.snapTimer = PRESNAP_TIME;
+    this.preSnapReady = false;
+    this.cpuHikeTimer = -1;
     this.playTime = 0;
     this.passThrown = false;
     this.sackPossible = true;
     this.turbo = 1;
+
+    // Break the huddle: scatter players off their spots so they walk to the line.
+    this.setupPreSnap();
 
     this.app.scene3d.setVisible(true);
     this.app.scene3d.resetAvatars();
@@ -152,12 +165,7 @@ export class LivePlayState implements GameState {
     const m = this.app.match;
 
     if (this.phase === "presnap") {
-      this.snapTimer -= dt;
-      // Offense can hike early with ACTION; otherwise auto-snap.
-      if (this.snapTimer <= 0 || (this.humanIsOffense && this.app.input.actionPressed)) {
-        this.snap();
-      }
-      this.syncScene(dt);
+      this.updatePreSnap(dt);
       return;
     }
     if (this.phase === "dead") {
@@ -276,9 +284,76 @@ export class LivePlayState implements GameState {
     };
   }
 
+  /** Break the huddle: scatter players off their formation spots (which are stored in
+   * p.home) so they walk to the line during pre-snap. */
+  private setupPreSnap(): void {
+    const cy = this.app.field.maxY / 2;
+    const huddleX = this.startLosX - this.dir * PX_PER_YARD * 7;
+    this.offense.forEach((p, i) => {
+      if (p.role === "QB") {
+        p.pos = { x: this.startLosX - this.dir * PX_PER_YARD * 4, y: cy };
+      } else {
+        const ang = (i / this.offense.length) * Math.PI * 2;
+        p.pos = { x: huddleX + Math.cos(ang) * PX_PER_YARD * 2.2, y: cy + Math.sin(ang) * PX_PER_YARD * 2.2 };
+      }
+      p.vel.x = 0;
+      p.vel.y = 0;
+      p.heading = this.dir > 0 ? 0 : Math.PI;
+      p.lookDir = null;
+    });
+    // Defense jogs up to the line from a couple of yards downfield.
+    for (const d of this.defense) {
+      d.pos = { x: d.home.x + this.dir * PX_PER_YARD * 3, y: d.home.y };
+      d.vel.x = 0;
+      d.vel.y = 0;
+      d.heading = this.dir > 0 ? Math.PI : 0;
+      d.lookDir = null;
+    }
+  }
+
+  /** Walk everyone from the huddle to their spots; the player decides when to hike. */
+  private updatePreSnap(dt: number): void {
+    let allSet = true;
+    for (const p of this.all) {
+      const dx = p.home.x - p.pos.x;
+      const dy = p.home.y - p.pos.y;
+      const d = Math.hypot(dx, dy);
+      const isDef = p.team !== this.offenseTeamId;
+      if (d > 8) {
+        p.desired = { x: dx / d, y: dy / d };
+        p.lookDir = null; // face the way they're walking
+        p.step(dt, PRESNAP_WALK);
+        allSet = false;
+      } else {
+        p.desired = { x: 0, y: 0 };
+        // Settle facing: offense toward downfield, defense toward the offense.
+        p.lookDir = isDef ? (this.dir > 0 ? Math.PI : 0) : (this.dir > 0 ? 0 : Math.PI);
+        p.step(dt, 0);
+      }
+    }
+    this.preSnapReady = allSet;
+
+    if (allSet) {
+      if (this.humanIsOffense) {
+        if (this.app.input.actionPressed) this.snap();
+      } else {
+        if (this.cpuHikeTimer < 0) this.cpuHikeTimer = 0.7 + Math.random() * 0.8;
+        this.cpuHikeTimer -= dt;
+        if (this.cpuHikeTimer <= 0) this.snap();
+      }
+    }
+
+    // Safety fallback so the play can't hard-stall.
+    this.snapTimer -= dt;
+    if (this.snapTimer <= 0) this.snap();
+
+    this.syncScene(dt);
+  }
+
   private snap(): void {
     this.phase = "live";
     this.app.audio.snap();
+    for (const p of this.all) p.lookDir = null; // hand facing back to AI/movement
     if (this.offensePlay.isRun) {
       // Immediate handoff to the back.
       const hb = this.offense.find((p) => p.role === "HB");
@@ -839,11 +914,19 @@ export class LivePlayState implements GameState {
 
     this.hud.render(r, m, {
       turbo: this.turbo,
-      possessionLabel: this.phase === "presnap" ? (this.humanIsOffense ? "TAP ACTION TO HIKE" : "DEFENSE — TAP TO SWITCH") : undefined,
+      possessionLabel: this.phase === "presnap" ? this.preSnapLabel() : undefined,
       playClock: this.phase === "presnap" ? this.snapTimer : undefined,
     });
     app.input.setLayout(this.controls.computeLayout(r));
     this.controls.render(r, app.input, this.controlLabels());
+  }
+
+  /** Pre-snap HUD prompt: break-the-huddle while walking, hike prompt once set. */
+  private preSnapLabel(): string {
+    if (!this.humanIsOffense) {
+      return this.preSnapReady ? "DEFENSE — TAP TO SWITCH" : "DEFENSE — BREAK THE HUDDLE";
+    }
+    return this.preSnapReady ? "TAP ACTION TO HIKE" : "BREAKING THE HUDDLE…";
   }
 
   /** Projector bound to the 3D camera, for overlay FX/text. */
