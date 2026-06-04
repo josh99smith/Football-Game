@@ -7,7 +7,7 @@ is drawn procedurally and all sound is synthesized with the Web Audio API.
 
 > 7-on-7. 30 yards for a first down. Turbo. Big hits. ON FIRE. Pick a play and go.
 
-**▶ Play it live:** https://josh99smith.github.io/football-game/ (auto-deployed from the
+**▶ Play it live:** https://josh99smith.github.io/Football-Game/ (auto-deployed from the
 default branch via GitHub Pages — see [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)).
 
 ## Play
