@@ -21,7 +21,6 @@ type Phase = "presnap" | "live" | "dead";
 // Pre-snap is player-controlled now; this is only a safety fallback so a play can't
 // hard-stall if the hike is never pressed.
 const PRESNAP_TIME = 20;
-const PRESNAP_WALK = 130; // px/s break-the-huddle / walk-to-the-line speed
 const MAX_PLAY_TIME = 16;
 /** Hold this long (s) to fully charge a bullet pass; a quick tap throws a lob. */
 const THROW_CHARGE_MAX = 0.5;
@@ -197,8 +196,14 @@ export class LivePlayState implements GameState {
     }
     updateDefense(ctx, this.controlled);
 
-    // While the ball is in the air, the target receiver attacks the catch point.
-    if (this.ball.state === "inAir" && this.passTarget && !this.passTarget.isDown) {
+    // While the ball is in the air, the target receiver attacks the catch point —
+    // unless the human has taken control of them (then their input wins).
+    if (
+      this.ball.state === "inAir" &&
+      this.passTarget &&
+      !this.passTarget.isDown &&
+      this.passTarget !== this.controlled
+    ) {
       const t = this.ball.target;
       const p = this.passTarget;
       const dx = t.x - p.pos.x;
@@ -309,7 +314,7 @@ export class LivePlayState implements GameState {
       }
       p.vel.x = 0;
       p.vel.y = 0;
-      p.heading = this.dir > 0 ? 0 : Math.PI;
+      this.faceTowardHome(p);
       p.lookDir = null;
     });
     // Defense jogs up to the line from a couple of yards downfield.
@@ -317,9 +322,17 @@ export class LivePlayState implements GameState {
       d.pos = { x: d.home.x + this.dir * PX_PER_YARD * 3, y: d.home.y };
       d.vel.x = 0;
       d.vel.y = 0;
-      d.heading = this.dir > 0 ? Math.PI : 0;
+      this.faceTowardHome(d);
       d.lookDir = null;
     }
+  }
+
+  /** Point a player at the spot they're about to walk to (so the break reads as a
+   * clean forward jog instead of a sideways/backward shuffle while the heading catches up). */
+  private faceTowardHome(p: Player): void {
+    const dx = p.home.x - p.pos.x;
+    const dy = p.home.y - p.pos.y;
+    p.heading = Math.hypot(dx, dy) > 1 ? Math.atan2(dy, dx) : this.dir > 0 ? 0 : Math.PI;
   }
 
   /** Walk everyone from the huddle to their spots; the player decides when to hike. */
@@ -330,12 +343,18 @@ export class LivePlayState implements GameState {
       const dy = p.home.y - p.pos.y;
       const d = Math.hypot(dx, dy);
       const isDef = p.team !== this.offenseTeamId;
-      if (d > 8) {
+      if (d > 6) {
         p.desired = { x: dx / d, y: dy / d };
         p.lookDir = null; // face the way they're walking
-        p.step(dt, PRESNAP_WALK);
+        // Per-role pace keyed to base speed so every role reads as the same clean
+        // jog (a flat speed under/over-warps the run blend by role).
+        p.step(dt, p.baseSpeed * 0.8);
         allSet = false;
       } else {
+        // Arrived: hard-stop and set facing so the player stands cleanly in idle,
+        // with no muddy decel tail or jitter around the mark.
+        p.vel.x = 0;
+        p.vel.y = 0;
         p.desired = { x: 0, y: 0 };
         // Settle facing: offense toward downfield, defense toward the offense.
         p.lookDir = isDef ? (this.dir > 0 ? Math.PI : 0) : (this.dir > 0 ? 0 : Math.PI);
@@ -343,6 +362,9 @@ export class LivePlayState implements GameState {
       }
     }
     this.preSnapReady = allSet;
+
+    // Defenders can cycle which man they'll control before the snap (pick your matchup).
+    if (!this.humanIsOffense && this.app.input.actionPressed) this.cycleDefender();
 
     if (allSet) {
       if (this.humanIsOffense) {
@@ -382,8 +404,14 @@ export class LivePlayState implements GameState {
     const c = this.controlled;
 
     if (!c || c.isDown) {
-      // No live controlled player (e.g. ball in air): allow defense pre-switch.
-      if (!this.humanIsOffense && input.actionPressed) this.switchDefender();
+      // No live controlled player (e.g. ball in air). Defense switches to the nearest
+      // defender to the ball; offense grabs the targeted receiver to go up for it.
+      if (input.actionPressed) {
+        if (!this.humanIsOffense) this.switchDefender();
+        else if (this.ball.state === "inAir" && this.passTarget && !this.passTarget.isDown) {
+          this.setControlled(this.passTarget);
+        }
+      }
       return;
     }
 
@@ -500,20 +528,33 @@ export class LivePlayState implements GameState {
     // The dive ends the play shortly after, securing the spot.
   }
 
+  /** Switch to the defender best placed to make a play: nearest to the carrier, or to
+   * the pass's landing spot while the ball is in the air, or to the loose ball. */
   private switchDefender(): void {
-    const target = this.ball.carrier ?? null;
-    if (!target) return;
+    const point = this.ball.carrier
+      ? this.ball.carrier.pos
+      : this.ball.state === "inAir"
+        ? this.ball.target
+        : this.ball.pos;
     let best: Player | null = null;
     let bestD = Infinity;
     for (const d of this.defense) {
-      if (d.isDown) continue;
-      const dd = dist(d.pos, target.pos);
+      if (d.isDown || d === this.controlled) continue;
+      const dd = dist(d.pos, point);
       if (dd < bestD) {
         bestD = dd;
         best = d;
       }
     }
     if (best) this.setControlled(best);
+  }
+
+  /** Cycle control through the defenders (used pre-snap to pick your matchup). */
+  private cycleDefender(): void {
+    const list = this.defense.filter((d) => !d.isDown);
+    if (list.length === 0) return;
+    const idx = this.controlled ? list.indexOf(this.controlled) : -1;
+    this.setControlled(list[(idx + 1) % list.length]);
   }
 
   private setControlled(p: Player | null): void {
@@ -535,8 +576,10 @@ export class LivePlayState implements GameState {
     this.passTarget = receiver;
     from.animEvent = "pass";
     this.app.audio.throwBall();
-    // After the throw, no one is controlled until a catch resolves.
-    this.setControlled(null);
+    // The thrower's side has no carrier until the catch, so the offense human drops to
+    // no-control (and can grab a receiver in the air). A defending human KEEPS their
+    // defender so they can break on the ball.
+    if (this.humanIsOffense) this.setControlled(null);
   }
 
   private resolvePassResult(res: { caught?: Player; intercepted?: Player; incomplete?: boolean }): void {
