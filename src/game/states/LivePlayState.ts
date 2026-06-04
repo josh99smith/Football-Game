@@ -11,7 +11,7 @@ import { updateOffense } from "../ai/OffenseAI";
 import { CPUOffense } from "../ai/CPUOffense";
 import { chooseTarget, resolveAir } from "../Passing";
 import { HUD } from "../../ui/HUD";
-import { TouchControls } from "../../ui/TouchControls";
+import { TouchControls, type ControlLabels } from "../../ui/TouchControls";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
 import type { PlayOutcome, OutcomeType } from "../Match";
 import { PlayResultState } from "./PlayResultState";
@@ -185,8 +185,9 @@ export class LivePlayState implements GameState {
       p.turbo = true;
     }
 
-    // Apply on-fire flames at carriers' feet.
+    // Apply on-fire flames at carriers' feet + a turbo speed trail.
     this.spawnFireFx();
+    this.spawnTurboTrail();
 
     // Integrate movement.
     this.moveAll(dt);
@@ -291,9 +292,9 @@ export class LivePlayState implements GameState {
     }
 
     if (this.humanIsOffense) {
-      this.handleOffenseAction(c, input.actionPressed, input.doubleTapped);
+      this.handleOffenseAction(c, input.actionPressed, input.action2Pressed);
     } else {
-      this.handleDefenseAction(c, input.actionPressed, input.doubleTapped);
+      this.handleDefenseAction(c, input.actionPressed, input.action2Pressed);
     }
   }
 
@@ -737,6 +738,13 @@ export class LivePlayState implements GameState {
     this.app.setState(new PlayResultState(this.app, this.pendingOutcome));
   }
 
+  private spawnTurboTrail(): void {
+    const c = this.controlled;
+    if (!c || c.isDown || !c.turbo) return;
+    if (Math.hypot(c.vel.x, c.vel.y) < 50) return;
+    this.app.particles.trail(c.pos.x, c.pos.y);
+  }
+
   private spawnFireFx(): void {
     const m = this.app.match;
     for (const p of this.all) {
@@ -826,15 +834,20 @@ export class LivePlayState implements GameState {
     return m;
   }
 
-  private controlLabels(): { turbo: string; action: string } {
+  private controlLabels(): ControlLabels {
+    const blue = "#1c6fd0";
+    const green = "#1f9d4d";
     if (this.humanIsOffense) {
       const isCarrier = this.ball.carrier === this.controlled;
       if (this.controlled === this.qb && !this.passThrown && !this.offensePlay.isRun) {
-        return { turbo: "TURBO", action: "PASS" };
+        return { action: { text: "PASS", icon: "pass", color: blue }, action2: { text: "JUKE", icon: "juke", color: green } };
       }
-      return { turbo: "TURBO", action: isCarrier ? "DIVE" : "—" };
+      if (isCarrier) {
+        return { action: { text: "DIVE", icon: "dive", color: blue }, action2: { text: "JUKE", icon: "juke", color: green } };
+      }
+      return { action: { text: "—", icon: "dive", color: "#566" }, action2: null };
     }
-    return { turbo: "TURBO", action: "SWITCH" };
+    return { action: { text: "SWITCH", icon: "switch", color: blue }, action2: { text: "DIVE", icon: "tackle", color: green } };
   }
 
   exit(): void {

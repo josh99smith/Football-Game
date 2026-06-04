@@ -75,6 +75,16 @@ export class ParticleSystem {
     }
   }
 
+  /** A soft glowing trail mote (turbo speed lines). */
+  trail(x: number, y: number, color = "#3bd2ff"): void {
+    const life = rand(0.2, 0.45);
+    this.spawn({
+      x: x + rand(-3, 3), y: y + rand(-3, 3), h: rand(8, 22),
+      vx: rand(-10, 10), vy: rand(-10, 10), vh: rand(10, 40),
+      life, maxLife: life, size: rand(5, 9), color, drag: 2, gravity: -25,
+    });
+  }
+
   /** Celebration burst for touchdowns (up then fall). */
   confetti(x: number, y: number, count = 40): void {
     const colors = ["#ffd23a", "#ff5a5a", "#5ad1ff", "#7bff8a", "#ff8af0"];

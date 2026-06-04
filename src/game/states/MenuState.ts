@@ -158,16 +158,16 @@ export class MenuState implements GameState {
     this.teamColumn(r, this.cxL, "YOU", home, this.rects.teamPrev, this.rects.teamNext);
     this.teamColumn(r, this.cxR, "OPPONENT", away, this.rects.oppPrev, this.rects.oppNext);
 
-    drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: "#175a30", size: 15 });
-    drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: "#244", size: 14 });
-    drawButton(r, this.rects.play, "KICK OFF!", { fill: "#d03a3a", size: clamp(this.rects.play.h * 0.42, 20, 30) });
+    drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: "#15315c", size: 15 });
+    drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: "#15315c", size: 14 });
+    drawButton(r, this.rects.play, "KICK OFF!", { fill: "#f5c518", text: "#0c1f3a", size: clamp(this.rects.play.h * 0.42, 20, 30) });
   }
 
   private teamColumn(r: GameApp["r"], cx: number, label: string, team: (typeof TEAMS)[number], prev: Rect, next: Rect): void {
     r.text(label, cx, this.teamY - this.crestR - 8, { size: 12, align: "center", color: "#9fd9b0", baseline: "bottom", weight: "normal" });
     drawCrest(r.ctx, cx, this.teamY, this.crestR, team);
-    drawButton(r, prev, "‹", { fill: "#21384a", size: 24 });
-    drawButton(r, next, "›", { fill: "#21384a", size: 24 });
+    drawButton(r, prev, "‹", { fill: "#1c3a5e", size: 24 });
+    drawButton(r, next, "›", { fill: "#1c3a5e", size: 24 });
     r.text(team.name, cx, this.teamY + this.crestR + 16, { size: clamp(this.crestR * 0.42, 13, 19), align: "center", color: "#fff", baseline: "middle" });
   }
 
@@ -175,8 +175,8 @@ export class MenuState implements GameState {
   private drawBackground(r: GameApp["r"]): void {
     const ctx = r.ctx;
     const grad = ctx.createLinearGradient(0, 0, 0, r.height);
-    grad.addColorStop(0, "#082713");
-    grad.addColorStop(1, "#04160a");
+    grad.addColorStop(0, "#0e2347");
+    grad.addColorStop(1, "#060d1f");
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, r.width, r.height);
 

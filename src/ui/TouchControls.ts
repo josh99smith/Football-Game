@@ -1,76 +1,226 @@
 import type { Renderer } from "../engine/Renderer";
-import type { ControlLayout, Input } from "../engine/Input";
+import type { ControlLayout, Input, CircleRegion } from "../engine/Input";
+
+export type ActionIcon = "pass" | "dive" | "switch" | "juke" | "tackle" | "turbo";
+
+export interface ControlLabels {
+  action: { text: string; icon: ActionIcon; color: string };
+  action2: { text: string; icon: ActionIcon; color: string } | null;
+}
 
 /**
- * On-screen virtual controls: a floating joystick on the left half and two action
- * buttons (TURBO + ACTION) in the bottom-right. Also supplies the hit-region layout
- * to the Input system each frame so it can interpret raw pointers.
+ * On-screen controls styled after arcade football: a fixed d-pad on the lower-left
+ * and a diagonal cluster of round, color-coded action buttons (TURBO + two
+ * context actions) on the lower-right, each with a glyph and label.
  */
 export class TouchControls {
   visible = true;
-
   private layout: ControlLayout = {
     turbo: { x: 0, y: 0, r: 0 },
     action: { x: 0, y: 0, r: 0 },
+    action2: { x: 0, y: 0, r: 0 },
+    joystick: { x: 0, y: 0, r: 56 },
     joystickZoneRight: 0,
   };
 
-  /** Recompute button placement for the current screen size. */
   computeLayout(r: Renderer): ControlLayout {
-    const margin = 26;
-    const actionR = Math.max(40, Math.min(58, r.height * 0.1));
-    const turboR = actionR * 0.82;
-    const ax = r.width - margin - actionR;
-    const ay = r.height - margin - actionR;
-    const tx = ax - actionR - turboR - 4;
-    const ty = ay + actionR - turboR;
+    const margin = 24;
+    const big = Math.max(38, Math.min(54, r.height * 0.095));
+    const small = big * 0.86;
+    // Right-hand action cluster (diagonal, like the reference).
+    const ax = r.width - margin - big;
+    const ay = r.height - margin - big;
     this.layout = {
-      action: { x: ax, y: ay, r: actionR },
-      turbo: { x: tx, y: ty, r: turboR },
-      joystickZoneRight: r.width * 0.52,
+      turbo: { x: ax - big * 0.2, y: ay - big * 1.7, r: small },
+      action: { x: ax - big * 1.9, y: ay - big * 0.5, r: big },
+      action2: { x: ax, y: ay, r: big },
+      joystick: { x: margin + 64, y: r.height - margin - 64, r: 56 },
+      joystickZoneRight: r.width * 0.5,
     };
     return this.layout;
   }
 
-  private button(r: Renderer, x: number, y: number, rad: number, label: string, color: string, pressed: boolean): void {
+  render(r: Renderer, input: Input, labels: ControlLabels): void {
+    if (!this.visible) return;
+    this.dpad(r, input);
+    this.button(r, this.layout.turbo, "TURBO", "turbo", "#e23b3b", input.turbo);
+    this.button(r, this.layout.action, labels.action.text, labels.action.icon, labels.action.color, input.action);
+    if (labels.action2) {
+      this.button(r, this.layout.action2, labels.action2.text, labels.action2.icon, labels.action2.color, input.action2);
+    }
+  }
+
+  private dpad(r: Renderer, input: Input): void {
     const ctx = r.ctx;
-    ctx.globalAlpha = pressed ? 0.9 : 0.55;
-    ctx.fillStyle = color;
+    const j = this.layout.joystick;
+    // Base.
+    ctx.globalAlpha = 0.32;
+    ctx.fillStyle = "#0b1726";
     ctx.beginPath();
-    ctx.arc(x, y, rad, 0, Math.PI * 2);
+    ctx.arc(j.x, j.y, j.r, 0, Math.PI * 2);
     ctx.fill();
-    ctx.globalAlpha = pressed ? 1 : 0.8;
+    ctx.globalAlpha = 0.5;
     ctx.lineWidth = 3;
-    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.strokeStyle = "#9fb6cc";
     ctx.stroke();
+    // Direction ticks.
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    for (let i = 0; i < 4; i++) {
+      const a = (Math.PI / 2) * i;
+      const tx = j.x + Math.cos(a) * (j.r - 12);
+      const ty = j.y + Math.sin(a) * (j.r - 12);
+      ctx.save();
+      ctx.translate(tx, ty);
+      ctx.rotate(a);
+      ctx.beginPath();
+      ctx.moveTo(6, 0);
+      ctx.lineTo(-3, -5);
+      ctx.lineTo(-3, 5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    // Knob.
+    const kx = input.joystickActive ? input.joystickKnob.x : j.x;
+    const ky = input.joystickActive ? input.joystickKnob.y : j.y;
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = "#e9eef4";
+    ctx.beginPath();
+    ctx.arc(kx, ky, j.r * 0.5, 0, Math.PI * 2);
+    ctx.fill();
     ctx.globalAlpha = 1;
+  }
+
+  private button(r: Renderer, c: CircleRegion, label: string, icon: ActionIcon, color: string, pressed: boolean): void {
+    const ctx = r.ctx;
+    ctx.save();
+    // Drop shadow + body with a subtle radial highlight.
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = pressed ? 4 : 10;
+    ctx.shadowOffsetY = 3;
+    const grad = ctx.createRadialGradient(c.x - c.r * 0.3, c.y - c.r * 0.4, c.r * 0.2, c.x, c.y, c.r);
+    grad.addColorStop(0, lighten(color, pressed ? 0.05 : 0.28));
+    grad.addColorStop(1, color);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, c.r * (pressed ? 0.94 : 1), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowColor = "transparent";
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.stroke();
+
+    drawActionGlyph(ctx, c.x, c.y - c.r * 0.12, c.r * 0.5, icon);
+
     ctx.fillStyle = "#fff";
-    ctx.font = `900 ${Math.round(rad * 0.5)}px "Trebuchet MS", system-ui, sans-serif`;
+    ctx.font = `900 ${Math.round(c.r * 0.34)}px "Trebuchet MS", system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(label, x, y);
+    ctx.fillText(label, c.x, c.y + c.r * 0.56);
+    ctx.restore();
   }
+}
 
-  render(r: Renderer, input: Input, labels: { turbo: string; action: string }): void {
-    if (!this.visible) return;
-    const ctx = r.ctx;
+function lighten(hex: string, amt: number): string {
+  const n = parseInt(hex.replace("#", ""), 16);
+  const r = Math.min(255, ((n >> 16) & 255) + amt * 255);
+  const g = Math.min(255, ((n >> 8) & 255) + amt * 255);
+  const b = Math.min(255, (n & 255) + amt * 255);
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
 
-    // Joystick (only while engaged).
-    if (input.joystickActive) {
-      ctx.globalAlpha = 0.35;
-      ctx.fillStyle = "#ffffff";
+/** White glyphs for the action buttons. */
+function drawActionGlyph(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, icon: ActionIcon): void {
+  ctx.save();
+  ctx.fillStyle = "#fff";
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = r * 0.18;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  switch (icon) {
+    case "pass": {
+      // Football.
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(-0.3);
+      ctx.fillStyle = "#fff";
       ctx.beginPath();
-      ctx.arc(input.joystickOrigin.x, input.joystickOrigin.y, 56, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, r, r * 0.62, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.globalAlpha = 0.85;
-      ctx.fillStyle = "#ffe24a";
+      ctx.strokeStyle = "#1c3a6e";
+      ctx.lineWidth = r * 0.12;
       ctx.beginPath();
-      ctx.arc(input.joystickKnob.x, input.joystickKnob.y, 26, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
+      ctx.moveTo(-r * 0.4, 0);
+      ctx.lineTo(r * 0.4, 0);
+      ctx.stroke();
+      ctx.restore();
+      break;
     }
-
-    this.button(r, this.layout.turbo.x, this.layout.turbo.y, this.layout.turbo.r, labels.turbo, "#1c6fd0", input.turbo);
-    this.button(r, this.layout.action.x, this.layout.action.y, this.layout.action.r, labels.action, "#d03a3a", input.action);
+    case "juke": {
+      // Running figure (chevron legs + body).
+      ctx.beginPath();
+      ctx.arc(cx, cy - r * 0.6, r * 0.26, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(cx - r * 0.5, cy + r * 0.7);
+      ctx.lineTo(cx, cy - r * 0.1);
+      ctx.lineTo(cx + r * 0.5, cy + r * 0.7);
+      ctx.moveTo(cx - r * 0.45, cy);
+      ctx.lineTo(cx + r * 0.5, cy - r * 0.15);
+      ctx.stroke();
+      break;
+    }
+    case "dive": {
+      // Diving/lunge arrow.
+      ctx.beginPath();
+      ctx.moveTo(cx - r * 0.7, cy + r * 0.5);
+      ctx.lineTo(cx + r * 0.6, cy - r * 0.6);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx + r * 0.6, cy - r * 0.6);
+      ctx.lineTo(cx + r * 0.1, cy - r * 0.6);
+      ctx.moveTo(cx + r * 0.6, cy - r * 0.6);
+      ctx.lineTo(cx + r * 0.6, cy - r * 0.1);
+      ctx.stroke();
+      break;
+    }
+    case "tackle": {
+      // Burst/impact star.
+      for (let i = 0; i < 8; i++) {
+        const a = (Math.PI / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * r * 0.3, cy + Math.sin(a) * r * 0.3);
+        ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+        ctx.stroke();
+      }
+      break;
+    }
+    case "switch": {
+      // Two opposing arrows (swap).
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 0.6, Math.PI * 0.3, Math.PI * 1.5);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx + r * 0.55, cy - r * 0.45);
+      ctx.lineTo(cx + r * 0.2, cy - r * 0.5);
+      ctx.moveTo(cx + r * 0.55, cy - r * 0.45);
+      ctx.lineTo(cx + r * 0.6, cy - r * 0.05);
+      ctx.stroke();
+      break;
+    }
+    case "turbo": {
+      // Flame.
+      ctx.beginPath();
+      ctx.moveTo(cx, cy + r * 0.9);
+      ctx.quadraticCurveTo(cx - r * 0.85, cy + r * 0.2, cx - r * 0.3, cy - r * 0.4);
+      ctx.quadraticCurveTo(cx - r * 0.25, cy + r * 0.05, cx + r * 0.05, cy - r * 0.2);
+      ctx.quadraticCurveTo(cx - r * 0.05, cy - r * 0.7, cx + r * 0.35, cy - r);
+      ctx.quadraticCurveTo(cx + r * 0.2, cy - r * 0.3, cx + r * 0.55, cy - r * 0.25);
+      ctx.quadraticCurveTo(cx + r * 0.9, cy + r * 0.3, cx, cy + r * 0.9);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
   }
+  ctx.restore();
 }

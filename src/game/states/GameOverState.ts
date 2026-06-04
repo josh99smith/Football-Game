@@ -46,7 +46,7 @@ export class GameOverState implements GameState {
   render(): void {
     const r = this.app.r;
     const m = this.app.match;
-    this.app.r.begin("#06210e");
+    this.app.r.begin("#0c1f3a");
 
     const w = Math.min(420, r.width - 40);
     const h = 220;

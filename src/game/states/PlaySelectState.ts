@@ -75,7 +75,7 @@ export class PlaySelectState implements GameState {
 
   render(): void {
     const r = this.app.r;
-    this.app.r.begin("#0a2b14");
+    this.app.r.begin("#0c1f3a");
     this.hud.render(r, this.app.match, { turbo: 1 });
 
     const title = this.humanOffense ? "CALL YOUR PLAY — OFFENSE" : "CALL YOUR PLAY — DEFENSE";
@@ -87,7 +87,7 @@ export class PlaySelectState implements GameState {
 
     for (const card of this.cards) {
       const name = card.off?.name ?? card.def?.name ?? "";
-      drawPanel(r, card.rect, "rgba(10,40,22,0.95)");
+      drawPanel(r, card.rect, "rgba(14,32,58,0.96)");
       r.text(name, card.rect.x + card.rect.w / 2, card.rect.y + 26, {
         size: 21,
         align: "center",

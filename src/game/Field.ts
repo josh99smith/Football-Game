@@ -137,6 +137,19 @@ export class Field {
       this.yardNumber(ctx, x, FIELD_WIDTH * 0.87, n, yd);
     }
 
+    // Repeated faint "BLITZ" wordmarks near both sidelines (arcade branding).
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.10)";
+    ctx.font = `900 26px "Trebuchet MS", system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (let yd = 10; yd <= 90; yd += 20) {
+      const x = xFromLeftGoal(yd);
+      ctx.fillText("BLITZ", x, FIELD_WIDTH * 0.05);
+      ctx.fillText("BLITZ", x, FIELD_WIDTH * 0.95);
+    }
+    ctx.restore();
+
     // Midfield logo: a ringed star at the 50.
     this.midfieldLogo(ctx, xFromLeftGoal(50), FIELD_WIDTH / 2);
 

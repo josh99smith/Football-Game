@@ -39,7 +39,7 @@ export class KickoffState implements GameState {
 
   render(): void {
     const r = this.app.r;
-    this.app.r.begin("#0a2b14");
+    this.app.r.begin("#0c1f3a");
     this.hud.render(r, this.app.match, { turbo: 1 });
     const w = Math.min(360, r.width - 40);
     const h = 90;

@@ -15,9 +15,9 @@ export class HUD {
     const w = r.width;
     const barH = 46;
 
-    ctx.fillStyle = "rgba(8, 20, 12, 0.86)";
+    ctx.fillStyle = "rgba(8, 18, 38, 0.9)";
     ctx.fillRect(0, 0, w, barH);
-    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fillStyle = "rgba(245,197,24,0.5)";
     ctx.fillRect(0, barH - 2, w, 2);
 
     const home = match.home;

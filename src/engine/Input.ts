@@ -10,7 +10,11 @@ export interface CircleRegion {
 export interface ControlLayout {
   turbo: CircleRegion;
   action: CircleRegion;
-  /** Pointers starting left of this screen X drive the virtual joystick. */
+  /** Secondary action (juke / dive-tackle). */
+  action2: CircleRegion;
+  /** Fixed d-pad base — the joystick deflects from this anchor. */
+  joystick: CircleRegion;
+  /** Pointers starting left of this screen X drive the joystick. */
   joystickZoneRight: number;
 }
 
@@ -21,14 +25,12 @@ interface Pointer {
   startX: number;
   startY: number;
   startTime: number;
-  role: "joystick" | "turbo" | "action" | "tap";
+  role: "joystick" | "turbo" | "action" | "action2" | "tap";
   moved: boolean;
 }
 
-const JOYSTICK_RADIUS = 56; // px of travel for full deflection
-
 /**
- * Unified input: merges touch (virtual joystick + two action buttons) and keyboard
+ * Unified input: merges touch (a fixed d-pad + three action buttons) and keyboard
  * into a single "intent" each frame, plus tap events for menus. Edge transitions
  * (pressed/released) are resolved in `update()`, which the game calls once per frame.
  */
@@ -40,6 +42,8 @@ export class Input {
   private layout: ControlLayout = {
     turbo: { x: 0, y: 0, r: 0 },
     action: { x: 0, y: 0, r: 0 },
+    action2: { x: 0, y: 0, r: 0 },
+    joystick: { x: 0, y: 0, r: 56 },
     joystickZoneRight: 0,
   };
 
@@ -53,13 +57,14 @@ export class Input {
   action = false;
   actionPressed = false;
   actionReleased = false;
-  /** Edge + timing for double-tap (spin/juke) detection. */
-  private lastActionDownTime = -1;
+  action2 = false;
+  action2Pressed = false;
   doubleTapped = false;
 
   private prevAction = false;
+  private prevAction2 = false;
+  private lastActionDownTime = -1;
   private joystickPointerId: number | null = null;
-
   private pendingTaps: Vec2[] = [];
 
   constructor(el: HTMLElement) {
@@ -79,7 +84,6 @@ export class Input {
     el.addEventListener("pointercancel", this.onUp, { passive: false });
     window.addEventListener("keydown", this.onKey);
     window.addEventListener("keyup", this.onKeyUp);
-    // Prevent context menu on long-press.
     el.addEventListener("contextmenu", (e) => e.preventDefault());
   }
 
@@ -99,11 +103,13 @@ export class Input {
     let role: Pointer["role"] = "tap";
     if (this.inCircle(p, this.layout.turbo)) role = "turbo";
     else if (this.inCircle(p, this.layout.action)) role = "action";
+    else if (this.inCircle(p, this.layout.action2)) role = "action2";
     else if (p.x <= this.layout.joystickZoneRight && this.joystickPointerId === null) {
       role = "joystick";
       this.joystickPointerId = e.pointerId;
-      this.joystickOrigin.x = p.x;
-      this.joystickOrigin.y = p.y;
+      // Fixed-base d-pad: deflect from the anchor, not the touch point.
+      this.joystickOrigin.x = this.layout.joystick.x;
+      this.joystickOrigin.y = this.layout.joystick.y;
     }
     this.pointers.set(e.pointerId, {
       id: e.pointerId,
@@ -131,11 +137,8 @@ export class Input {
     const ptr = this.pointers.get(e.pointerId);
     if (!ptr) return;
     e.preventDefault();
-    // Quick, low-movement touches register as taps for menu/UI.
     const dt = performance.now() - ptr.startTime;
-    if (!ptr.moved && dt < 400) {
-      this.pendingTaps.push({ x: ptr.x, y: ptr.y });
-    }
+    if (!ptr.moved && dt < 400) this.pendingTaps.push({ x: ptr.x, y: ptr.y });
     if (this.joystickPointerId === e.pointerId) {
       this.joystickPointerId = null;
       this.joystickActive = false;
@@ -144,7 +147,6 @@ export class Input {
   };
 
   private onKey = (e: KeyboardEvent): void => {
-    // Avoid hijacking browser shortcuts with modifier keys held.
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     this.keys.add(e.key.toLowerCase());
     if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(e.key.toLowerCase())) {
@@ -158,7 +160,7 @@ export class Input {
 
   /** Resolve intent for this frame. Call once per frame, before game logic reads input. */
   update(): void {
-    // --- joystick / keyboard movement ---
+    const R = this.layout.joystick.r || 56;
     let mx = 0;
     let my = 0;
     this.joystickActive = false;
@@ -169,14 +171,14 @@ export class Input {
         let dx = ptr.x - this.joystickOrigin.x;
         let dy = ptr.y - this.joystickOrigin.y;
         const d = Math.hypot(dx, dy);
-        if (d > JOYSTICK_RADIUS) {
-          dx = (dx / d) * JOYSTICK_RADIUS;
-          dy = (dy / d) * JOYSTICK_RADIUS;
+        if (d > R) {
+          dx = (dx / d) * R;
+          dy = (dy / d) * R;
         }
         this.joystickKnob.x = this.joystickOrigin.x + dx;
         this.joystickKnob.y = this.joystickOrigin.y + dy;
-        mx = dx / JOYSTICK_RADIUS;
-        my = dy / JOYSTICK_RADIUS;
+        mx = dx / R;
+        my = dy / R;
       }
     }
 
@@ -194,29 +196,31 @@ export class Input {
 
     // --- buttons ---
     let turboDown = this.keys.has("shift");
-    let actionDown = this.keys.has(" ") || this.keys.has("j") || this.keys.has("k");
+    let actionDown = this.keys.has(" ") || this.keys.has("j");
+    let action2Down = this.keys.has("k");
     for (const ptr of this.pointers.values()) {
       if (ptr.role === "turbo") turboDown = true;
       if (ptr.role === "action") actionDown = true;
+      if (ptr.role === "action2") action2Down = true;
     }
     this.turbo = turboDown;
     this.action = actionDown;
     this.actionPressed = actionDown && !this.prevAction;
     this.actionReleased = !actionDown && this.prevAction;
+    this.action2 = action2Down;
+    this.action2Pressed = action2Down && !this.prevAction2;
 
     this.doubleTapped = false;
     if (this.actionPressed) {
       const now = performance.now();
-      if (this.lastActionDownTime >= 0 && now - this.lastActionDownTime < 280) {
-        this.doubleTapped = true;
-      }
+      if (this.lastActionDownTime >= 0 && now - this.lastActionDownTime < 280) this.doubleTapped = true;
       this.lastActionDownTime = now;
     }
 
     this.prevAction = actionDown;
+    this.prevAction2 = action2Down;
   }
 
-  /** Pull and clear taps accumulated since the last call (used by menus). */
   consumeTaps(): Vec2[] {
     if (this.pendingTaps.length === 0) return [];
     const t = this.pendingTaps;

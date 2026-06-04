@@ -330,7 +330,7 @@ export class Scene3D {
     this.scene.background = this.makeSky();
     this.scene.fog = new THREE.Fog(0x223a55, 80, 200);
 
-    this.camera = new THREE.PerspectiveCamera(52, 1, 0.1, 600);
+    this.camera = new THREE.PerspectiveCamera(56, 1, 0.1, 600);
 
     // Lighting: hemisphere fill + a sun that follows the action and casts shadows.
     this.scene.add(new THREE.HemisphereLight(0xcfe3ff, 0x2c5a32, 0.9));
@@ -670,8 +670,9 @@ export class Scene3D {
   ): void {
     const fx = focusX * U;
     const fz = focusY * U;
-    outPos.set(fx - dir * 13, 13.5, fz);
-    outLook.set(fx + dir * 10, 1.5, fz);
+    // Lower + closer "over the shoulder" angle: bigger players, dramatic downfield view.
+    outPos.set(fx - dir * 10.5, 8.6, fz);
+    outLook.set(fx + dir * 13, 1.1, fz);
   }
 
   sync(opts: {
