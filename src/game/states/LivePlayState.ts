@@ -1116,9 +1116,9 @@ export class LivePlayState implements GameState {
           if (overlap < 0.4) continue; // slop: ignore micro-overlaps to avoid buzzing
           const nx = dx / d;
           const ny = dy / d;
-          // Blockers are "heavier": the other body gets pushed more.
-          const aMass = a.job === "block" ? 3 : 1;
-          const bMass = b.job === "block" ? 3 : 1;
+          // Blockers are "heavier", and stronger players (linemen) shove lighter ones around.
+          const aMass = (a.job === "block" ? 3 : 1) * a.strength;
+          const bMass = (b.job === "block" ? 3 : 1) * b.strength;
           const total = aMass + bMass;
           // Partial (spring-like) correction each frame instead of a hard teleport;
           // the geometric series still fully separates over a few frames.
@@ -1252,7 +1252,10 @@ export class LivePlayState implements GameState {
     const mashes = this.app.input.consumeTaps().length + (this.app.input.actionPressed ? 1 : 0);
     if (mashes > 0) this.struggleFlash = 1;
     const humanPush = mashes * STRUGGLE_TAP;
-    const cpuPush = STRUGGLE_CPU * dt;
+    // The CPU pushes harder when its man is the stronger of the two (a bruising LB on a WR).
+    const cpuStr = this.struggleHumanCarrier ? t.strength : c.strength;
+    const humanStr = this.struggleHumanCarrier ? c.strength : t.strength;
+    const cpuPush = STRUGGLE_CPU * dt * clamp(cpuStr / humanStr, 0.6, 1.7);
     // The carrier drives the meter toward 1 (break free); the tackler toward 0 (tackle).
     this.struggleVal += this.struggleHumanCarrier ? humanPush - cpuPush : cpuPush - humanPush;
     this.struggleVal = Math.max(0, Math.min(1, this.struggleVal));
@@ -1298,6 +1301,8 @@ export class LivePlayState implements GameState {
     if (this.playTime - this.lastBreak < 0.55) return false;
     // Big hits can only be broken by powering through with turbo.
     let p = big ? (carrier.turbo ? 0.25 : 0.06) : carrier.turbo ? 0.6 : 0.38;
+    // Power battle: a strong back shrugs off a weaker defender; a stout tackler hangs on.
+    p *= clamp(carrier.strength / tackler.strength, 0.55, 1.7);
     if (this.defendersNear(carrier, 32) >= 2) p *= 0.4; // gang tackles still win
     if (Math.random() >= p) return false;
     this.lastBreak = this.playTime;

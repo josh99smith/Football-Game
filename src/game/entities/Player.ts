@@ -45,14 +45,17 @@ const HEADING_TURN_RAD = 12;
  * Per-role base attributes (arcade-tuned, in px/s and px/s^2). Speeds are deliberately
  * moderate for a weightier, more readable pace (slower than a twitch arcade title).
  */
-const ROLE_STATS: Record<Role, { speed: number; accel: number; radius: number }> = {
-  QB: { speed: 150, accel: 1300, radius: 12 },
-  HB: { speed: 176, accel: 1500, radius: 12 },
-  WR: { speed: 180, accel: 1450, radius: 11.5 },
-  OL: { speed: 126, accel: 1050, radius: 14 },
-  DL: { speed: 128, accel: 1100, radius: 14 },
-  LB: { speed: 150, accel: 1250, radius: 13 },
-  DB: { speed: 170, accel: 1400, radius: 11.5 },
+const ROLE_STATS: Record<Role, { speed: number; accel: number; radius: number; strength: number }> = {
+  // Skill positions are fast but light; linemen are slow but powerful; QBs are average; the
+  // secondary runs with the receivers. `strength` (≈1.0 baseline) drives blocking, shoving in
+  // piles, breaking/making tackles, and the tug in the 1-on-1 battle.
+  QB: { speed: 150, accel: 1300, radius: 12, strength: 0.92 },
+  HB: { speed: 178, accel: 1520, radius: 12, strength: 1.06 },
+  WR: { speed: 184, accel: 1460, radius: 11.5, strength: 0.84 },
+  OL: { speed: 118, accel: 1020, radius: 14.5, strength: 1.45 },
+  DL: { speed: 122, accel: 1080, radius: 14.5, strength: 1.4 },
+  LB: { speed: 150, accel: 1250, radius: 13, strength: 1.18 },
+  DB: { speed: 174, accel: 1420, radius: 11.5, strength: 0.9 },
 };
 
 export const TURBO_MULT = 1.4;
@@ -71,6 +74,8 @@ export class Player {
   readonly baseSpeed: number;
   readonly accel: number;
   readonly radius: number;
+  /** Position-based power (≈1.0 baseline): blocking, pile shoves, tackle break/make, battle tug. */
+  readonly strength: number;
 
   state: PlayerState = "set";
   hasBall = false;
@@ -141,9 +146,12 @@ export class Player {
     this.number = number;
     this.pos = { x, y };
     const s = ROLE_STATS[role];
-    this.baseSpeed = s.speed * SPEED_SCALE;
+    // A small per-player variance so individuals differ a touch (a fast QB, a bruising back).
+    const vary = 1 + (Math.random() * 2 - 1) * 0.045;
+    this.baseSpeed = s.speed * SPEED_SCALE * vary;
     this.accel = s.accel * (0.5 + 0.5 * SPEED_SCALE); // ease accel down a touch too, keeps it crisp
     this.radius = s.radius;
+    this.strength = s.strength * (1 + (Math.random() * 2 - 1) * 0.06);
   }
 
   /**
