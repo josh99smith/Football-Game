@@ -157,6 +157,45 @@ async function main(): Promise<void> {
     setMsg();
   });
 
+  // A tackle from a random direction so every tap shows different physics.
+  function tackleRandom(): void {
+    const ang = Math.random() * Math.PI * 2;
+    const mag = 32 + Math.random() * 20; // N·s, horizontal hit
+    const up = 24 + Math.random() * 18;
+    triggerTackle([0, 0, 2], [Math.cos(ang) * mag, up, Math.sin(ang) * mag]);
+  }
+
+  // --- on-screen touch controls (the demo runs on a phone) ---
+  const bar = document.createElement("div");
+  bar.style.cssText =
+    "position:fixed;left:0;right:0;bottom:0;z-index:20;display:flex;gap:6px;justify-content:center;" +
+    "align-items:center;flex-wrap:wrap;padding:8px;padding-bottom:max(8px,env(safe-area-inset-bottom));" +
+    "pointer-events:none;font:600 15px system-ui,-apple-system,sans-serif;";
+  document.body.appendChild(bar);
+  function mkBtn(label: string, opts: { big?: boolean; bg?: string }, handler: () => void): HTMLButtonElement {
+    const el = document.createElement("button");
+    el.textContent = label;
+    el.style.cssText =
+      "pointer-events:auto;border:none;border-radius:13px;color:#fff;font:inherit;" +
+      `padding:${opts.big ? "16px 22px" : "11px 13px"};font-size:${opts.big ? "17px" : "13px"};` +
+      `background:${opts.bg ?? "rgba(40,48,60,.82)"};box-shadow:0 2px 10px rgba(0,0,0,.45);` +
+      "touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;white-space:nowrap;";
+    el.addEventListener("click", (e) => { e.preventDefault(); handler(); setMsg(); });
+    bar.appendChild(el);
+    return el;
+  }
+  const speedDefs: [string, number][] = [["Idle", 0], ["Walk", 0.5], ["Run", 1]];
+  const speedBtns: HTMLButtonElement[] = [];
+  function setSpeed01(s: number): void {
+    speed = s; applyLocomotion();
+    speedBtns.forEach((b, i) => { b.style.outline = speedDefs[i][1] === s ? "2px solid #6cf" : "none"; });
+  }
+  for (const [label, s] of speedDefs) speedBtns.push(mkBtn(label, {}, () => setSpeed01(s)));
+  const spacer = document.createElement("div"); spacer.style.width = "10px"; bar.appendChild(spacer);
+  mkBtn("TACKLE", { big: true, bg: "rgba(214,58,58,.92)" }, tackleRandom);
+  mkBtn("Reset", { bg: "rgba(60,120,80,.85)" }, reset);
+  setSpeed01(0.5);
+
   // Dev handle for scripted/headless testing.
   (window as unknown as { __hybrid: unknown }).__hybrid = {
     THREE, scene, camera, model, mixer, actions, physics, ragdoll,
