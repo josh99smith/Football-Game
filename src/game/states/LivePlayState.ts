@@ -522,6 +522,14 @@ export class LivePlayState implements GameState {
     }
   }
 
+  /** The stick mapped to a camera-relative FIELD direction. On screen field +X (downfield) is
+   *  up and field +Y is right; the chase cam yaws 180° with `dir`. So rotate the raw stick
+   *  (x=right, y=down) 90° and flip by `dir`: stick-up is always downfield-on-screen. */
+  private stickToField(): Vec2 {
+    const m = this.app.input.move;
+    return { x: -m.y * this.dir, y: m.x * this.dir };
+  }
+
   private handleHumanControl(dt: number): void {
     const input = this.app.input;
     const c = this.controlled;
@@ -538,10 +546,10 @@ export class LivePlayState implements GameState {
       return;
     }
 
-    // Movement, made camera-relative: the chase cam yaws 180° with the offense's attack
-    // direction, so on defense (dir = -1) the view is reversed. Multiply the stick by `dir` so
-    // "up" is always downfield-on-screen and the controls never feel backwards.
-    c.desired = { x: input.move.x * this.dir, y: input.move.y * this.dir };
+    // Movement, made camera-relative. On screen, field +X (downfield) is UP and field +Y is
+    // RIGHT, and the chase cam yaws 180° with the attack direction. So the stick (x=right,
+    // y=down) maps to the field rotated 90° and flipped by `dir`: stick-up = downfield, always.
+    c.desired = this.stickToField();
 
     // Turbo meter management.
     const wantTurbo = input.turbo && (input.move.x !== 0 || input.move.y !== 0);
@@ -594,7 +602,7 @@ export class LivePlayState implements GameState {
       this.throwCharging = false;
       this.throwCharge = 0;
       const receivers = this.offense.filter((p) => p.role !== "QB");
-      const choice = chooseTarget(qb, receivers, this.defense, this.dir, input.move);
+      const choice = chooseTarget(qb, receivers, this.defense, this.dir, this.stickToField());
       if (choice) {
         const r = choice.receiver;
         // Lead the receiver by the resulting flight time so they run onto the ball.
@@ -630,7 +638,7 @@ export class LivePlayState implements GameState {
    * forward momentum (a real sidestep, not a teleport). */
   private doJuke(c: Player): void {
     c.jukeTimer = 0.45;
-    const aim = this.app.input.move;
+    const aim = this.stickToField();
     const am = Math.hypot(aim.x, aim.y);
     if (am > 0.3) {
       c.vel.x += (aim.x / am) * 80;
@@ -1652,7 +1660,7 @@ export class LivePlayState implements GameState {
     if (!this.qb || this.ball.carrier !== this.qb) return;
     const ctx = r.ctx;
     const eligible = this.offense.filter((p) => p.role !== "QB" && p.job !== "block" && !p.isDown);
-    const choice = chooseTarget(this.qb, this.offense.filter((p) => p.role !== "QB"), this.defense, this.dir, this.app.input.move);
+    const choice = chooseTarget(this.qb, this.offense.filter((p) => p.role !== "QB"), this.defense, this.dir, this.stickToField());
     const target = choice?.receiver ?? null;
 
     for (const rcv of eligible) {
