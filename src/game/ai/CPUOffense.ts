@@ -90,6 +90,7 @@ export class CPUOffense {
       qb.desired = { x: -ctx.dir * 0.15, y: lat };
       qb.turbo = false;
     }
+    keepInbounds(qb); // never let the pocket QB drift out of bounds behind the line
 
     if (!this.decided && this.timer >= this.patience) {
       this.decided = true;
@@ -132,22 +133,25 @@ export function steerCarrier(carrier: Player, ctx: PlayContext): void {
   // Keep strong forward intent even while evading, so a scramble presses upfield for yards
   // rather than drifting laterally toward the boundary.
   steer.x += ctx.dir * 0.9;
-
-  // Sideline avoidance is AUTHORITATIVE — a carrier must never run himself out of bounds. The
-  // closer to a boundary, the harder we steer infield; inside a hard margin we forbid ANY further
-  // outward intent (overriding defender-repulsion that would shove him across the line).
-  const center = FIELD_WIDTH / 2;
-  const edge = Math.min(carrier.pos.y, FIELD_WIDTH - carrier.pos.y);
-  if (edge < SIDELINE_MARGIN) {
-    const inward = carrier.pos.y < center ? 1 : -1; // +y pushes down from the top edge, etc.
-    const urgency = 1 - edge / SIDELINE_MARGIN; // 0 at the margin, 1 at the line
-    steer.y += inward * (1.0 + 3.0 * urgency);
-    // Within the hard margin, never allow movement toward the near sideline.
-    if (edge < 30 && Math.sign(steer.y) === -inward) steer.y = inward * 1.2;
-  }
-
   carrier.desired = steer;
+  keepInbounds(carrier);
   carrier.turbo = near > 34;
+}
+
+/**
+ * Sideline avoidance, AUTHORITATIVE — a CPU carrier must never run himself out of bounds. The
+ * closer to a boundary, the harder its desired y is steered infield; inside a hard margin any
+ * outward intent is forbidden outright (overriding pressure-avoidance that would shove it out).
+ * Applied to the scrambling/running carrier AND the QB dropping back in the pocket.
+ */
+export function keepInbounds(p: Player): void {
+  const center = FIELD_WIDTH / 2;
+  const edge = Math.min(p.pos.y, FIELD_WIDTH - p.pos.y);
+  if (edge >= SIDELINE_MARGIN) return;
+  const inward = p.pos.y < center ? 1 : -1; // +y pushes down from the top edge, etc.
+  const urgency = 1 - edge / SIDELINE_MARGIN; // 0 at the margin, 1 at the line
+  p.desired.y += inward * (1.0 + 3.0 * urgency);
+  if (edge < 30 && Math.sign(p.desired.y) === -inward) p.desired.y = inward * 1.2;
 }
 
 function bestReceiver(ctx: PlayContext): Player | null {
