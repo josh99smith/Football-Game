@@ -29,6 +29,8 @@ interface SegDef {
   parent: string | null;
   r: number; // capsule radius (m)
   m: number; // mass (kg)
+  /** Knees/elbows: a 1-DOF hinge with limits so they can't bend sideways or hyperextend. */
+  hinge?: boolean;
 }
 
 // Major segments of the body, parents before children (drive order depends on it).
@@ -37,15 +39,15 @@ const SEGS: SegDef[] = [
   { name: "torso", top: "Spine1", bot: "Neck", drives: "Spine1", parent: "pelvis", r: 0.13, m: 16 },
   { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.09, m: 4.5 },
   { name: "thighL", top: "LeftUpLeg", bot: "LeftLeg", drives: "LeftUpLeg", parent: "pelvis", r: 0.085, m: 7 },
-  { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4 },
+  { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4, hinge: true },
   { name: "footL", top: "LeftFoot", bot: "LeftToeBase", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1 },
   { name: "thighR", top: "RightUpLeg", bot: "RightLeg", drives: "RightUpLeg", parent: "pelvis", r: 0.085, m: 7 },
-  { name: "shinR", top: "RightLeg", bot: "RightFoot", drives: "RightLeg", parent: "thighR", r: 0.06, m: 4 },
+  { name: "shinR", top: "RightLeg", bot: "RightFoot", drives: "RightLeg", parent: "thighR", r: 0.06, m: 4, hinge: true },
   { name: "footR", top: "RightFoot", bot: "RightToeBase", drives: "RightFoot", parent: "shinR", r: 0.05, m: 1 },
   { name: "uarmL", top: "LeftArm", bot: "LeftForeArm", drives: "LeftArm", parent: "torso", r: 0.05, m: 2.5 },
-  { name: "farmL", top: "LeftForeArm", bot: "LeftHand", drives: "LeftForeArm", parent: "uarmL", r: 0.045, m: 1.5 },
+  { name: "farmL", top: "LeftForeArm", bot: "LeftHand", drives: "LeftForeArm", parent: "uarmL", r: 0.045, m: 1.5, hinge: true },
   { name: "uarmR", top: "RightArm", bot: "RightForeArm", drives: "RightArm", parent: "torso", r: 0.05, m: 2.5 },
-  { name: "farmR", top: "RightForeArm", bot: "RightHand", drives: "RightForeArm", parent: "uarmR", r: 0.045, m: 1.5 },
+  { name: "farmR", top: "RightForeArm", bot: "RightHand", drives: "RightForeArm", parent: "uarmR", r: 0.045, m: 1.5, hinge: true },
 ];
 
 interface Seg extends SegDef {
@@ -66,7 +68,10 @@ const _pq = new THREE.Quaternion();
 const _wp = new THREE.Vector3();
 const _upVel = new THREE.Vector3();
 const _midVel = new THREE.Vector3();
+const _seg = new THREE.Vector3();
+const _lat = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
+const FORWARD = new THREE.Vector3(0, 0, 1);
 
 const LOWER = new Set(["thighL", "shinL", "footL", "thighR", "shinR", "footR"]);
 const MAX_SPIN = 16; // rad/s — clamp so a body can never spin up into a contorted blur
@@ -162,18 +167,39 @@ export class TackleRagdoll {
       byName.set(def.name, seg);
     }
 
-    // Link each segment to its parent with a spherical joint anchored at the shared joint.
+    // Link each segment to its parent. Knees/elbows are hinges (revolute + angle limits) so
+    // they bend in one plane only; everything else is a spherical (ball) joint.
     for (const seg of this.segs) {
       if (!seg.parent) continue;
       const parent = byName.get(seg.parent)!;
       this.bone(seg.top).getWorldPosition(_a); // joint world pos
       const aChild = _b.copy(_a).sub(seg.center).applyQuaternion(_q.copy(quatOf(seg.body)).invert());
       const aParent = _c.copy(_a).sub(parent.center).applyQuaternion(_q2.copy(quatOf(parent.body)).invert());
-      const data = R.JointData.spherical(
-        { x: aParent.x, y: aParent.y, z: aParent.z },
-        { x: aChild.x, y: aChild.y, z: aChild.z },
-      );
+      let data: RAPIER.JointData;
+      if (seg.hinge) {
+        // Hinge axis = lateral (perpendicular to the limb and the facing). At spawn the limb
+        // is ~straight, so this is the flexion axis; express it in the parent's local frame.
+        this.bone(seg.bot).getWorldPosition(_seg);
+        _lat.subVectors(_seg, _a);
+        _lat.cross(FORWARD);
+        if (_lat.lengthSq() < 1e-5) _lat.set(1, 0, 0); else _lat.normalize();
+        _lat.applyQuaternion(_q2); // _q2 is parentBodyQ^-1
+        data = R.JointData.revolute(
+          { x: aParent.x, y: aParent.y, z: aParent.z },
+          { x: aChild.x, y: aChild.y, z: aChild.z },
+          { x: _lat.x, y: _lat.y, z: _lat.z },
+        );
+      } else {
+        data = R.JointData.spherical(
+          { x: aParent.x, y: aParent.y, z: aParent.z },
+          { x: aChild.x, y: aChild.y, z: aChild.z },
+        );
+      }
       const joint = world.createImpulseJoint(data, parent.body, seg.body, true);
+      if (seg.hinge) {
+        // Limit to roughly [straight .. ~150° flexion]; sign chosen so it can't hyperextend.
+        (joint as unknown as { setLimits?: (a: number, b: number) => void }).setLimits?.(-2.6, 0.1);
+      }
       // Adjacent segments share a joint and overlap there — don't let them collide.
       (joint as unknown as { setContactsEnabled?: (b: boolean) => void }).setContactsEnabled?.(false);
     }
