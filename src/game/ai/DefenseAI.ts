@@ -99,11 +99,11 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
       steer = seek(d.pos, huntTarget);
       d.turbo = true;
     } else if (carrierIsRunning && carrier) {
-      // Take a proper pursuit angle: aim at an interception point on the carrier's
-      // path, biased to the goal side so defenders keep leverage and funnel the
-      // runner instead of trailing them.
+      // Take a proper pursuit angle: aim at the point where this defender can actually meet the
+      // carrier (a real interception solve), kept goal-side so he cuts the runner off and squares
+      // up instead of trailing. Sprint to close; ease off only when right on top to make the hit.
       steer = seek(d.pos, interceptPoint(d, carrier, ctx));
-      d.turbo = dist2(d.pos, carrier.pos) > 95 * 95;
+      d.turbo = dist2(d.pos, carrier.pos) > 30 * 30;
     } else {
       switch (d.job) {
         case "rush": {
@@ -163,8 +163,9 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
       }
     }
 
+    // Spread out in coverage, but converge to swarm/gang-tackle a live ball-carrier.
     const sep = separation(d, defense, 26);
-    d.desired = addSteer(steer, sep, 0.5);
+    d.desired = addSteer(steer, sep, carrierIsRunning || ball.state === "loose" ? 0.18 : 0.5);
 
     // Face the play while in coverage so drops/mirrors read as backpedals & shuffles;
     // face movement when rushing or chasing a runner (forward run).
@@ -178,17 +179,27 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
   void CENTER_Y_FALLBACK;
 }
 
-/** Where a defender should aim to cut off the ball carrier (lead + goal-side leverage). */
+/**
+ * Where a defender should aim to cut off the ball carrier. Solves (iteratively) for the point
+ * on the carrier's projected path that this defender can reach at the same time — a true pursuit
+ * angle — then keeps it goal-side so he gets in front and squares up rather than chasing the hip.
+ */
 function interceptPoint(d: Player, carrier: Player, ctx: PlayContext): Vec2 {
-  const toX = carrier.pos.x - d.pos.x;
-  const toY = carrier.pos.y - d.pos.y;
-  const dist = Math.hypot(toX, toY) || 1;
-  const lead = Math.min(0.9, dist / (d.baseSpeed * 1.25));
-  const px = carrier.pos.x + carrier.vel.x * lead;
-  const py = carrier.pos.y + carrier.vel.y * lead;
-  // Stay on the goal side of the runner so they can't just bounce upfield past us.
-  const aheadX = carrier.pos.x + ctx.dir * 6;
-  return { x: ctx.dir > 0 ? Math.max(px, aheadX) : Math.min(px, aheadX), y: py };
+  const dSpeed = Math.max(60, d.baseSpeed);
+  // Converge on the meeting time: t ≈ distance-to-future-spot / defender speed.
+  let t = Math.hypot(carrier.pos.x - d.pos.x, carrier.pos.y - d.pos.y) / dSpeed;
+  for (let i = 0; i < 3; i++) {
+    const fx = carrier.pos.x + carrier.vel.x * t;
+    const fy = carrier.pos.y + carrier.vel.y * t;
+    t = Math.hypot(fx - d.pos.x, fy - d.pos.y) / dSpeed;
+  }
+  t = Math.min(t, 1.5); // don't over-project on a far, fast runner
+  let px = carrier.pos.x + carrier.vel.x * t;
+  const py = carrier.pos.y + carrier.vel.y * t;
+  // Leverage: never aim behind the runner — get to the goal side so we cut him off.
+  const goalSide = carrier.pos.x + ctx.dir * 12;
+  px = ctx.dir > 0 ? Math.max(px, goalSide) : Math.min(px, goalSide);
+  return { x: px, y: py };
 }
 
 function pastLine(p: Player, ctx: PlayContext): boolean {
