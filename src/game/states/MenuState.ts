@@ -6,6 +6,7 @@ import { drawCrest, drawHardcoreBadge } from "../../ui/Emblems";
 import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveSettings, loadSettings } from "../storage";
 import { KickoffState } from "./KickoffState";
+import { PracticeState } from "./PracticeState";
 
 const DIFFS: GameApp["config"]["difficulty"][] = ["rookie", "pro", "allpro"];
 
@@ -99,7 +100,9 @@ export class MenuState implements GameState {
       oppNext: arrow(this.cxR, 1),
       diff: { x: cx - optW - 6, y: optY, w: optW, h: optH },
       mute: { x: cx + 6, y: optY, w: optW, h: optH },
-      play: { x: cx - playW / 2, y: playY, w: playW, h: playH },
+      // Play row split into the primary PLAY button + a PRACTICE button beside it.
+      play: { x: cx - playW / 2, y: playY, w: playW * 0.6 - 5, h: playH },
+      practice: { x: cx - playW / 2 + playW * 0.6 + 5, y: playY, w: playW * 0.4 - 5, h: playH },
     };
   }
 
@@ -121,6 +124,10 @@ export class MenuState implements GameState {
       this.app.audio.setMuted(c.muted);
     } else if (tappedIn(this.rects.play, taps)) {
       this.startGame();
+      return;
+    } else if (tappedIn(this.rects.practice, taps)) {
+      this.app.audio.uiConfirm();
+      this.app.setState(new PracticeState(this.app));
       return;
     } else {
       this.app.audio.uiTap();
@@ -189,10 +196,14 @@ export class MenuState implements GameState {
 
     drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: COLORS.concrete, size: 15 });
     drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: COLORS.concrete, size: 14 });
-    drawButton(r, this.rects.play, "ENTER THE PIT", {
+    drawButton(r, this.rects.play, "PLAY", {
       fill: COLORS.blood,
       accent: COLORS.hazard,
-      size: clamp(this.rects.play.h * 0.4, 20, 30),
+      size: clamp(this.rects.play.h * 0.4, 18, 28),
+    });
+    drawButton(r, this.rects.practice, "PRACTICE", {
+      fill: COLORS.concrete,
+      size: clamp(this.rects.practice.h * 0.26, 12, 18),
     });
   }
 
