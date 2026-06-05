@@ -2,6 +2,7 @@ import RAPIER from "@dimforge/rapier3d-compat";
 import * as THREE from "three";
 import type { PhysicsWorld } from "./PhysicsWorld";
 import type { Ragdoll } from "./Ragdoll";
+import { type GaitTuning, defaultGait, armFlex, elbowFlex, spineLean } from "./GaitReference";
 
 /**
  * Procedural locomotion + balance on top of the active ragdoll. No clips. The body is a
@@ -46,16 +47,14 @@ const _err = new THREE.Vector3();
 const _com = new THREE.Vector3();
 const _prevCom = new THREE.Vector3();
 const _X = new THREE.Vector3(1, 0, 0);
+const _fk = new THREE.Vector3();
+const _hipQ = new THREE.Quaternion();
 const _pelvisPos = new THREE.Vector3();
 const _pelvisQ = new THREE.Quaternion();
 const _pelvisQInv = new THREE.Quaternion();
-const _hipW = new THREE.Vector3();
-const _hipL = new THREE.Vector3();
-const _targetW = new THREE.Vector3();
 const _targetL = new THREE.Vector3();
-const _fk = new THREE.Vector3();
-const _hipQ = new THREE.Quaternion();
-const _kneeQ = new THREE.Quaternion();
+const _hipW = new THREE.Vector3();
+const _targetW = new THREE.Vector3();
 
 function rotationVector(q: THREE.Quaternion, out: THREE.Vector3): THREE.Vector3 {
   let { x, y, z, w } = q;
@@ -72,10 +71,6 @@ function clampAbs(v: number, max: number): number {
 }
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
-}
-function smoothstep(t: number): number {
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  return t * t * (3 - 2 * t);
 }
 
 // --- leg geometry (pelvis-local, from the ragdoll rest spec) ---
@@ -149,33 +144,38 @@ export class LocomotionController {
 
   // --- balance assist (root stabilization) ---
   assist = 1.0; // master 0..1 (1 = full training wheels)
-  uprightKp = 240;
-  uprightKd = 34;
+  uprightKp = 800; // strong: holds the trunk near-vertical against the forward drive (no lurch)
+  uprightKd = 70;
   comKp = 28;
   comKd = 12;
   heightKp = 170; // strong: the height hold carries the body weight while legs articulate
   heightKd = 28;
   targetHeight = 0.95; // standing pelvis height
   walkHeight = 0.9; // crouch a touch when walking so a swung-forward leg can reach the ground
-  walkDrive = 4; // residual forward velocity-servo (push-off does most of the propulsion now)
+  walkDrive = 6; // forward velocity-servo (applied pitch-free at the chest) — drives root speed
   walkLean = 0.25; // forward pitch (rad) of the trunk while walking — lean into the stride
-  maxAssistTorque = 90;
+  maxAssistTorque = 220; // headroom for the strong upright hold
   maxAssistForce = 300;
 
-  // --- gait (closed-loop: capture-point foot placement + leg IK + push-off) ---
-  stepDur = 0.42; // seconds per step at low speed (cadence quickens with speed)
-  stepHeight = 0.14; // how high the swing foot lifts to clear the ground (m)
-  captureGain = 0.10; // capture-point feedback: foot lands further ahead when COM is fast
-  pushoff = 0.55; // toe-off impulse at lift (m/s of forward+up kick injected at the pelvis)
-  legStiffness = 1.0; // leg muscle stiffness (swing + stance)
-  stanceBend = 0.06; // slight stance-knee bend target offset for a sprung, non-locked look
+  // --- gait (reference-tracking: a clinical gait cycle the muscles PD-track) ---
+  gait: GaitTuning = { ...defaultGait };
+  cycleTime = 1.15; // seconds per full gait cycle (two steps) at speed ~1; quickens with speed
+  stanceFrac = 0.62; // fraction of a leg's cycle spent in stance (rest is swing)
+  pushoff = 0.12; // small toe-off momentum kick (m/s)
+  stepHeight = 0.16; // swing-foot lift to clear the ground (m)
+  stepAhead = 0.22; // baseline foot plant AHEAD of the COM (m) so the COM stays behind the
+  // support and the body stays upright instead of falling forward over trailing feet
+  captureGain = 0.12; // capture-point feedback: plant further out when the COM is moving fast
+  legStiffness = 1.0; // swing/stance leg muscle stiffness
+  armStiffness = 0.5; // arm-swing muscle stiffness
+  stanceBend = 0.05; // tiny stance-knee bend so the support leg looks sprung, not locked
 
-  private swing: Side = "R";
-  private phaseTime = 0;
+  private phase = 0; // global gait phase [0,1); right leg = phase, left = phase+0.5
   private totalMass = 0;
   private comVel = new THREE.Vector3();
+  private ikErr = 0; // stance-leg IK residual (correctness read-out)
+  private readonly _g: GaitTuning = { ...defaultGait }; // speed-scaled working copy
   private readonly liftoff = new THREE.Vector3(); // swing foot world pos at toe-off
-  private ikErr = 0; // FK residual of the last swing IK solve (correctness read-out)
 
   constructor(rag: Ragdoll, physics: PhysicsWorld) {
     this.rag = rag;
@@ -190,8 +190,7 @@ export class LocomotionController {
     for (const leg of this.legs) this.liftFoot(leg);
     this.rag.reset();
     this.rag.setAnchorPinned(false);
-    this.swing = "R";
-    this.phaseTime = 0;
+    this.phase = 0;
     this.mode = "idle";
     this.active = true;
     this.rag.getCOM(_prevCom);
@@ -209,22 +208,21 @@ export class LocomotionController {
   setMode(m: "idle" | "walk"): void {
     if (m === this.mode) return;
     this.mode = m;
-    this.phaseTime = 0;
-    if (m === "walk" && this.legs.every((l) => l.planted)) {
-      // lift the chosen swing leg to start the cycle
-      this.liftFoot(this.leg(this.swing));
-    }
+    // Start the cycle at heel-strike of the right leg (right in stance, left about to push
+    // off) so the very first move is a clean step rather than a lurch.
+    if (m === "walk") this.phase = 0;
   }
 
-  // --- per-frame gait (capture-point foot placement + leg IK + push-off) ----
+  // --- per-frame gait (reference-tracking + no-slip stance + arm swing) -----
 
   private readonly pose: Record<string, THREE.Quaternion> = {};
 
-  /** Once per physics frame: advance the gait, set leg muscle targets, manage foot-locks. */
+  /** Once per physics frame: advance the gait phase, set muscle targets from the reference,
+   * keep the stance leg on its lock, swing the arms, manage foot-locks. */
   tick(frameDt: number): void {
     if (!this.active) return;
 
-    // Pelvis frame + COM velocity (frame-rate estimate) for placement and balance.
+    // Pelvis frame (for the stance-leg IK) + COM velocity (for the balance assist).
     const pp = this.rag.body("pelvis").translation();
     const pr = this.rag.body("pelvis").rotation();
     _pelvisPos.set(pp.x, pp.y, pp.z);
@@ -239,78 +237,106 @@ export class LocomotionController {
       return;
     }
 
-    // Cadence quickens with speed; step length then comes from capture-point placement.
-    const dur = this.stepDur / (1 + 0.45 * Math.min(2.5, this.desiredSpeed));
-    this.phaseTime += frameDt;
-    if (this.phaseTime >= dur) {
-      this.phaseTime -= dur;
-      this.plantFoot(this.leg(this.swing)); // the swinging leg lands and locks
-      this.swing = this.swing === "L" ? "R" : "L";
-      const next = this.leg(this.swing);
-      const ft = this.rag.body(next.foot).translation();
-      this.liftoff.set(ft.x, ft.y, ft.z); // record toe-off position for the swing arc
-      this.liftFoot(next);
-      this.applyPushoff(); // inject forward+up momentum at toe-off
-    }
-    const p = this.phaseTime / dur; // 0..1 within the current swing
+    // Advance the cycle — cadence quickens and stride grows with speed.
+    const speedF = clamp(0.7 + 0.55 * this.desiredSpeed, 0.7, 2.4);
+    this.phase = (this.phase + frameDt / (this.cycleTime / speedF)) % 1;
+    const amp = clamp(0.55 + 0.5 * this.desiredSpeed, 0.55, 1.7);
+    // Speed-scaled working copy of the gait tuning (bigger stride/lift/arms when faster).
+    const g = this._g, base = this.gait;
+    g.hipAmp = base.hipAmp * amp;
+    g.hipBias = base.hipBias;
+    g.kneeStance = base.kneeStance;
+    g.kneeSwing = base.kneeSwing * (0.7 + 0.3 * amp);
+    g.kneeBase = base.kneeBase;
+    g.anklePush = base.anklePush;
+    g.ankleDorsi = base.ankleDorsi;
+    g.armAmp = base.armAmp * amp;
+    g.elbowBend = base.elbowBend;
+    g.spineLean = base.spineLean;
 
     for (const leg of this.legs) {
-      if (leg.side === this.swing) {
-        this.driveSwing(leg, p);
+      const phi = leg.side === "R" ? this.phase : (this.phase + 0.5) % 1;
+      const stance = phi < this.stanceFrac;
+      // Foot-lock follows the stance/swing schedule (plant at heel-strike, lift at toe-off).
+      if (stance && !leg.planted) this.plantFoot(leg);
+      else if (!stance && leg.planted) {
+        const ft = this.rag.body(leg.foot).translation();
+        this.liftoff.set(ft.x, ft.y, ft.z);
+        this.liftFoot(leg);
+        this.applyPushoff();
+      }
+
+      if (stance) {
+        this.driveStance(leg); // IK-conform to the locked foot — no slip, no fight
       } else {
-        this.driveStance(leg);
+        // Swing: place the foot AHEAD of the COM (capture point) via IK, along a lifted arc
+        // shaped by the reference; landing ahead keeps the COM behind support → upright.
+        const swingProg = (phi - this.stanceFrac) / (1 - this.stanceFrac);
+        this.driveSwing(leg, swingProg);
       }
     }
+    this.driveArms(g);
+    // Trunk: a small, deliberate forward lean from the reference (not the old 45° lurch).
+    (this.pose.spine ??= new THREE.Quaternion()).setFromAxisAngle(_X, -spineLean(g));
     this.rag.setTargetPose(this.pose);
   }
 
-  /** Swing leg: IK the foot along a lifted arc to the capture-point landing target. */
-  private driveSwing(leg: Leg, p: number): void {
-    // Capture-point landing: ahead of the COM by half a step's travel, pushed further
-    // when the COM is moving faster than desired (and pulled in laterally toward the hip).
-    _hipL.copy(HIP_LOCAL[leg.side]);
-    _hipW.copy(_hipL).applyQuaternion(_pelvisQ).add(_pelvisPos); // hip pivot, world
-    const half = this.desiredSpeed * (this.stepDur * 0.5);
+  /** Swing leg: IK the foot along a lifted arc to a capture-point landing AHEAD of the COM.
+   * The forward offset (stepAhead + speed/capture terms) is what keeps the COM behind the
+   * support foot, so the body walks tall instead of falling forward over trailing feet. */
+  private driveSwing(leg: Leg, prog: number): void {
+    _hipW.copy(HIP_LOCAL[leg.side]).applyQuaternion(_pelvisQ).add(_pelvisPos);
+    const ahead = this.stepAhead + 0.10 * this.desiredSpeed + this.captureGain * (this.comVel.z - this.desiredSpeed);
     const landX = _hipW.x + this.captureGain * this.comVel.x;
-    const landZ = _com.z + half + this.captureGain * (this.comVel.z - this.desiredSpeed);
-    // Arc: lerp horizontally from toe-off to the target, lift vertically with a sine bump.
-    const s = smoothstep(p);
+    const landZ = _com.z + Math.max(0.05, ahead);
+    const s = prog * prog * (3 - 2 * prog); // smoothstep
     const ax = THREE.MathUtils.lerp(this.liftoff.x, landX, s);
     const az = THREE.MathUtils.lerp(this.liftoff.z, landZ, s);
-    const ay = 0.06 + this.stepHeight * Math.sin(Math.PI * p);
+    const ay = 0.06 + this.stepHeight * Math.sin(Math.PI * prog);
     _targetW.set(ax, ay, az);
-    this.solveLeg(leg, _targetW, true);
-  }
-
-  /** Stance leg: IK to its own locked anchor so the leg conforms (and supports) as the
-   * pelvis travels over it, instead of a stiff target fighting the foot-lock. */
-  private driveStance(leg: Leg): void {
-    _targetW.copy(leg.anchor);
-    _targetW.y += 0.01;
-    this.solveLeg(leg, _targetW, false);
-  }
-
-  /** Shared: world ankle target -> pelvis-frame IK -> hip/knee/ankle muscle targets. */
-  private solveLeg(leg: Leg, targetWorld: THREE.Vector3, isSwing: boolean): void {
-    _targetL.copy(targetWorld).sub(_pelvisPos).applyQuaternion(_pelvisQInv); // pelvis-local
-    const knee = legIK(HIP_LOCAL[leg.side], _targetL, _hipQ) + (isSwing ? 0 : this.stanceBend);
-    if (isSwing) {
-      fkAnkle(HIP_LOCAL[leg.side], _hipQ, knee, _fk);
-      this.ikErr = _fk.sub(_targetL).length();
-    }
+    _targetL.copy(_targetW).sub(_pelvisPos).applyQuaternion(_pelvisQInv);
+    const knee = legIK(HIP_LOCAL[leg.side], _targetL, _hipQ);
     (this.pose[leg.hip] ??= new THREE.Quaternion()).copy(_hipQ);
-    (this.pose[leg.knee] ??= new THREE.Quaternion()).copy(_kneeQ.setFromAxisAngle(_X, knee));
-    (this.pose[leg.ankle] ??= new THREE.Quaternion()).identity(); // foot flat relative to shin
+    (this.pose[leg.knee] ??= new THREE.Quaternion()).setFromAxisAngle(_X, knee);
+    (this.pose[leg.ankle] ??= new THREE.Quaternion()).identity();
+    this.rag.setJointStiffness(leg.hip, this.legStiffness);
+    this.rag.setJointStiffness(leg.knee, this.legStiffness);
+    this.rag.setJointStiffness(leg.ankle, this.legStiffness * 0.6);
+  }
+
+  /** Stance leg: IK to its locked anchor so it supports and conforms (no slip) as the
+   * root is driven forward over it, without the reference angle fighting the lock. */
+  private driveStance(leg: Leg): void {
+    _targetL.copy(leg.anchor).add(_v.set(0, 0.01, 0)).sub(_pelvisPos).applyQuaternion(_pelvisQInv);
+    const knee = legIK(HIP_LOCAL[leg.side], _targetL, _hipQ) + this.stanceBend;
+    fkAnkle(HIP_LOCAL[leg.side], _hipQ, knee, _fk);
+    this.ikErr = _fk.sub(_targetL).length();
+    (this.pose[leg.hip] ??= new THREE.Quaternion()).copy(_hipQ);
+    (this.pose[leg.knee] ??= new THREE.Quaternion()).setFromAxisAngle(_X, knee);
+    (this.pose[leg.ankle] ??= new THREE.Quaternion()).identity();
     this.rag.setJointStiffness(leg.hip, this.legStiffness);
     this.rag.setJointStiffness(leg.knee, this.legStiffness);
     this.rag.setJointStiffness(leg.ankle, this.legStiffness * 0.7);
   }
 
-  /** Toe-off: inject a forward+up momentum kick at the pelvis (the missing propulsion). */
+  /** Contralateral arm swing from the reference (right arm back as the right leg swings up). */
+  private driveArms(g: GaitTuning): void {
+    const eb = elbowFlex(g);
+    for (const side of ["R", "L"] as Side[]) {
+      const phi = side === "R" ? this.phase : (this.phase + 0.5) % 1;
+      const a = armFlex(phi, g);
+      (this.pose[`shoulder${side}`] ??= new THREE.Quaternion()).setFromAxisAngle(_X, -a);
+      (this.pose[`elbow${side}`] ??= new THREE.Quaternion()).setFromAxisAngle(_X, -eb);
+      this.rag.setJointStiffness(`shoulder${side}`, this.armStiffness);
+      this.rag.setJointStiffness(`elbow${side}`, this.armStiffness);
+    }
+  }
+
+  /** Toe-off: a forward+up momentum kick at the pelvis backing the reference's propulsion. */
   private applyPushoff(): void {
     if (this.pushoff <= 0) return;
-    const j = this.totalMass * this.pushoff * Math.max(0.4, this.desiredSpeed);
-    this.rag.body("pelvis").applyImpulse({ x: 0, y: j * 0.3, z: j }, true);
+    const j = this.totalMass * this.pushoff * Math.max(0.5, this.desiredSpeed);
+    this.rag.body("pelvis").applyImpulse({ x: 0, y: j * 0.25, z: j }, true);
   }
 
   /** Standing pose: both legs straight & stiff, feet planted. */
@@ -334,12 +360,9 @@ export class LocomotionController {
     if (!this.active || this.assist <= 0) return;
     const a = this.assist;
 
-    // Upright PD torque on pelvis & chest toward the target trunk orientation. While
-    // walking the target leans forward by `walkLean` so the body falls into the stride
-    // and vaults over the locked stance foot (a bolt-upright target can't walk).
-    const walkingNow = this.mode === "walk" && this.desiredSpeed > 0.001;
+    // Upright PD torque on pelvis & chest — hold the trunk vertical. (The believable, small
+    // forward lean now lives in the reference at the spine joint, not in a 45° root lurch.)
     _qTarget.identity();
-    if (walkingNow) _qTarget.setFromAxisAngle(_X, -this.walkLean); // -X pitch = lean toward +Z
     for (const name of ["pelvis", "chest"]) {
       const b = this.rag.body(name);
       const r = b.rotation();
@@ -375,10 +398,11 @@ export class LocomotionController {
       ? this.walkDrive * (this.desiredSpeed - this.comVel.z) * this.totalMass
       : (this.comKp * (sz - _com.z) - this.comKd * this.comVel.z) * this.totalMass;
     const pelvis = this.rag.body("pelvis");
-    pelvis.applyImpulse(
-      { x: clampAbs(fx * a * dt, this.maxAssistForce), y: 0, z: clampAbs(fz * a * dt, this.maxAssistForce) },
-      true,
-    );
+    // Lateral correction at the pelvis; forward drive split pelvis+chest so the horizontal
+    // push doesn't act below the COM and pitch the trunk forward (the old lurch).
+    const fzc = clampAbs(fz * a * dt, this.maxAssistForce);
+    pelvis.applyImpulse({ x: clampAbs(fx * a * dt, this.maxAssistForce), y: 0, z: fzc * 0.4 }, true);
+    this.rag.body("chest").applyImpulse({ x: 0, y: 0, z: fzc * 0.6 }, true);
 
     // Vertical: hold pelvis height (push up only). Crouch slightly while walking.
     const pt = pelvis.translation();
@@ -414,16 +438,12 @@ export class LocomotionController {
     leg.planted = false;
   }
 
-  private leg(side: Side): Leg {
-    return side === "L" ? this.legs[0] : this.legs[1];
-  }
-
   // --- debug read-out -------------------------------------------------------
 
-  debugState(): { planted: string; swing: Side; comY: number; pelvisY: number } {
+  debugState(): { planted: string; phase: number; comY: number; pelvisY: number } {
     return {
       planted: this.legs.filter((l) => l.planted).map((l) => l.side).join("+") || "none",
-      swing: this.swing,
+      phase: this.phase,
       comY: this.rag.getCOM(_v).y,
       pelvisY: this.rag.body("pelvis").translation().y,
     };

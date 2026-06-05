@@ -101,6 +101,12 @@ async function main(): Promise<void> {
   const xforms: BoneTransform[] = [];
   const _com = new THREE.Vector3();
   const camFocus = new THREE.Vector3(0, 1.0, 0);
+  let sideView = false;
+  window.addEventListener("keydown", (e) => { if (e.key === "v" || e.key === "V") sideView = !sideView; });
+  (window as unknown as { __motion: { sideView?: boolean } }).__motion.sideView = false;
+  Object.defineProperty((window as unknown as { __motion: Record<string, unknown> }).__motion, "setSideView", {
+    value: (v: boolean) => { sideView = v; },
+  });
 
   function frame(now: number): void {
     requestAnimationFrame(frame);
@@ -121,11 +127,18 @@ async function main(): Promise<void> {
       meshes[i].position.copy(xforms[i].position);
       meshes[i].quaternion.copy(xforms[i].quaternion);
     }
-    // Follow camera so a walking figure stays framed (smoothed toward the COM).
+    // Follow camera so a walking figure stays framed (smoothed toward the COM). Two views:
+    // 3/4 (default) and a true side profile at body height (press "V") — the side view shows
+    // real trunk pitch and stride without the foreshortening of a high 3/4 angle.
     const com = ragdoll.getCOM(_com);
-    camFocus.lerp(_com.set(com.x, 1.0, com.z), 0.08);
-    camera.position.set(camFocus.x + 2.6, 1.6, camFocus.z + 3.2);
-    camera.lookAt(camFocus);
+    camFocus.lerp(_com.set(com.x, 1.0, com.z), 0.12);
+    if (sideView) {
+      camera.position.set(camFocus.x + 4.2, 0.95, camFocus.z);
+      camera.lookAt(camFocus.x, 0.85, camFocus.z);
+    } else {
+      camera.position.set(camFocus.x + 2.6, 1.6, camFocus.z + 3.2);
+      camera.lookAt(camFocus);
+    }
 
     hudT += STEP;
     if (hudT >= 0.1) { hudT = 0; updateHud(); } // refresh HUD ~10x/s
