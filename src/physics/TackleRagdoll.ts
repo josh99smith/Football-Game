@@ -37,9 +37,9 @@ interface SegDef {
 // Major segments of the body, parents before children (drive order depends on it).
 // sw/tw are the joint's soft range; beyond them a spring pushes back (see applyLimits).
 const SEGS: SegDef[] = [
-  { name: "pelvis", top: "Hips", bot: "Spine1", drives: "Hips", parent: null, r: 0.12, m: 12 },
-  { name: "torso", top: "Spine1", bot: "Neck", drives: "Spine1", parent: "pelvis", r: 0.13, m: 16, sw: 0.55, tw: 0.5 },
-  { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.09, m: 4.5, sw: 0.7, tw: 0.6 },
+  { name: "pelvis", top: "Hips", bot: "Spine1", drives: "Hips", parent: null, r: 0.15, m: 12 },
+  { name: "torso", top: "Spine1", bot: "Neck", drives: "Spine1", parent: "pelvis", r: 0.16, m: 16, sw: 0.55, tw: 0.5 },
+  { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.11, m: 4.5, sw: 0.7, tw: 0.6 },
   { name: "thighL", top: "LeftUpLeg", bot: "LeftLeg", drives: "LeftUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
   { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
   { name: "footL", top: "LeftFoot", bot: "LeftToe_End", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1, fixed: true },
@@ -139,11 +139,13 @@ export class TackleRagdoll {
 
   /**
    * Spawn the ragdoll at the skeleton's current world pose and knock it down. `carryVel` is
-   * the player's running velocity; the hit is a `hitDir` (unit) at `hitSpeed` (m/s) applied
-   * to the UPPER body while the legs lag — so the body topples over its feet and falls,
-   * instead of one segment being yanked by a giant impulse (which spun/contorted it).
+   * the player's running momentum (carried into the fall by every segment). The hit is a
+   * `hitDir` (unit) at `hitSpeed` (m/s) applied to one tier of the body while the rest lags,
+   * so the body topples around the hit:
+   *  - high hit (default): upper body takes it -> knocked backward/down off the legs;
+   *  - low hit (`hitLow`): the legs take it -> they're cut out and the torso flips forward.
    */
-  spawn(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number): void {
+  spawn(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow = false): void {
     if (this.active) this.dispose();
     const world = this.physics.world;
     const R = this.physics.rapier;
@@ -152,8 +154,8 @@ export class TackleRagdoll {
     // Joints solve far more stably with more substeps — the key fix for "goes crazy".
     this.prevSubsteps = this.physics.substeps;
     this.physics.substeps = 8;
-    const upVel = _upVel.copy(hitDir).multiplyScalar(hitSpeed).add(carryVel);
-    const midVel = _midVel.copy(hitDir).multiplyScalar(hitSpeed * 0.45).add(carryVel);
+    const hitVel = _upVel.copy(hitDir).multiplyScalar(hitSpeed).add(carryVel); // tier that's hit
+    const midVel = _midVel.copy(hitDir).multiplyScalar(hitSpeed * 0.45).add(carryVel); // pelvis
 
     for (const def of SEGS) {
       const top = this.bone(def.top);
@@ -166,8 +168,11 @@ export class TackleRagdoll {
       _dir.divideScalar(len);
       _q.setFromUnitVectors(_UP, _dir); // capsule local +Y -> bone direction
 
-      // Velocity tier: legs lag (carry only), pelvis mid, upper body takes the hit.
-      const v = LOWER.has(def.name) ? carryVel : def.name === "pelvis" ? midVel : upVel;
+      // Velocity tiers: the hit tier gets the full hit, pelvis half, the other tier just the
+      // carry. A high hit drives the upper body; a low hit drives the legs (cuts them out).
+      const isLeg = LOWER.has(def.name);
+      const isPelvis = def.name === "pelvis";
+      const v = isPelvis ? midVel : (isLeg === hitLow ? hitVel : carryVel);
       const bodyDesc = R.RigidBodyDesc.dynamic()
         .setTranslation(_c.x, _c.y, _c.z)
         .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })

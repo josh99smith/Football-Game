@@ -136,14 +136,17 @@ async function main(): Promise<void> {
 
   // --- tackle: animation -> ragdoll -> settle ---
   let ragdolled = false;
-  // The hit is a direction + speed (m/s) applied to the upper body, not a giant impulse.
-  function triggerTackle(carry = [0, 0, 2], dir = [0, 0, 1], speed_ = 3.5): void {
+  // The hit: a direction + speed (m/s) on one tier of the body. The runner's own momentum
+  // (from the current locomotion speed, forward +Z) is carried into the fall, so a sprinting
+  // player tumbles much farther than a walking one. `hitLow` cuts the legs out (forward flip).
+  function triggerTackle(dir = [0, 0, 1], speed_ = 3.5, hitLow = false): void {
     if (ragdolled) return;
     model.updateWorldMatrix(true, true); // freeze the live animated pose
     const d = new THREE.Vector3(...dir);
     if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
     d.normalize();
-    ragdoll.spawn(new THREE.Vector3(...carry), d, speed_);
+    const carry = new THREE.Vector3(0, 0, speed * 5.5); // running momentum (idle 0 .. run ~5.5 m/s)
+    ragdoll.spawn(carry, d, speed_, hitLow);
     ragdolled = true; // mixer paused; bodies now drive the bones
   }
   function reset(): void {
@@ -165,16 +168,19 @@ async function main(): Promise<void> {
     if (e.key === "1") { speed = 0; applyLocomotion(); }
     if (e.key === "2") { speed = 0.5; applyLocomotion(); }
     if (e.key === "3") { speed = 1; applyLocomotion(); }
-    if (e.key === "t" || e.key === "T") triggerTackle();
+    if (e.key === "t" || e.key === "T") tackleRandom();
     if (e.key === "r" || e.key === "R") reset();
     setMsg();
   });
 
-  // A tackle from a random direction so every tap shows different physics.
+  // A tackle from a random direction + varied force so every tap lands differently:
+  // sometimes a gentle stumble, sometimes a big hit; ~1 in 3 is a low hit (legs cut out).
   function tackleRandom(): void {
     const ang = Math.random() * Math.PI * 2; // random horizontal hit direction
-    const speed_ = 3.2 + Math.random() * 1.8; // m/s
-    triggerTackle([0, 0, 2], [Math.cos(ang), 0.18, Math.sin(ang)], speed_);
+    const speed_ = 2.5 + Math.random() * 4; // 2.5 (stumble) .. 6.5 (big hit) m/s
+    const hitLow = Math.random() < 0.35;
+    const lift = hitLow ? 0.05 : 0.18; // low hits stay low; high hits lift a bit
+    triggerTackle([Math.cos(ang), lift, Math.sin(ang)], speed_, hitLow);
   }
 
   // --- on-screen touch controls (the demo runs on a phone) ---
