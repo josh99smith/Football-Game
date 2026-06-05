@@ -32,8 +32,13 @@ export class PhysicsWorld {
 
   private addGround(): void {
     const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    // The ground must cover the WHOLE field: players (and their ragdolls) live at world
+    // X 0..~120, Z 0..~53 (field pixels * 1/PX_PER_YARD). A ground centered on the origin must
+    // therefore be large enough to reach past midfield in every direction — a too-small slab
+    // let bodies tackled past the 50 fall straight through (and jitter off its edge). The top
+    // surface sits at y=0 (half-height 0.5, translated down 0.5).
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(60, 0.5, 60).setTranslation(0, -0.5, 0).setFriction(1.4),
+      RAPIER.ColliderDesc.cuboid(250, 0.5, 250).setTranslation(0, -0.5, 0).setFriction(1.4),
       body,
     );
     this.groundBody = body;
