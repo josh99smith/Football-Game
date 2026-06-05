@@ -29,25 +29,26 @@ interface SegDef {
   parent: string | null;
   r: number; // capsule radius (m)
   m: number; // mass (kg)
-  /** Knees/elbows: a 1-DOF hinge with limits so they can't bend sideways or hyperextend. */
-  hinge?: boolean;
+  sw?: number; // soft swing (cone) limit vs parent, radians — how far it can bend from rest
+  tw?: number; // soft twist limit about the bone axis, radians — stops the candy-wrapper
 }
 
 // Major segments of the body, parents before children (drive order depends on it).
+// sw/tw are the joint's soft range; beyond them a spring pushes back (see applyLimits).
 const SEGS: SegDef[] = [
   { name: "pelvis", top: "Hips", bot: "Spine1", drives: "Hips", parent: null, r: 0.12, m: 12 },
-  { name: "torso", top: "Spine1", bot: "Neck", drives: "Spine1", parent: "pelvis", r: 0.13, m: 16 },
-  { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.09, m: 4.5 },
-  { name: "thighL", top: "LeftUpLeg", bot: "LeftLeg", drives: "LeftUpLeg", parent: "pelvis", r: 0.085, m: 7 },
-  { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4, hinge: true },
-  { name: "footL", top: "LeftFoot", bot: "LeftToeBase", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1 },
-  { name: "thighR", top: "RightUpLeg", bot: "RightLeg", drives: "RightUpLeg", parent: "pelvis", r: 0.085, m: 7 },
-  { name: "shinR", top: "RightLeg", bot: "RightFoot", drives: "RightLeg", parent: "thighR", r: 0.06, m: 4, hinge: true },
-  { name: "footR", top: "RightFoot", bot: "RightToeBase", drives: "RightFoot", parent: "shinR", r: 0.05, m: 1 },
-  { name: "uarmL", top: "LeftArm", bot: "LeftForeArm", drives: "LeftArm", parent: "torso", r: 0.05, m: 2.5 },
-  { name: "farmL", top: "LeftForeArm", bot: "LeftHand", drives: "LeftForeArm", parent: "uarmL", r: 0.045, m: 1.5, hinge: true },
-  { name: "uarmR", top: "RightArm", bot: "RightForeArm", drives: "RightArm", parent: "torso", r: 0.05, m: 2.5 },
-  { name: "farmR", top: "RightForeArm", bot: "RightHand", drives: "RightForeArm", parent: "uarmR", r: 0.045, m: 1.5, hinge: true },
+  { name: "torso", top: "Spine1", bot: "Neck", drives: "Spine1", parent: "pelvis", r: 0.13, m: 16, sw: 0.55, tw: 0.5 },
+  { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.09, m: 4.5, sw: 0.7, tw: 0.6 },
+  { name: "thighL", top: "LeftUpLeg", bot: "LeftLeg", drives: "LeftUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
+  { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
+  { name: "footL", top: "LeftFoot", bot: "LeftToeBase", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1, sw: 0.7, tw: 0.4 },
+  { name: "thighR", top: "RightUpLeg", bot: "RightLeg", drives: "RightUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
+  { name: "shinR", top: "RightLeg", bot: "RightFoot", drives: "RightLeg", parent: "thighR", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
+  { name: "footR", top: "RightFoot", bot: "RightToeBase", drives: "RightFoot", parent: "shinR", r: 0.05, m: 1, sw: 0.7, tw: 0.4 },
+  { name: "uarmL", top: "LeftArm", bot: "LeftForeArm", drives: "LeftArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.5, tw: 0.7 },
+  { name: "farmL", top: "LeftForeArm", bot: "LeftHand", drives: "LeftForeArm", parent: "uarmL", r: 0.045, m: 1.5, sw: 1.6, tw: 0.3 },
+  { name: "uarmR", top: "RightArm", bot: "RightForeArm", drives: "RightArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.5, tw: 0.7 },
+  { name: "farmR", top: "RightForeArm", bot: "RightHand", drives: "RightForeArm", parent: "uarmR", r: 0.045, m: 1.5, sw: 1.6, tw: 0.3 },
 ];
 
 interface Seg extends SegDef {
@@ -56,6 +57,8 @@ interface Seg extends SegDef {
   qOffset: THREE.Quaternion; // bodyWorldQ^-1 * boneWorldQ at spawn (drive: boneWorldQ = bodyQ * qOffset)
   posOffset: THREE.Vector3; // root only: bodyQ^-1 * (boneWorldPos - bodyWorldPos)
   driveBone: THREE.Bone;
+  parentSeg: Seg | null;
+  qRelRest: THREE.Quaternion; // parentBodyQ^-1 * bodyQ at spawn (the joint's neutral pose)
 }
 
 const _a = new THREE.Vector3();
@@ -68,10 +71,17 @@ const _pq = new THREE.Quaternion();
 const _wp = new THREE.Vector3();
 const _upVel = new THREE.Vector3();
 const _midVel = new THREE.Vector3();
-const _seg = new THREE.Vector3();
-const _lat = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
-const FORWARD = new THREE.Vector3(0, 0, 1);
+// scratch for applyLimits (per-substep, kept separate from spawn/drive temps)
+const _lpQ = new THREE.Quaternion();
+const _lcQ = new THREE.Quaternion();
+const _ltmp = new THREE.Quaternion();
+const _lrel = new THREE.Quaternion();
+const _ldev = new THREE.Quaternion();
+const _ltwistInv = new THREE.Quaternion();
+const _lswing = new THREE.Quaternion();
+const _lrest = new THREE.Quaternion();
+const _ltorque = new THREE.Vector3();
 
 const LOWER = new Set(["thighL", "shinL", "footL", "thighR", "shinR", "footR"]);
 const MAX_SPIN = 16; // rad/s — clamp so a body can never spin up into a contorted blur
@@ -162,49 +172,87 @@ export class TackleRagdoll {
       driveBone.getWorldPosition(_wp);
       const posOffset = _b.copy(_wp).sub(_c).applyQuaternion(_q.clone().invert()).clone();
 
-      const seg: Seg = { ...def, body, center: _c.clone(), qOffset, posOffset, driveBone };
+      const seg: Seg = {
+        ...def, body, center: _c.clone(), qOffset, posOffset, driveBone,
+        parentSeg: null, qRelRest: new THREE.Quaternion(),
+      };
       this.segs.push(seg);
       byName.set(def.name, seg);
     }
 
-    // Link each segment to its parent. Knees/elbows are hinges (revolute + angle limits) so
-    // they bend in one plane only; everything else is a spherical (ball) joint.
+    // Link each segment to its parent with a spherical joint; the joint's range of motion is
+    // enforced softly per-substep (see applyLimits) rather than by the joint itself, which
+    // gives stable cone+twist limits without fragile per-joint hinge axes.
     for (const seg of this.segs) {
       if (!seg.parent) continue;
       const parent = byName.get(seg.parent)!;
+      seg.parentSeg = parent;
+      // Neutral relative orientation at spawn (the pose the soft limits measure deviation from).
+      seg.qRelRest.copy(quatOf(parent.body)).invert().multiply(quatOf(seg.body));
       this.bone(seg.top).getWorldPosition(_a); // joint world pos
       const aChild = _b.copy(_a).sub(seg.center).applyQuaternion(_q.copy(quatOf(seg.body)).invert());
       const aParent = _c.copy(_a).sub(parent.center).applyQuaternion(_q2.copy(quatOf(parent.body)).invert());
-      let data: RAPIER.JointData;
-      if (seg.hinge) {
-        // Hinge axis = lateral (perpendicular to the limb and the facing). At spawn the limb
-        // is ~straight, so this is the flexion axis; express it in the parent's local frame.
-        this.bone(seg.bot).getWorldPosition(_seg);
-        _lat.subVectors(_seg, _a);
-        _lat.cross(FORWARD);
-        if (_lat.lengthSq() < 1e-5) _lat.set(1, 0, 0); else _lat.normalize();
-        _lat.applyQuaternion(_q2); // _q2 is parentBodyQ^-1
-        data = R.JointData.revolute(
-          { x: aParent.x, y: aParent.y, z: aParent.z },
-          { x: aChild.x, y: aChild.y, z: aChild.z },
-          { x: _lat.x, y: _lat.y, z: _lat.z },
-        );
-      } else {
-        data = R.JointData.spherical(
-          { x: aParent.x, y: aParent.y, z: aParent.z },
-          { x: aChild.x, y: aChild.y, z: aChild.z },
-        );
-      }
+      const data = R.JointData.spherical(
+        { x: aParent.x, y: aParent.y, z: aParent.z },
+        { x: aChild.x, y: aChild.y, z: aChild.z },
+      );
       const joint = world.createImpulseJoint(data, parent.body, seg.body, true);
-      if (seg.hinge) {
-        // Limit to roughly [straight .. ~150° flexion]; sign chosen so it can't hyperextend.
-        (joint as unknown as { setLimits?: (a: number, b: number) => void }).setLimits?.(-2.6, 0.1);
-      }
       // Adjacent segments share a joint and overlap there — don't let them collide.
       (joint as unknown as { setContactsEnabled?: (b: boolean) => void }).setContactsEnabled?.(false);
     }
 
     this.active = true;
+  }
+
+  /**
+   * Soft cone+twist joint limits, applied once per physics substep (pass as the step's
+   * preSubstep hook). Within each joint's range the ragdoll is free/limp; beyond it, a spring
+   * pushes back. The TWIST limit is what stops the skin candy-wrappering (the stretched
+   * forearm / "detached" foot); the SWING (cone) limit stops the body folding in half. Torque
+   * impulses are dt-scaled so the result is substep-invariant.
+   */
+  applyLimits(dt: number): void {
+    if (!this.active) return;
+    const kSwing = 30, kTwist = 30, kDamp = 1.6;
+    for (const seg of this.segs) {
+      const parent = seg.parentSeg;
+      if (!parent || seg.sw === undefined) continue;
+      const pr = parent.body.rotation(); _lpQ.set(pr.x, pr.y, pr.z, pr.w);
+      const cr = seg.body.rotation(); _lcQ.set(cr.x, cr.y, cr.z, cr.w);
+      // qRel = parentQ^-1 * childQ ; qDev = qRelRest^-1 * qRel  (deviation, in rest-child frame)
+      _ltmp.copy(_lpQ).invert();
+      _lrel.copy(_ltmp).multiply(_lcQ);
+      _ldev.copy(seg.qRelRest).invert().multiply(_lrel);
+      if (_ldev.w < 0) { _ldev.x = -_ldev.x; _ldev.y = -_ldev.y; _ldev.z = -_ldev.z; _ldev.w = -_ldev.w; }
+      // swing/twist decomposition about the bone axis (+Y in the segment frame)
+      const twistAngle = 2 * Math.atan2(_ldev.y, _ldev.w);
+      const s = Math.sin(twistAngle / 2), cw = Math.cos(twistAngle / 2);
+      _ltwistInv.set(0, -s, 0, cw); // inverse of the twist quaternion
+      _lswing.copy(_ldev).multiply(_ltwistInv);
+      if (_lswing.w < 0) { _lswing.x = -_lswing.x; _lswing.y = -_lswing.y; _lswing.z = -_lswing.z; _lswing.w = -_lswing.w; }
+      const swingAngle = 2 * Math.acos(Math.min(1, _lswing.w));
+
+      _ltorque.set(0, 0, 0);
+      if (swingAngle > seg.sw) {
+        const len = Math.hypot(_lswing.x, _lswing.y, _lswing.z) || 1;
+        const k = (-kSwing * (swingAngle - seg.sw)) / len;
+        _ltorque.set(_lswing.x * k, _lswing.y * k, _lswing.z * k); // push swing back toward rest
+      }
+      const tl = seg.tw ?? 0.4;
+      if (twistAngle > tl) _ltorque.y += -kTwist * (twistAngle - tl);
+      else if (twistAngle < -tl) _ltorque.y += -kTwist * (twistAngle + tl);
+      // rotate the (rest-child-frame) correction into world
+      _lrest.copy(_lpQ).multiply(seg.qRelRest);
+      _ltorque.applyQuaternion(_lrest);
+      // damping on the relative angular velocity (world frame)
+      const wc = seg.body.angvel(), wp = parent.body.angvel();
+      _ltorque.x += -kDamp * (wc.x - wp.x);
+      _ltorque.y += -kDamp * (wc.y - wp.y);
+      _ltorque.z += -kDamp * (wc.z - wp.z);
+
+      seg.body.applyTorqueImpulse({ x: _ltorque.x * dt, y: _ltorque.y * dt, z: _ltorque.z * dt }, true);
+      parent.body.applyTorqueImpulse({ x: -_ltorque.x * dt, y: -_ltorque.y * dt, z: -_ltorque.z * dt }, true);
+    }
   }
 
   /** Each frame after stepping physics: clamp spin, then drive the skinned mesh bones. */

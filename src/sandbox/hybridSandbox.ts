@@ -239,7 +239,7 @@ async function main(): Promise<void> {
     requestAnimationFrame(frame);
     const dt = clock.getDelta();
     if (ragdolled) {
-      physics.step();      // passive ragdoll falls under gravity + contact
+      physics.step((sdt) => ragdoll.applyLimits(sdt)); // soft joint limits each substep
       ragdoll.drive();     // bodies drive the skinned mesh bones
     } else {
       mixer.update(dt);    // animation-driven
@@ -253,7 +253,8 @@ async function main(): Promise<void> {
   // during slow screenshot loops — same lesson as the motion sandbox).
   (window as unknown as { __hybrid: { stepFixed?: (n: number) => void } }).__hybrid.stepFixed = (n: number) => {
     for (let i = 0; i < (n || 1); i++) {
-      if (ragdolled) { physics.step(); ragdoll.drive(); } else { mixer.update(1 / 60); }
+      if (ragdolled) { physics.step((sdt) => ragdoll.applyLimits(sdt)); ragdoll.drive(); }
+      else { mixer.update(1 / 60); }
     }
     updateCamera();
     renderer.render(scene, camera);
