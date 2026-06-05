@@ -169,16 +169,17 @@ export class LocomotionController {
   pushoff = 0; // (off) a root impulse here catapults at resonant cadences; the ankle rolls instead
   stepHeight = 0.16; // swing-foot lift to clear the ground (m)
   anklePush = 0.22; // terminal-stance plantarflexion (rad ~13°) — toe-off foot roll + mild push
+  heelStrike = 0.18; // swing-foot dorsiflexion (rad ~10°) approaching contact — land heel-first
   loadDip = 0.12; // loading-response stance-knee flex (rad) just after heel-strike
-  comBob = 0.025; // vertical COM oscillation amplitude (m) — rises at midstance
+  comBob = 0.035; // vertical COM oscillation amplitude (m) — rises at passing, drops at stride
   pelvisYaw = 0.09; // transverse pelvis rotation amplitude (rad ~5°) — the walking twist
   thoraxYaw = 0.11; // counter-rotation of the thorax (rad ~6°), opposite the pelvis
-  stepAhead = 0.22; // baseline foot plant AHEAD of the COM (m) so the COM stays behind the
-  // support and the body stays upright instead of falling forward over trailing feet
+  stepAhead = 0.30; // baseline foot plant AHEAD of the COM (m) — the front-leg reach of a
+  // proper stride (with the trailing leg extending behind, this gives the wide contact split)
   captureGain = 0.12; // capture-point feedback: plant further out when the COM is moving fast
   legStiffness = 1.0; // swing/stance leg muscle stiffness
   armStiffness = 0.5; // arm-swing muscle stiffness
-  stanceBend = 0.05; // tiny stance-knee bend so the support leg looks sprung, not locked
+  stanceBend = 0.02; // near-straight: the support leg straightens at passing to lift the body
 
   private phase = 0; // global gait phase [0,1); right leg = phase, left = phase+0.5
   private totalMass = 0;
@@ -298,7 +299,7 @@ export class LocomotionController {
    * support foot, so the body walks tall instead of falling forward over trailing feet. */
   private driveSwing(leg: Leg, prog: number): void {
     _hipW.copy(HIP_LOCAL[leg.side]).applyQuaternion(_pelvisQ).add(_pelvisPos);
-    const ahead = this.stepAhead + 0.10 * this.desiredSpeed + this.captureGain * (this.comVel.z - this.desiredSpeed);
+    const ahead = this.stepAhead + 0.16 * this.desiredSpeed + this.captureGain * (this.comVel.z - this.desiredSpeed);
     const landX = _hipW.x + this.captureGain * this.comVel.x;
     const landZ = _com.z + Math.max(0.05, ahead);
     const s = prog * prog * (3 - 2 * prog); // smoothstep
@@ -308,9 +309,12 @@ export class LocomotionController {
     _targetW.set(ax, ay, az);
     _targetL.copy(_targetW).sub(_pelvisPos).applyQuaternion(_pelvisQInv);
     const knee = legIK(HIP_LOCAL[leg.side], _targetL, _hipQ);
+    // Heel-strike: dorsiflex the foot (toes up) over the back of the swing so it lands
+    // heel-first, like the reference, instead of slapping down flat.
+    const heel = this.heelStrike * smoothstep((prog - 0.6) / 0.4);
     (this.pose[leg.hip] ??= new THREE.Quaternion()).copy(_hipQ);
     (this.pose[leg.knee] ??= new THREE.Quaternion()).setFromAxisAngle(_X, knee);
-    (this.pose[leg.ankle] ??= new THREE.Quaternion()).identity();
+    (this.pose[leg.ankle] ??= new THREE.Quaternion()).setFromAxisAngle(_X, heel);
     this.rag.setJointStiffness(leg.hip, this.legStiffness);
     this.rag.setJointStiffness(leg.knee, this.legStiffness);
     this.rag.setJointStiffness(leg.ankle, this.legStiffness * 0.6);

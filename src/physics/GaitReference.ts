@@ -47,9 +47,9 @@ export const defaultGait: GaitTuning = {
   kneeBase: 4,
   anklePush: 16,
   ankleDorsi: 6,
-  armAmp: 34,
+  armAmp: 38,
   elbowBend: 26,
-  spineLean: 6,
+  spineLean: 4,
 };
 
 export interface LegAngles { hip: number; knee: number; ankle: number } // radians
