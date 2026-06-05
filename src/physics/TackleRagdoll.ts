@@ -16,7 +16,10 @@ import type { PhysicsWorld } from "./PhysicsWorld";
  */
 
 const MIX = "mixamorig";
-const GROUPS = 0x00020001; // membership 0x0002, filter 0x0001 -> hits ground, not itself
+// membership 0x0002, filter 0x0003 -> collides with ground (0x0001) AND itself (0x0002).
+// Self-collision stops limbs melting through the torso; adjacent (jointed) segments overlap
+// at the shared joint, so we disable contacts on each joint to avoid a spawn explosion.
+const GROUPS = 0x00020003;
 
 interface SegDef {
   name: string;
@@ -170,7 +173,9 @@ export class TackleRagdoll {
         { x: aParent.x, y: aParent.y, z: aParent.z },
         { x: aChild.x, y: aChild.y, z: aChild.z },
       );
-      world.createImpulseJoint(data, parent.body, seg.body, true);
+      const joint = world.createImpulseJoint(data, parent.body, seg.body, true);
+      // Adjacent segments share a joint and overlap there — don't let them collide.
+      (joint as unknown as { setContactsEnabled?: (b: boolean) => void }).setContactsEnabled?.(false);
     }
 
     this.active = true;
