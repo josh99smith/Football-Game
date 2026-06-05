@@ -185,6 +185,10 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
  * angle — then keeps it goal-side so he gets in front and squares up rather than chasing the hip.
  */
 function interceptPoint(d: Player, carrier: Player, ctx: PlayContext): Vec2 {
+  // Right on top of him: aim AT the carrier and square up for the tackle (no leverage offset,
+  // or defenders just circle a stationary back without ever making contact).
+  if (dist2(d.pos, carrier.pos) < 46 * 46) return { x: carrier.pos.x, y: carrier.pos.y };
+
   const dSpeed = Math.max(60, d.baseSpeed);
   // Converge on the meeting time: t ≈ distance-to-future-spot / defender speed.
   let t = Math.hypot(carrier.pos.x - d.pos.x, carrier.pos.y - d.pos.y) / dSpeed;
@@ -196,8 +200,11 @@ function interceptPoint(d: Player, carrier: Player, ctx: PlayContext): Vec2 {
   t = Math.min(t, 1.5); // don't over-project on a far, fast runner
   let px = carrier.pos.x + carrier.vel.x * t;
   const py = carrier.pos.y + carrier.vel.y * t;
-  // Leverage: never aim behind the runner — get to the goal side so we cut him off.
-  const goalSide = carrier.pos.x + ctx.dir * 12;
+  // Cut-off leverage scaled by how fast he's actually advancing — only get ahead of a runner
+  // who's gaining ground, so a slow/stopped carrier isn't overshot.
+  const downSpeed = Math.max(0, ctx.dir > 0 ? carrier.vel.x : -carrier.vel.x);
+  const lead = Math.min(18, downSpeed * 0.07);
+  const goalSide = carrier.pos.x + ctx.dir * lead;
   px = ctx.dir > 0 ? Math.max(px, goalSide) : Math.min(px, goalSide);
   return { x: px, y: py };
 }

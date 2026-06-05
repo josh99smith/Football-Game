@@ -254,6 +254,17 @@ export class TackleRagdoll {
    */
   applyLimits(dt: number): void {
     if (!this.active) return;
+    // Safety floor: never let a body sink under the turf (catches rare tunneling / solver blowups
+    // from a hard hit). Keep each capsule's center at/above its radius and kill downward velocity.
+    for (const seg of this.segs) {
+      const t = seg.body.translation();
+      const minY = seg.r * 0.85;
+      if (t.y < minY) {
+        seg.body.setTranslation({ x: t.x, y: minY, z: t.z }, true);
+        const v = seg.body.linvel();
+        if (v.y < 0) seg.body.setLinvel({ x: v.x, y: 0, z: v.z }, true);
+      }
+    }
     // The limits matter only DURING the fall (to stop the mesh candy-wrappering while the
     // body whips around fast). Once it's down, a limb resting on the ground at a beyond-limit
     // angle would fight the ground forever and buzz — so we fade the limits out over the first
