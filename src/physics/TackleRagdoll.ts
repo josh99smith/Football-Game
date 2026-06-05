@@ -16,10 +16,10 @@ import type { PhysicsWorld } from "./PhysicsWorld";
  */
 
 const MIX = "mixamorig";
-// membership 0x0002, filter 0x0003 -> collides with ground (0x0001) AND itself (0x0002).
-// Self-collision stops limbs melting through the torso; adjacent (jointed) segments overlap
-// at the shared joint, so we disable contacts on each joint to avoid a spawn explosion.
-const GROUPS = 0x00020003;
+// Collision groups are computed per spawn (see `spawn`): each ragdoll collides with the
+// ground and itself (self-collision stops limbs melting through the torso) but not other
+// ragdolls. Adjacent (jointed) segments overlap at the shared joint, so we disable contacts
+// on each joint to avoid a spawn explosion.
 
 interface SegDef {
   name: string;
@@ -104,6 +104,7 @@ export class TackleRagdoll {
   private bones = new Map<string, THREE.Bone[]>();
   private prevSubsteps = 2;
   private age = 0; // seconds since spawn — limits fade out as this grows
+  private groups = 0x00020003; // collision membership|filter, set per spawn (see spawn)
 
   constructor(physics: PhysicsWorld) {
     this.physics = physics;
@@ -145,8 +146,12 @@ export class TackleRagdoll {
    *  - high hit (default): upper body takes it -> knocked backward/down off the legs;
    *  - low hit (`hitLow`): the legs take it -> they're cut out and the torso flips forward.
    */
-  spawn(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow = false): void {
+  spawn(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow = false, collisionBit = 0x0002): void {
     if (this.active) this.dispose();
+    // Membership = this ragdoll's bit; it collides with the ground (0x0001) and its OWN bit
+    // (self-collision stops limbs melting through the torso) but NOT other ragdolls' bits, so
+    // two bodies in a tackle pile each stay stable instead of exploding into each other.
+    this.groups = ((collisionBit & 0xffff) << 16) | (0x0001 | (collisionBit & 0xffff));
     const world = this.physics.world;
     const R = this.physics.rapier;
     const byName = new Map<string, Seg>();
@@ -187,7 +192,7 @@ export class TackleRagdoll {
         .setMass(def.m)
         .setFriction(0.8)
         .setRestitution(0.0)
-        .setCollisionGroups(GROUPS);
+        .setCollisionGroups(this.groups);
       world.createCollider(col, body);
 
       const driveBone = this.bone(def.drives);

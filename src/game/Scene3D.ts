@@ -5,6 +5,8 @@ import type { Ball } from "./entities/Ball";
 import type { CharacterAsset } from "./CharacterModel";
 import { clamp, moveToward } from "../engine/math/Vec2";
 import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD } from "./Field";
+import { PhysicsWorld } from "../physics/PhysicsWorld";
+import { TackleRagdoll } from "../physics/TackleRagdoll";
 
 /** Units per field-pixel (1 yard = 1 world unit in 3D). */
 const U = 1 / PX_PER_YARD;
@@ -12,6 +14,31 @@ const FIELD_LEN_U = FIELD_LENGTH * U;
 const FIELD_WID_U = FIELD_WIDTH * U;
 
 const MAX_PLAYERS = 14;
+
+// --- physics ragdoll tackle tuning (mirrors the hybrid sandbox that proved it out) ---
+const RAG_SETTLE_RESIDUAL = 0.8; // total body speed below which it counts as "calm"
+const RAG_MIN_FALL = 0.5;        // don't check for calm until the fall is underway (s)
+const RAG_CALM_NEEDED = 0.7;     // stay calm this long (incl. a beat lying there) before standing
+const RAG_MAX_FALL = 6;          // safety: stand up even if it never fully settles (s)
+const RAG_GETUP_DUR = 1.1;       // seconds to rise to standing
+const _rgp = new THREE.Vector3();
+const _rhip = new THREE.Vector3();
+function ragEase(x: number): number { return x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2; }
+// Get-up stagger: legs/hips gather first, spine/head follow, arms swing in last.
+function ragGetupDelay(name: string): number {
+  if (/UpLeg|Leg|Foot|Toe|Hips/.test(name)) return 0;
+  if (/Spine|Neck|Head/.test(name)) return 0.18;
+  return 0.3;
+}
+
+/** Parameters for a physics tackle, in field (pixel) space; converted to world by Scene3D. */
+export interface RagdollHit {
+  hitDirX: number; hitDirY: number; // hit direction (carrier - tackler), field space
+  closingPx: number;                // closing speed (px/s) -> hit strength
+  carryVx: number; carryVy: number; // the player's own momentum (px/s), carried into the fall
+  big: boolean;                     // a big hit blows the upper body up; else more low hits
+  bit: number;                      // collision membership bit (distinct per body in a pile)
+}
 
 /** A swappable on-field player representation (box fallback or skinned FBX). */
 interface Avatar {
@@ -22,6 +49,14 @@ interface Avatar {
   present(alpha: number): void;
   hide(): void;
   resetPose(): void;
+  /** True while a physics ragdoll owns this body (falling or getting up). */
+  ragdollActive(): boolean;
+  /** Per physics substep while ragdolling: enforce soft joint limits. */
+  applyRagdollLimits(dt: number): void;
+  /** Once per sim tick after the world steps: drive bones + advance fall/get-up. */
+  advanceRagdoll(dt: number): void;
+  /** Hips position in field (pixel) space while ragdolling, for camera/spot tracking. */
+  ragdollHipsPx(): { x: number; y: number } | null;
 }
 
 /**
@@ -210,6 +245,12 @@ class BoxAvatar implements Avatar {
     this.group.position.y = 0;
     this.interp.reset();
   }
+
+  // The box fallback has no skeleton, so it never ragdolls.
+  ragdollActive(): boolean { return false; }
+  applyRagdollLimits(): void {}
+  advanceRagdoll(): void {}
+  ragdollHipsPx(): null { return null; }
 }
 
 function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number): THREE.Mesh {
@@ -287,6 +328,19 @@ class FbxAvatar implements Avatar {
   private fallT = 0;
   private readonly interp = new Interp();
 
+  // --- physics ragdoll tackle (replaces the canned tackle clip when a hit lands) ---
+  private readonly inner: THREE.Object3D;
+  /** Bind-pose local transforms, the target the get-up blends back to. */
+  private readonly restPose = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
+  private ragdoll: TackleRagdoll | null = null;
+  private rPhase: "anim" | "fall" | "getup" = "anim";
+  private fallTime = 0;
+  private settleTimer = 0;
+  private getupT = 0;
+  private readonly getupFrom = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
+  /** After get-up, stay standing (ignore the down/contact fall pose) until the next play. */
+  private suppressFall = false;
+
   constructor(asset: CharacterAsset) {
     const inner = skeletonClone(asset.template);
     inner.scale.setScalar(asset.scale);
@@ -363,7 +417,96 @@ class FbxAvatar implements Avatar {
     // so the ground ring / chevron / ball stay upright.
     this.lean.add(inner);
     this.group.add(this.lean, this.ring, this.chevron, this.nub);
+
+    // Snapshot the bind pose now (before the mixer ever runs) — the get-up blends back to it.
+    this.inner = inner;
+    inner.traverse((o) => {
+      if ((o as THREE.Bone).isBone) this.restPose.set(o as THREE.Bone, { p: o.position.clone(), q: o.quaternion.clone() });
+    });
   }
+
+  // --- physics ragdoll lifecycle ----------------------------------------------------------
+  ragdollActive(): boolean { return this.rPhase !== "anim"; }
+
+  /** Snapshot the current animated pose and hand the body to physics for a real tackle fall. */
+  startRagdoll(physics: PhysicsWorld, carry: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow: boolean, bit: number): void {
+    if (!this.ragdoll) { this.ragdoll = new TackleRagdoll(physics); this.ragdoll.bind(this.inner); }
+    this.group.updateWorldMatrix(true, true); // freeze the live pose in world space
+    this.group.position.y = 0;                 // so the get-up later stands with feet on the ground
+    this.ragdoll.spawn(carry, hitDir, hitSpeed, hitLow, bit);
+    this.rPhase = "fall"; this.fallTime = 0; this.settleTimer = 0; this.suppressFall = false;
+    this.ring.visible = false; this.chevron.visible = false; this.nub.visible = false;
+  }
+
+  applyRagdollLimits(dt: number): void { this.ragdoll?.applyLimits(dt); }
+
+  advanceRagdoll(dt: number): void {
+    if (!this.ragdoll) return;
+    if (this.rPhase === "fall") {
+      this.ragdoll.drive(); // bodies drive the skinned-mesh bones in world space
+      this.fallTime += dt;
+      if (this.fallTime > RAG_MIN_FALL && this.ragdoll.residualMotion() < RAG_SETTLE_RESIDUAL) this.settleTimer += dt;
+      else this.settleTimer = 0;
+      if (this.settleTimer > RAG_CALM_NEEDED || this.fallTime > RAG_MAX_FALL) this.startGetup();
+    } else if (this.rPhase === "getup") {
+      this.getupT += dt / RAG_GETUP_DUR;
+      this.blendGetup(Math.min(1, this.getupT));
+      if (this.getupT >= 1) this.finishGetup();
+    }
+  }
+
+  ragdollHipsPx(): { x: number; y: number } | null {
+    if (this.rPhase === "anim") return null;
+    const h = this.bone("Hips");
+    if (!h) return null;
+    h.getWorldPosition(_rhip);
+    return { x: _rhip.x / U, y: _rhip.z / U };
+  }
+
+  /** Find a bone instance by short (mixamorig-stripped) name within this avatar. */
+  private bone(short: string): THREE.Bone | null {
+    let found: THREE.Bone | null = null;
+    this.inner.traverse((o) => { if (!found && (o as THREE.Bone).isBone && o.name === "mixamorig" + short) found = o as THREE.Bone; });
+    return found;
+  }
+
+  private startGetup(): void {
+    this.getupFrom.clear();
+    for (const [bone] of this.restPose) this.getupFrom.set(bone, { p: bone.position.clone(), q: bone.quaternion.clone() });
+    this.ragdoll!.dispose(); // hand off from physics to the procedural stand-up blend
+    this.rPhase = "getup"; this.getupT = 0;
+  }
+
+  private blendGetup(t: number): void {
+    for (const [bone, from] of this.getupFrom) {
+      const to = this.restPose.get(bone)!;
+      const d = ragGetupDelay(bone.name);
+      const e = ragEase(clamp((t - d) / (1 - d), 0, 1));
+      bone.quaternion.copy(from.q).slerp(to.q, e);
+      if (bone.name.endsWith("Hips")) {
+        // Stand up where the body settled: keep the fallen X/Z, raise Y to standing height.
+        _rgp.set(from.p.x, THREE.MathUtils.lerp(from.p.y, to.p.y, ragEase(t)), from.p.z);
+        bone.position.copy(_rgp);
+      } else {
+        bone.position.lerpVectors(from.p, to.p, e);
+      }
+    }
+    this.inner.updateWorldMatrix(true, true);
+  }
+
+  /** Reconcile back to the game's convention (body placed by the group, bones at rest) so the
+   *  idle animation can resume seamlessly: move the group to where the body stood up. */
+  private finishGetup(): void {
+    const h = this.bone("Hips");
+    if (h) h.getWorldPosition(_rhip); else _rhip.set(this.group.position.x, 0, this.group.position.z);
+    for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
+    this.group.position.set(_rhip.x, 0, _rhip.z);
+    this.interp.reset();
+    this.interp.push(_rhip.x, _rhip.z); // prime so present() doesn't slide from a stale spot
+    this.rPhase = "anim";
+    this.suppressFall = true; // remain standing until the next play resets us
+  }
+
 
   /**
    * Play a one-shot overlay, capping how long it ducks locomotion (clips can be long).
@@ -391,6 +534,11 @@ class FbxAvatar implements Avatar {
 
   /** Reset to an upright, neutral pose for a fresh play (pooled avatars are reused). */
   resetPose(): void {
+    // Tear down any ragdoll and restore the bind pose so the new play starts clean.
+    if (this.ragdoll?.active) this.ragdoll.dispose();
+    this.rPhase = "anim";
+    this.suppressFall = false;
+    for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
     this.fallT = 0;
     this.oneShot?.setEffectiveWeight(0);
     this.oneShot = null;
@@ -406,6 +554,7 @@ class FbxAvatar implements Avatar {
   }
 
   present(alpha: number): void {
+    if (this.rPhase !== "anim") return; // physics fixed the group while ragdolling; don't slide it
     this.group.position.x = this.interp.x(alpha);
     this.group.position.z = this.interp.z(alpha);
   }
@@ -415,6 +564,10 @@ class FbxAvatar implements Avatar {
     void isDefense;
     const g = this.group;
     g.visible = true;
+    // While a physics ragdoll owns the body, it's stepped/driven in advanceRagdoll(); the
+    // normal animation + position pipeline stands down so it doesn't fight the bones. Drop any
+    // queued one-shot (e.g. the canned "tackle") so it can't fire when we hand back to anim.
+    if (this.rPhase !== "anim") { p.animEvent = null; return; }
     this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
     g.position.y = 0;
 
@@ -461,7 +614,7 @@ class FbxAvatar implements Avatar {
     // When the tackle clip is the active one-shot, IT drives the fall, so skip the
     // procedural pitch (otherwise the body would double-tip).
     const tackleClip = this.oneShot != null && this.oneShot === this.tackleAction;
-    const fallTarget = tackleClip ? 0 : lo.down ? 1 : lo.contact ? 0.55 : 0;
+    const fallTarget = this.suppressFall ? 0 : tackleClip ? 0 : lo.down ? 1 : lo.contact ? 0.55 : 0;
     this.fallT = moveToward(this.fallT, fallTarget, (fallTarget > this.fallT ? 1 / 0.25 : 1 / 0.4) * dt);
 
     // Procedural fall pose (applies whether or not locomotion is muted).
@@ -559,6 +712,8 @@ export class Scene3D {
   private readonly sun: THREE.DirectionalLight;
 
   private players: Avatar[] = [];
+  /** Shared physics world for ragdoll tackles (loaded async; null until ready). */
+  private physics: PhysicsWorld | null = null;
   private readonly ballGroup = new THREE.Group();
   private readonly ballMesh: THREE.Mesh;
   private readonly losMarker: THREE.Mesh;
@@ -642,6 +797,38 @@ export class Scene3D {
     this.losMarker = this.buildMarker(0x3a6bff);
     this.firstDownMarker = this.buildMarker(0xffd23a);
     this.scene.add(this.losMarker, this.firstDownMarker);
+
+    // Spin up the physics world for ragdoll tackles (async WASM). It's ready well before the
+    // first snap; until then, tackles fall back to the canned animation.
+    void PhysicsWorld.create().then((w) => { this.physics = w; });
+  }
+
+  /** Begin a physics ragdoll tackle on the player at `index` (its slot in the sync list). */
+  startRagdoll(index: number, hit: RagdollHit): boolean {
+    const av = this.players[index];
+    if (!this.physics || !(av instanceof FbxAvatar)) return false;
+    const dir = _ragDir.set(hit.hitDirX, 0, hit.hitDirY);
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+    dir.normalize();
+    // px/s -> world units/s; a hit's strength scales with closing speed, a fall carries the
+    // runner's own momentum (clamped so a sprint doesn't fling the body across the field).
+    const hitSpeed = clamp(2.6 + hit.closingPx * U * 0.5, 2.6, 6.5);
+    const carry = _ragCarry.set(hit.carryVx * U, 0, hit.carryVy * U).multiplyScalar(0.7);
+    if (carry.length() > 5) carry.setLength(5);
+    const hitLow = hit.big ? Math.random() < 0.2 : Math.random() < 0.5; // big hits mostly blow up high
+    av.startRagdoll(this.physics, carry, dir, hitSpeed, hitLow, hit.bit);
+    return true;
+  }
+
+  /** True while any avatar is mid-tackle (falling or getting up). */
+  ragdollsBusy(): boolean {
+    for (const a of this.players) if (a.ragdollActive()) return true;
+    return false;
+  }
+
+  /** Hips position (field px) of the player at `index` while ragdolling, else null. */
+  ragdollHipsPx(index: number): { x: number; y: number } | null {
+    return this.players[index]?.ragdollHipsPx() ?? null;
   }
 
   private makeSky(): THREE.Texture {
@@ -973,6 +1160,14 @@ export class Scene3D {
       }
     }
 
+    // Step the shared physics world ONCE per tick (not per avatar) for any active ragdolls,
+    // enforcing each one's joint limits per substep, then drive their bones + advance get-up.
+    if (this.physics && this.ragdollsBusy()) {
+      const active = this.players.filter((a) => a.ragdollActive());
+      this.physics.step((sdt) => { for (const a of active) a.applyRagdollLimits(sdt); });
+      for (const a of active) a.advanceRagdoll(opts.dt);
+    }
+
     if (ball.state === "held") {
       this.ballGroup.visible = false;
       this.ballPrimed = false; // snap when it next appears (no slide from a stale spot)
@@ -1056,6 +1251,8 @@ export class Scene3D {
 const _tmpPos = new THREE.Vector3();
 const _tmpLook = new THREE.Vector3();
 const _tmpVec = new THREE.Vector3();
+const _ragDir = new THREE.Vector3();
+const _ragCarry = new THREE.Vector3();
 // Scratch objects for the spiraling-ball orientation (no per-frame allocation).
 const _ballVel = new THREE.Vector3();
 const _ballQ = new THREE.Quaternion();

@@ -107,6 +107,12 @@ export class LivePlayState implements GameState {
   private deadElapsed = 0;
   /** Where each player ambles back to during the post-play regroup (lazy). */
   private regroupTargets: Map<Player, Vec2> | null = null;
+  /** Players currently mid physics-ragdoll (indices into `all`); the whistle waits for them. */
+  private ragdollIdx: number[] = [];
+  /** Hold the post-play beat until the physics fall + get-up finishes. */
+  private holdForRagdoll = false;
+  /** Camera subject while a ragdoll tackle plays out (the ball carrier going down). */
+  private ragdollFocus: Player | null = null;
   /** Ball spot the play ended at (anchors the regroup huddle). */
   private endSpot: Vec2 = { x: 0, y: 0 };
   /** Cooldown so broken tackles can't chain every frame. */
@@ -163,10 +169,33 @@ export class LivePlayState implements GameState {
 
     this.app.scene3d.setVisible(true);
     this.app.scene3d.resetAvatars();
+    this.ragdollIdx = [];
+    this.holdForRagdoll = false;
+    this.ragdollFocus = null;
     if (this.qb) this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir);
     this.app.input.setLayout(this.controls.computeLayout(this.app.r));
     this.app.audio.startCrowd();
     this.showHint = !LivePlayState.hintShown;
+    if (import.meta.env.DEV) (window as unknown as { __live: LivePlayState }).__live = this;
+  }
+
+  /** DEV-only: force the ball carrier to be tackled by the nearest defender (headless tests). */
+  debugForceTackle(big = true): boolean {
+    if (this.phase !== "live") return false;
+    const carrier = this.ball.carrier ?? this.qb;
+    if (!carrier) return false;
+    let tackler: Player | null = null;
+    let best = Infinity;
+    for (const d of this.all) {
+      if (d.team === carrier.team) continue;
+      const dd = dist(d.pos, carrier.pos);
+      if (dd < best) { best = dd; tackler = d; }
+    }
+    if (!tackler) return false;
+    // Place the defender right on the carrier so the hit lands this frame.
+    tackler.pos = { x: carrier.pos.x - 6, y: carrier.pos.y };
+    this.doTackle(tackler, carrier, big, 220);
+    return true;
   }
 
   private context(): PlayContext {
@@ -296,13 +325,17 @@ export class LivePlayState implements GameState {
   /** Push the current sim state into the 3D scene (positions + camera). */
   private syncScene(dt: number): void {
     const m = this.app.match;
-    const focus = this.ball.carrier
-      ? this.ball.carrier.pos
-      : this.ball.state === "inAir"
-        ? this.ball.pos
-        : this.qb
-          ? this.qb.pos
-          : { x: this.startLosX, y: this.app.field.maxY / 2 };
+    this.trackRagdolls(); // glue ragdolling players to their physics hips before we frame them
+    const busy = this.holdForRagdoll && this.app.scene3d.ragdollsBusy();
+    const focus = busy && this.ragdollFocus
+      ? this.ragdollFocus.pos // stay on the body being driven into the ground
+      : this.ball.carrier
+        ? this.ball.carrier.pos
+        : this.ball.state === "inAir"
+          ? this.ball.pos
+          : this.qb
+            ? this.qb.pos
+            : { x: this.startLosX, y: this.app.field.maxY / 2 };
     this.app.scene3d.sync({
       players: this.all,
       ball: this.ball,
@@ -897,13 +930,49 @@ export class LivePlayState implements GameState {
 
     // Both players wrap up and go down together; the whistle blows after the beat.
     carrier.enterContact(bvx, bvy, beat);
-    carrier.animEvent = "tackle"; // the carrier's getting-tackled reaction
+    carrier.animEvent = "tackle"; // the carrier's getting-tackled reaction (canned fallback)
     tackler.enterContact(bvx * 0.55, bvy * 0.55, beat);
-    tackler.animEvent = "tackleMade"; // the defender's tackle hit
+    tackler.animEvent = "tackleMade"; // the defender's tackle hit (canned fallback)
     tackler.facing = Math.atan2(dirY, dirX);
     tackler.heading = tackler.facing;
     this.pendingTackle = { type, spot };
     this.pendingTackleTimer = beat;
+
+    // Physics tackle: hand the carrier (and the tackler driving him down) to the ragdoll,
+    // replacing the canned clips. If physics isn't ready yet, the canned reaction still plays.
+    this.startRagdollTackle(carrier, tackler, dirX, dirY, closing, big);
+  }
+
+  /** Spawn physics ragdolls for the two players in a collision and hold the whistle for the
+   *  full fall + get-up. The carrier and tackler get distinct collision bits so they tumble
+   *  near each other without their bodies exploding into one another. */
+  private startRagdollTackle(carrier: Player, tackler: Player, dirX: number, dirY: number, closing: number, big: boolean): void {
+    const scene = this.app.scene3d;
+    const ci = this.all.indexOf(carrier);
+    const ti = this.all.indexOf(tackler);
+    const carrierDown = ci >= 0 && scene.startRagdoll(ci, {
+      hitDirX: dirX, hitDirY: dirY, closingPx: closing, carryVx: carrier.vel.x, carryVy: carrier.vel.y, big, bit: 0x0002,
+    });
+    // The tackler is thrown back along the hit (opposite the carrier) at a lighter strength.
+    const tacklerDown = ti >= 0 && scene.startRagdoll(ti, {
+      hitDirX: -dirX, hitDirY: -dirY, closingPx: closing * 0.6, carryVx: tackler.vel.x, carryVy: tackler.vel.y, big, bit: 0x0004,
+    });
+    this.ragdollIdx = [];
+    if (carrierDown) this.ragdollIdx.push(ci);
+    if (tacklerDown) this.ragdollIdx.push(ti);
+    this.holdForRagdoll = this.ragdollIdx.length > 0;
+    this.ragdollFocus = carrierDown ? carrier : null;
+  }
+
+  /** Keep each ragdolling player's sim position glued to its physics hips, so the camera, the
+   *  ball spot and the selection follow the tumbling body. */
+  private trackRagdolls(): void {
+    if (!this.holdForRagdoll) return;
+    for (const idx of this.ragdollIdx) {
+      const hips = this.app.scene3d.ragdollHipsPx(idx);
+      const p = this.all[idx];
+      if (hips && p) { p.pos.x = hips.x; p.pos.y = this.app.field.clampY(hips.y); }
+    }
   }
 
   /** Classify a tackle at `spot`: a safety if downed in the offense's own end zone, a
@@ -1056,16 +1125,20 @@ export class LivePlayState implements GameState {
   private updateDeadBeat(dt: number): void {
     this.deadTimer -= dt;
     this.deadElapsed += dt;
-    const regrouping = this.deadTimer <= 0;
+    // Hold the whistle: while the physics fall + get-up is still playing out, nobody regroups
+    // and the auto-advance is suspended (a tap can still skip it).
+    const busy = this.holdForRagdoll && this.app.scene3d.ragdollsBusy();
+    const regrouping = this.deadTimer <= 0 && !busy;
     for (const p of this.all) {
       if (regrouping && !p.isDown) this.walkToRegroup(p, dt);
       else p.step(dt, 0); // settle / celebrate / lie tackled
     }
     this.ball.update(dt);
     this.spawnFireFx();
-    // A tap anywhere (or ACTION) skips ahead; otherwise it auto-advances at the hard cap.
+    // A tap anywhere (or ACTION) skips ahead; otherwise it auto-advances at the hard cap
+    // (but never mid-tackle — let the body land and rise first unless the player skips).
     const tapped = this.app.input.consumeTaps().length > 0 || this.app.input.actionPressed;
-    if (tapped || this.deadElapsed >= POSTPLAY_MAX) {
+    if (tapped || (!busy && this.deadElapsed >= POSTPLAY_MAX)) {
       this.commitOutcome();
       return;
     }

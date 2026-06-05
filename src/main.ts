@@ -9,6 +9,9 @@ if (!canvas || !canvas3d) throw new Error("missing game canvases");
 const app = new GameApp(canvas, canvas3d);
 app.start(new MenuState(app));
 
+// Dev-only handle for headless/scripted testing (stripped from production builds).
+if (import.meta.env.DEV) (window as unknown as { __app: GameApp }).__app = app;
+
 // Resume audio on the very first interaction (autoplay policy).
 const unlock = () => {
   app.audio.resume();
