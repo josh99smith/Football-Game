@@ -311,6 +311,22 @@ function smoothstep(e0: number, e1: number, x: number): number {
   const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
 }
+/** A soft radial-gradient sprite for additive motes/glows. Cached after first build. */
+let _moteTex: THREE.Texture | null = null;
+function makeMoteTexture(): THREE.Texture {
+  if (_moteTex) return _moteTex;
+  const c = document.createElement("canvas");
+  c.width = c.height = 32;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.35, "rgba(255,240,210,0.7)");
+  g.addColorStop(1, "rgba(255,230,180,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 32, 32);
+  _moteTex = new THREE.CanvasTexture(c);
+  return _moteTex;
+}
 /** Lerp an action's weight toward a target (~0.12s to fully change) for smooth crossfades. */
 function blendW(a: THREE.AnimationAction | null, target: number, dt: number): void {
   if (!a) return;
@@ -838,6 +854,11 @@ export class Scene3D {
   private cine = 0;
   private cineHold = 0;
 
+  // Drifting night atmosphere (dust/embers caught in the floodlights).
+  private atmo!: THREE.Points;
+  private atmoVel!: Float32Array;
+  private atmoLast = 0;
+
   constructor(canvas: HTMLCanvasElement, field: Field) {
     this.canvas = canvas;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
@@ -876,6 +897,7 @@ export class Scene3D {
     this.buildField(field);
     this.buildStadium();
     this.buildFloodlights();
+    this.buildAtmosphere();
 
     for (let i = 0; i < MAX_PLAYERS; i++) {
       const pm = new BoxAvatar();
@@ -1053,6 +1075,58 @@ export class Scene3D {
       spot.target.position.set(cx, 0, cz);
       this.scene.add(spot, spot.target);
     }
+  }
+
+  /**
+   * A volume of slow-drifting motes (dust / embers) over the field, lit warm so they bleed into the
+   * bloom — night-game grit without a heavyweight particle sim. Positions wrap so the field is
+   * always populated; velocities give a lazy, convective drift.
+   */
+  private buildAtmosphere(): void {
+    const N = 340;
+    const pos = new Float32Array(N * 3);
+    this.atmoVel = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = Math.random() * (FIELD_LEN_U + 40) - 20;
+      pos[i * 3 + 1] = 0.6 + Math.random() * 20;
+      pos[i * 3 + 2] = Math.random() * (FIELD_WID_U + 30) - 15;
+      this.atmoVel[i * 3] = (Math.random() - 0.5) * 0.9;
+      this.atmoVel[i * 3 + 1] = 0.15 + Math.random() * 0.5; // gentle rise
+      this.atmoVel[i * 3 + 2] = (Math.random() - 0.5) * 0.9;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0xffe6b8,
+      map: makeMoteTexture(),
+      size: 0.5,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    });
+    this.atmo = new THREE.Points(geo, mat);
+    this.atmo.frustumCulled = false;
+    this.scene.add(this.atmo);
+  }
+
+  /** Drift the atmosphere motes; wrap them back into the volume so density stays constant. */
+  private tickAtmosphere(dt: number): void {
+    const p = this.atmo.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const a = p.array as Float32Array;
+    const v = this.atmoVel;
+    const loX = -20, hiX = FIELD_LEN_U + 20;
+    const loZ = -15, hiZ = FIELD_WID_U + 15;
+    for (let i = 0; i < a.length; i += 3) {
+      a[i] += v[i] * dt;
+      a[i + 1] += v[i + 1] * dt;
+      a[i + 2] += v[i + 2] * dt;
+      if (a[i + 1] > 22) { a[i + 1] = 0.6; } // recycle from the ground when it floats out the top
+      if (a[i] < loX) a[i] = hiX; else if (a[i] > hiX) a[i] = loX;
+      if (a[i + 2] < loZ) a[i + 2] = hiZ; else if (a[i + 2] > hiZ) a[i + 2] = loZ;
+    }
+    p.needsUpdate = true;
   }
 
   /** One stand: ad board at field level + two raked seating tiers + a roof line. */
@@ -1456,6 +1530,11 @@ export class Scene3D {
 
   render(alpha = 1): void {
     const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+    // Real-time delta for frame-rate-independent ambient motion (clamped to skip stalls/tab-outs).
+    const now = performance.now();
+    const rdt = this.atmoLast ? Math.min(0.05, (now - this.atmoLast) / 1000) : 0.016;
+    this.atmoLast = now;
+    this.tickAtmosphere(rdt);
     // Interpolate every moving body between its last two sim positions by `alpha`.
     for (const av of this.players) av.present(a);
     if (this.ballGroup.visible && this.ballPrimed) {
