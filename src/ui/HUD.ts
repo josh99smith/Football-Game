@@ -10,11 +10,14 @@ export class HUD {
   render(
     r: Renderer,
     match: Match,
-    opts: { turbo: number; possessionLabel?: string; playClock?: number },
+    opts: { turbo: number; possessionLabel?: string; playClock?: number; minimal?: boolean },
   ): void {
     const ctx = r.ctx;
     const w = r.width;
-    const barH = 46;
+    // During live play the HUD is stripped to a minimal score/clock bug + turbo, so the field
+    // stays uncluttered; the full board (down & distance, field bar) shows between plays.
+    const minimal = !!opts.minimal;
+    const barH = minimal ? 40 : 46;
 
     const g = ctx.createLinearGradient(0, 0, 0, barH);
     g.addColorStop(0, "rgba(16,15,20,0.94)");
@@ -31,23 +34,25 @@ export class HUD {
 
     const mins = Math.floor(match.clock / 60);
     const secs = Math.floor(match.clock % 60);
-    r.text(`Q${match.quarter}`, w / 2, 7, { size: 13, align: "center", color: COLORS.blood, baseline: "top", font: FONT.display });
-    r.text(`${mins}:${secs.toString().padStart(2, "0")}`, w / 2, 20, { size: 22, align: "center", color: COLORS.bone, baseline: "top", font: FONT.display });
+    r.text(`Q${match.quarter}`, w / 2, minimal ? 5 : 7, { size: 12, align: "center", color: COLORS.blood, baseline: "top", font: FONT.display });
+    r.text(`${mins}:${secs.toString().padStart(2, "0")}`, w / 2, minimal ? 16 : 20, { size: minimal ? 20 : 22, align: "center", color: COLORS.bone, baseline: "top", font: FONT.display });
 
-    // Down & distance.
-    const dd = match.isGoalToGo() ? `${ordinal(match.down)} & GOAL` : `${ordinal(match.down)} & ${match.distanceYards}`;
-    const possName = match.team(match.possession).config.abbr;
-    r.text(`${possName}  ${dd}  ·  ${match.fieldSideLabel()}`.toUpperCase(), w / 2, barH + 7, {
-      size: 13,
-      align: "center",
-      color: COLORS.ash,
-      baseline: "top",
-      font: FONT.ui,
-    });
+    // The full board (down & distance, field-position bar) only shows between plays — during
+    // the snap it'd clutter the action, so it's hidden in minimal mode.
+    if (!minimal) {
+      const dd = match.isGoalToGo() ? `${ordinal(match.down)} & GOAL` : `${ordinal(match.down)} & ${match.distanceYards}`;
+      const possName = match.team(match.possession).config.abbr;
+      r.text(`${possName}  ${dd}  ·  ${match.fieldSideLabel()}`.toUpperCase(), w / 2, barH + 7, {
+        size: 13,
+        align: "center",
+        color: COLORS.ash,
+        baseline: "top",
+        font: FONT.ui,
+      });
+      this.fieldBar(r, match, barH + 24);
+    }
 
-    this.fieldBar(r, match, barH + 24);
-
-    if (opts.possessionLabel) {
+    if (opts.possessionLabel && !minimal) {
       r.text(opts.possessionLabel, w / 2, barH + 48, { size: 12, align: "center", color: COLORS.hazard, baseline: "top", font: FONT.ui });
     }
     if (opts.playClock !== undefined) {
