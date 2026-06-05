@@ -41,22 +41,27 @@ const SEGS: SegDef[] = [
   { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.09, m: 4.5, sw: 0.7, tw: 0.6 },
   { name: "thighL", top: "LeftUpLeg", bot: "LeftLeg", drives: "LeftUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
   { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
-  { name: "footL", top: "LeftFoot", bot: "LeftToeBase", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1, sw: 0.7, tw: 0.4 },
+  { name: "footL", top: "LeftFoot", bot: "LeftToe_End", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1, sw: 0.7, tw: 0.4 },
   { name: "thighR", top: "RightUpLeg", bot: "RightLeg", drives: "RightUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
   { name: "shinR", top: "RightLeg", bot: "RightFoot", drives: "RightLeg", parent: "thighR", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
-  { name: "footR", top: "RightFoot", bot: "RightToeBase", drives: "RightFoot", parent: "shinR", r: 0.05, m: 1, sw: 0.7, tw: 0.4 },
+  { name: "footR", top: "RightFoot", bot: "RightToe_End", drives: "RightFoot", parent: "shinR", r: 0.05, m: 1, sw: 0.7, tw: 0.4 },
+  // Forearms end at the wrist; the hands get their own bodies (below) so they collide with
+  // the ground instead of poking through it.
   { name: "uarmL", top: "LeftArm", bot: "LeftForeArm", drives: "LeftArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.5, tw: 0.7 },
   { name: "farmL", top: "LeftForeArm", bot: "LeftHand", drives: "LeftForeArm", parent: "uarmL", r: 0.045, m: 1.5, sw: 1.6, tw: 0.3 },
   { name: "uarmR", top: "RightArm", bot: "RightForeArm", drives: "RightArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.5, tw: 0.7 },
   { name: "farmR", top: "RightForeArm", bot: "RightHand", drives: "RightForeArm", parent: "uarmR", r: 0.045, m: 1.5, sw: 1.6, tw: 0.3 },
+  { name: "handL", top: "LeftHand", bot: "LeftHandMiddle3", drives: "LeftHand", parent: "farmL", r: 0.04, m: 0.5, sw: 0.6, tw: 0.4 },
+  { name: "handR", top: "RightHand", bot: "RightHandMiddle3", drives: "RightHand", parent: "farmR", r: 0.04, m: 0.5, sw: 0.6, tw: 0.4 },
 ];
 
 interface Seg extends SegDef {
   body: RAPIER.RigidBody;
   center: THREE.Vector3; // world center at spawn
   qOffset: THREE.Quaternion; // bodyWorldQ^-1 * boneWorldQ at spawn (drive: boneWorldQ = bodyQ * qOffset)
-  posOffset: THREE.Vector3; // root only: bodyQ^-1 * (boneWorldPos - bodyWorldPos)
-  driveBone: THREE.Bone;
+  posOffset: THREE.Vector3; // bodyQ^-1 * (boneWorldPos - bodyWorldPos)
+  driveBone: THREE.Bone; // primary instance (for spawn-time reads)
+  driveBones: THREE.Bone[]; // every instance to drive (one per skeleton)
   parentSeg: Seg | null;
   qRelRest: THREE.Quaternion; // parentBodyQ^-1 * bodyQ at spawn (the joint's neutral pose)
 }
@@ -69,6 +74,7 @@ const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _pq = new THREE.Quaternion();
 const _wp = new THREE.Vector3();
+const _wp2 = new THREE.Vector3();
 const _upVel = new THREE.Vector3();
 const _midVel = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
@@ -90,7 +96,11 @@ export class TackleRagdoll {
   active = false;
   private readonly physics: PhysicsWorld;
   private segs: Seg[] = [];
-  private bones = new Map<string, THREE.Bone>();
+  // The model is several SkinnedMeshes (arms/body/face/helmet…), each with its OWN skeleton
+  // that REUSES the mixamo bone names. So a name maps to MULTIPLE bone instances and we must
+  // drive every one of them identically, or one mesh's limb follows physics while another's
+  // (e.g. the hand's fingers) stays frozen and tears off.
+  private bones = new Map<string, THREE.Bone[]>();
   private prevSubsteps = 2;
   private age = 0; // seconds since spawn — limits fade out as this grows
 
@@ -98,24 +108,32 @@ export class TackleRagdoll {
     this.physics = physics;
   }
 
-  /** Collect the rig's bones by short name (mixamorig prefix stripped). */
+  /** Collect every bone instance, grouped by short name (mixamorig prefix stripped). */
   bind(root: THREE.Object3D): void {
     root.traverse((o) => {
       if ((o as THREE.Bone).isBone && o.name.startsWith(MIX)) {
-        this.bones.set(o.name.slice(MIX.length), o as THREE.Bone);
+        const key = o.name.slice(MIX.length);
+        const list = this.bones.get(key);
+        if (list) list.push(o as THREE.Bone);
+        else this.bones.set(key, [o as THREE.Bone]);
       }
     });
   }
 
-  /** Public lookup of a bound bone by short (prefix-stripped) name. */
+  /** Public lookup of the primary bone instance by short (prefix-stripped) name. */
   getBone(short: string): THREE.Bone | undefined {
-    return this.bones.get(short);
+    return this.bones.get(short)?.[0];
+  }
+
+  /** All bone instances sharing a short name (one per skeleton that contains it). */
+  private boneList(short: string): THREE.Bone[] {
+    const b = this.bones.get(short);
+    if (!b || b.length === 0) throw new Error(`TackleRagdoll: missing bone ${short}`);
+    return b;
   }
 
   private bone(short: string): THREE.Bone {
-    const b = this.bones.get(short);
-    if (!b) throw new Error(`TackleRagdoll: missing bone ${short}`);
-    return b;
+    return this.boneList(short)[0];
   }
 
   /**
@@ -175,7 +193,8 @@ export class TackleRagdoll {
       const posOffset = _b.copy(_wp).sub(_c).applyQuaternion(_q.clone().invert()).clone();
 
       const seg: Seg = {
-        ...def, body, center: _c.clone(), qOffset, posOffset, driveBone,
+        ...def, body, center: _c.clone(), qOffset, posOffset,
+        driveBone, driveBones: this.boneList(def.drives),
         parentSeg: null, qRelRest: new THREE.Quaternion(),
       };
       this.segs.push(seg);
@@ -292,18 +311,20 @@ export class TackleRagdoll {
       const t = seg.body.translation();
       const r = seg.body.rotation();
       _q.set(r.x, r.y, r.z, r.w); // body world Q
-      _q2.copy(_q).multiply(seg.qOffset); // target bone world Q
-      const bone = seg.driveBone;
-      const parent = bone.parent!;
-      parent.getWorldQuaternion(_pq); // parent world Q (updates ancestors)
-      bone.quaternion.copy(_pq.invert().multiply(_q2)); // local = parentWorld^-1 * targetWorld
-      if (!seg.parent) {
-        // Root: also set Hips world position from the body.
-        _wp.set(t.x, t.y, t.z).add(_dir.copy(seg.posOffset).applyQuaternion(_q));
-        parent.worldToLocal(_wp);
-        bone.position.copy(_wp);
+      _q2.copy(_q).multiply(seg.qOffset); // target bone world Q (same for every instance)
+      // Target bone world POSITION from the body. Driving position (not just rotation) makes
+      // the mesh follow the physics exactly instead of drifting via rigid forward-kinematics.
+      _wp.set(t.x, t.y, t.z).add(_dir.copy(seg.posOffset).applyQuaternion(_q));
+      // Apply to EVERY instance of this bone (one per skeleton), each via its own parent.
+      for (const bone of seg.driveBones) {
+        const parent = bone.parent!;
+        parent.getWorldQuaternion(_pq); // parent world Q (updates ancestors)
+        bone.quaternion.copy(_pq.invert().multiply(_q2)); // local = parentWorld^-1 * targetWorld
+        _wp2.copy(_wp);
+        parent.worldToLocal(_wp2);
+        bone.position.copy(_wp2);
+        bone.updateWorldMatrix(false, false); // refresh for children read below
       }
-      bone.updateWorldMatrix(false, false); // refresh for children read below
     }
   }
 
@@ -312,6 +333,15 @@ export class TackleRagdoll {
     let y = Infinity;
     for (const seg of this.segs) y = Math.min(y, seg.body.translation().y);
     return y;
+  }
+
+  /** Debug: body vs driven-bone world Y per segment (to spot drive/position drift). */
+  debug(): { name: string; bodyY: number; boneY: number }[] {
+    const v = new THREE.Vector3();
+    return this.segs.map((s) => {
+      s.driveBone.getWorldPosition(v);
+      return { name: s.name, bodyY: +s.body.translation().y.toFixed(3), boneY: +v.y.toFixed(3) };
+    });
   }
 
   /** Sum of linear+angular speed across all bodies — ~0 when settled, high if it's buzzing. */
