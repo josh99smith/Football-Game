@@ -174,6 +174,8 @@ export class LivePlayState implements GameState {
   private returnKind: "interception" | "fumble" | "kick" = "interception";
   /** When set, this state launches a live kickoff/punt return instead of a scrimmage down. */
   private kickReturnSetup: KickReturnSetup | null = null;
+  /** True once the chase camera has been hard-placed; later downs ease instead of cutting. */
+  private cameraPrimed = false;
   /** A fumble is on the ground, live, waiting to be recovered. */
   private looseBall = false;
   private looseTimer = 0;
@@ -267,6 +269,7 @@ export class LivePlayState implements GameState {
 
     this.app.scene3d.resetAvatars();
     this.app.scene3d.snapCamera(returner.pos.x, returner.pos.y, this.dir);
+    this.cameraPrimed = true;
     this.app.audio.whistle();
   }
 
@@ -304,7 +307,11 @@ export class LivePlayState implements GameState {
     this.setupPreSnap();
 
     this.app.scene3d.resetAvatars();
-    if (this.qb) this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir);
+    if (this.qb) {
+      // Hard-cut only on the first snap of a drive; between downs the pre-snap camera eases from
+      // the huddle to the new line of scrimmage instead of jumping (a smoother broadcast feel).
+      if (!this.cameraPrimed) { this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir); this.cameraPrimed = true; }
+    }
   }
 
   /** Reset all per-play/down bookkeeping (shared by scrimmage downs and kick returns). */

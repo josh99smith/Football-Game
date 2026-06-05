@@ -378,6 +378,8 @@ class FbxAvatar implements Avatar {
   private readonly nub: THREE.Mesh;
   private readonly blob: THREE.Mesh;
   private phase = Math.random() * Math.PI * 2;
+  /** Per-player phase so idle breathing isn't synchronized across the team. */
+  private readonly breatheOffset = Math.random() * Math.PI * 2;
   /** Rendered yaw (slewed toward the target heading for smooth turning). */
   private yaw = 0;
   /** Fall progress 0 (upright) .. 1 (flat), lerped for a non-instant tackle. */
@@ -782,7 +784,9 @@ class FbxAvatar implements Avatar {
       this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * STRAFE_PLANT_K, 0.7, 3.0));
       // Bank hard into turns/cuts so a change of direction reads as a dynamic lean (plus the
       // juke lean). Smoothed so it carves in rather than snapping, but quick enough to feel sharp.
-      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd;
+      // A gentle breathing bob when idle keeps a standing player from reading as a frozen statue.
+      const breathe = Math.sin(this.phase * 2.1 + this.breatheOffset) * 0.012 * (1 - moving01);
+      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd + breathe;
       const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.42, -0.62, 0.62);
       this.bankSmooth += (bankTarget - this.bankSmooth) * Math.min(1, dt * 9);
       // Forward lean while running ahead (more at speed), slight backward lean when backpedaling
