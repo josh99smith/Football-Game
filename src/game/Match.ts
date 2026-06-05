@@ -234,6 +234,24 @@ export class Match {
     this.clock = Math.max(0, this.clock - dt);
   }
 
+  /** Halves in which the two-minute warning has already been given (keyed by quarter 2 / 4). */
+  private twoMinuteWarned = new Set<number>();
+
+  /**
+   * Real-football two-minute warning: an automatic stoppage the first time the clock dips under
+   * 2:00 in the 2nd or 4th quarter (the clock then restarts on the next snap). Returns true once,
+   * at the dead ball where it should be applied. Only meaningful if the quarter is long enough to
+   * have a 2:00 mark (short arcade quarters never reach it).
+   */
+  checkTwoMinuteWarning(): boolean {
+    if (this.quarter !== 2 && this.quarter !== 4) return false;
+    if (this.quarterLength <= 130) return false;
+    if (this.clock > 120 || this.clock <= 0) return false;
+    if (this.twoMinuteWarned.has(this.quarter)) return false;
+    this.twoMinuteWarned.add(this.quarter);
+    return true;
+  }
+
   get clockExpired(): boolean {
     return this.clock <= 0;
   }

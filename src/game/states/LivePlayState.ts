@@ -262,6 +262,7 @@ export class LivePlayState implements GameState {
     this.passThrown = true;
     this.sackPossible = false;
     this.snapTimer = 0;
+    this.clockRunning = true; // the clock starts the moment the returner fields the kick
 
     if (this.controlled) this.controlled.controlled = false;
     this.controlled = this.humanIsOffense ? returner : this.nearestDefenderToBall();
@@ -348,7 +349,10 @@ export class LivePlayState implements GameState {
     this.returnFor = null;
     this.looseBall = false;
     this.looseTimer = 0;
-    this.clockRunning = false;
+    // NOTE: `clockRunning` is deliberately NOT reset here. In real football the game clock keeps
+    // running through the huddle and up to the next snap after an inbounds play; it only stops on
+    // incompletions, out-of-bounds, scores, turnovers and the two-minute warning. The previous
+    // play's endPlay sets it, and it must persist across re-arming the next down.
   }
 
   /** DEV-only: force the ball carrier to be tackled by the nearest defender (headless tests). */
@@ -642,11 +646,19 @@ export class LivePlayState implements GameState {
     this.snapTimer -= dt;
     if (this.snapTimer <= 0) this.snap();
 
+    // A running clock (after an inbounds play) keeps ticking while the offense walks to the line
+    // and waits for the snap — it doesn't freeze pre-snap.
+    if (this.clockRunning) {
+      this.app.match.tickClock(dt);
+      this.applyTwoMinuteWarning();
+    }
+
     this.syncScene(dt);
   }
 
   private snap(): void {
     this.phase = "live";
+    this.clockRunning = true; // the clock always runs once the ball is snapped
     this.app.audio.snap();
     for (const p of this.all) p.lookDir = null; // hand facing back to AI/movement
     if (this.offensePlay.isRun) {
@@ -1543,6 +1555,16 @@ export class LivePlayState implements GameState {
     this.celebrate(this.all.filter((q) => q.team === team && !q.isDown));
   }
 
+  /** Two-minute warning: stop the clock (it restarts on the next snap) and flash the notice, once
+   *  per half. No-op for short arcade quarters that never reach 2:00. */
+  private applyTwoMinuteWarning(): void {
+    if (this.app.match.checkTwoMinuteWarning()) {
+      this.clockRunning = false;
+      this.app.audio.whistle();
+      this.app.floating.add("TWO-MINUTE WARNING", this.app.field.maxX / 2, this.app.field.maxY / 2, { size: 26, color: COLORS.hazard, life: 2.4 });
+    }
+  }
+
   /** The quarter only advances between plays (not mid-down); show a beat when the clock expires. */
   private quarterBeat(): void {
     const m = this.app.match;
@@ -1586,7 +1608,9 @@ export class LivePlayState implements GameState {
       this.resultDetail = this.buildResultDetail();
       this.quarterBeat();
       if (scored) this.celebrateTeam(this.returnFor);
-      this.clockRunning = false;
+      // A return tackled inbounds keeps the clock running; a return TD stops it (kickoff follows).
+      this.clockRunning = !scored && spot.y > this.app.field.minY + 4 && spot.y < this.app.field.maxY - 4;
+      this.applyTwoMinuteWarning();
       this.deadTimer = scored ? 2.6 : 1.4;
       this.deadElapsed = 0;
       this.endSpot = { x: spot.x, y: spot.y };
@@ -1665,8 +1689,10 @@ export class LivePlayState implements GameState {
       : 1.4;
     // Clock management (real football): it keeps running between plays only when the ball was
     // downed inbounds (a run/tackle/sack); it stops on incompletions, out-of-bounds and scores.
+    // (A first down does NOT stop the clock — that's a college rule, not the NFL.)
     this.clockRunning = (type === "tackle" || type === "sack") &&
       spot.y > this.app.field.minY + 4 && spot.y < this.app.field.maxY - 4;
+    this.applyTwoMinuteWarning();
     this.deadElapsed = 0;
     this.endSpot = { x: spot.x, y: spot.y };
     this.regroupTargets = null;
@@ -1705,7 +1731,7 @@ export class LivePlayState implements GameState {
     // on the play and then the broadcast play-call comes up as an overlay (commitOutcome), with
     // the field still living behind it. The hold respects an in-progress ragdoll tackle.
     const busy = this.holdForRagdoll && this.app.scene3d.ragdollsBusy();
-    if (this.clockRunning) this.app.match.tickClock(dt); // clock runs on after an inbounds play
+    if (this.clockRunning) { this.app.match.tickClock(dt); this.applyTwoMinuteWarning(); } // clock runs on after an inbounds play
     for (const p of this.all) p.step(dt, 0); // coast to a stop / lie tackled / celebrate in place
     this.ball.update(dt);
     this.spawnFireFx();
@@ -1844,7 +1870,7 @@ export class LivePlayState implements GameState {
    */
   private updatePlayCall(dt: number): void {
     const m = this.app.match;
-    if (this.clockRunning) m.tickClock(dt); // a running clock keeps ticking through the huddle
+    if (this.clockRunning) { m.tickClock(dt); this.applyTwoMinuteWarning(); } // a running clock keeps ticking through the huddle
     this.playCallT = Math.min(1, this.playCallT + dt * 3);
     for (const p of this.all) {
       if (!p.isDown) this.walkToRegroup(p, dt); // jog back to the huddle, then idle there
