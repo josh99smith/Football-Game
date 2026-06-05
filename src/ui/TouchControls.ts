@@ -1,7 +1,7 @@
 import type { Renderer } from "../engine/Renderer";
 import type { ControlLayout, Input, CircleRegion } from "../engine/Input";
 
-export type ActionIcon = "pass" | "dive" | "switch" | "juke" | "tackle" | "turbo";
+export type ActionIcon = "pass" | "dive" | "switch" | "juke" | "spin" | "tackle" | "turbo";
 
 export interface ControlLabels {
   /** The single contextual action button (Hike / Pass / Catch / Juke / Tackle / Switch). */
@@ -191,6 +191,23 @@ function drawActionGlyph(ctx: CanvasRenderingContext2D, cx: number, cy: number, 
         ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
         ctx.stroke();
       }
+      break;
+    }
+    case "spin": {
+      // A full circular arrow (the spin move).
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 0.66, Math.PI * 0.55, Math.PI * 2.25);
+      ctx.stroke();
+      // Arrowhead at the open end.
+      const a = Math.PI * 2.25;
+      const hx = cx + Math.cos(a) * r * 0.66;
+      const hy = cy + Math.sin(a) * r * 0.66;
+      ctx.beginPath();
+      ctx.moveTo(hx, hy);
+      ctx.lineTo(hx - r * 0.32, hy - r * 0.12);
+      ctx.moveTo(hx, hy);
+      ctx.lineTo(hx - r * 0.05, hy - r * 0.4);
+      ctx.stroke();
       break;
     }
     case "switch": {

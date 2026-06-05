@@ -614,7 +614,7 @@ export class LivePlayState implements GameState {
     }
   }
 
-  /** Ball-carrier ACTION: a quick tap jukes (sidestep), holding past a beat dives. */
+  /** Ball-carrier ACTION: a quick tap spins (spin move), holding past a beat dives. */
   private updateCarrierAction(c: Player, dt: number): void {
     const input = this.app.input;
     if (input.actionPressed) {
@@ -629,27 +629,35 @@ export class LivePlayState implements GameState {
       }
     }
     if (input.actionReleased && !this.carrierFired) {
-      this.doJuke(c);
+      this.doSpin(c);
       this.carrierFired = true;
     }
   }
 
-  /** Juke: brief tackle-immunity + a lateral burst in the aim direction that preserves
-   * forward momentum (a real sidestep, not a teleport). */
-  private doJuke(c: Player): void {
-    c.jukeTimer = 0.45;
+  /** Spin move: brief tackle-immunity + a burst that carries forward momentum through a 360°
+   * spin, curling slightly to the aim side so the carrier spins OFF the defender. */
+  private doSpin(c: Player): void {
+    c.jukeTimer = 0.5; // immunity through the spin (the first tackler whiffs)
+    const sp = Math.hypot(c.vel.x, c.vel.y);
+    // Burst along the current run direction (keep the forward progress of a real spin move).
+    if (sp > 30) {
+      c.vel.x += (c.vel.x / sp) * 75;
+      c.vel.y += (c.vel.y / sp) * 75;
+    } else {
+      c.vel.x += Math.cos(c.facing) * 60;
+      c.vel.y += Math.sin(c.facing) * 60;
+    }
+    // Curl off toward the stick.
     const aim = this.stickToField();
     const am = Math.hypot(aim.x, aim.y);
     if (am > 0.3) {
-      c.vel.x += (aim.x / am) * 80;
-      c.vel.y += (aim.y / am) * 80;
-      const cross = c.vel.x * (aim.y / am) - c.vel.y * (aim.x / am);
-      c.leanTarget = Math.sign(cross) || 1;
+      c.vel.x += (aim.x / am) * 34;
+      c.vel.y += (aim.y / am) * 34;
+      c.leanTarget = Math.sign(c.vel.x * (aim.y / am) - c.vel.y * (aim.x / am)) || 1;
     } else {
-      c.vel.x += Math.cos(c.facing) * 55;
-      c.vel.y += Math.sin(c.facing) * 55;
+      c.leanTarget = 1;
     }
-    c.animEvent = "juke";
+    c.animEvent = "spin";
     this.app.audio.juke();
     this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
   }
@@ -1751,7 +1759,7 @@ export class LivePlayState implements GameState {
     if (this.humanIsOffense) {
       const c = this.controlled;
       if (c && this.canThrow(c)) return { action: { text: "PASS", icon: "pass", color: blue } };
-      if (c && this.ball.carrier === c) return { action: { text: "JUKE", icon: "juke", color: green } };
+      if (c && this.ball.carrier === c) return { action: { text: "SPIN", icon: "spin", color: green } };
       if (this.ball.state === "inAir") return { action: { text: "CATCH", icon: "pass", color: green } };
       return { action: { text: "—", icon: "switch", color: grey } };
     }

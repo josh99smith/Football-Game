@@ -56,6 +56,8 @@ const ROLE_STATS: Record<Role, { speed: number; accel: number; radius: number }>
 };
 
 export const TURBO_MULT = 1.4;
+/** Global pace dial: scales every player's top speed (and eases accel) to slow the game down. */
+const SPEED_SCALE = 0.86;
 
 export class Player {
   pos: Vec2;
@@ -117,7 +119,7 @@ export class Player {
   /** Juke/cut lean signal (-1..1), consumed by the avatar for an extra bank. */
   leanTarget = 0;
   /** One-shot animation trigger consumed by the renderer. */
-  animEvent: "pass" | "catch" | "juke" | "tackle" | "tackleMade" | "swat" | "celebrate" | null = null;
+  animEvent: "pass" | "catch" | "juke" | "spin" | "tackle" | "tackleMade" | "swat" | "celebrate" | null = null;
 
   // AI scratch fields (used by Offense/Defense AI; harmless when unused).
   /** High-level job assigned by the playbook at snap. */
@@ -139,8 +141,8 @@ export class Player {
     this.number = number;
     this.pos = { x, y };
     const s = ROLE_STATS[role];
-    this.baseSpeed = s.speed;
-    this.accel = s.accel;
+    this.baseSpeed = s.speed * SPEED_SCALE;
+    this.accel = s.accel * (0.5 + 0.5 * SPEED_SCALE); // ease accel down a touch too, keeps it crisp
     this.radius = s.radius;
   }
 

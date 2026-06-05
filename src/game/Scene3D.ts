@@ -587,7 +587,7 @@ class FbxAvatar implements Avatar {
     // and a celebration. (Spin supersedes the old change-direction juke clip.)
     if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 1.1);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
-    else if (p.animEvent === "juke") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.9, 1.15, 0);
+    else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
     else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0);
     else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.4, 1.1, 0);
     else if (p.animEvent === "swat") this.triggerOneShot(this.defSwatAction, 0.95, 1.2, 0.3);

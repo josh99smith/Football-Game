@@ -128,7 +128,7 @@ export class PracticeState implements GameState {
     controlled.desired = this.stickToField();
     controlled.turbo = input.turbo && (input.move.x !== 0 || input.move.y !== 0);
     if (input.actionPressed) {
-      if (this.controlIdx === 0) this.juke(controlled);
+      if (this.controlIdx === 0) this.spin(controlled);
       else this.bigHit(controlled);
     }
 
@@ -167,15 +167,18 @@ export class PracticeState implements GameState {
     this.syncScene(dt);
   }
 
-  private juke(c: Player): void {
-    c.jukeTimer = 0.45;
+  private spin(c: Player): void {
+    c.jukeTimer = 0.5;
+    const sp = Math.hypot(c.vel.x, c.vel.y);
+    if (sp > 30) { c.vel.x += (c.vel.x / sp) * 75; c.vel.y += (c.vel.y / sp) * 75; }
+    else { c.vel.x += Math.cos(c.facing) * 60; c.vel.y += Math.sin(c.facing) * 60; }
     const aim = this.stickToField();
     const am = Math.hypot(aim.x, aim.y);
     if (am > 0.3) {
-      c.vel.x += (aim.x / am) * 90;
-      c.vel.y += (aim.y / am) * 90;
+      c.vel.x += (aim.x / am) * 34; c.vel.y += (aim.y / am) * 34;
       c.leanTarget = Math.sign(c.vel.x * (aim.y / am) - c.vel.y * (aim.x / am)) || 1;
-    }
+    } else c.leanTarget = 1;
+    c.animEvent = "spin";
     this.app.audio.juke();
   }
 
@@ -274,7 +277,7 @@ export class PracticeState implements GameState {
     const onOffense = this.controlIdx === 0;
     this.controls.render(r, app.input, {
       action: onOffense
-        ? { text: "JUKE", icon: "juke", color: "#1f9d4d" }
+        ? { text: "SPIN", icon: "spin", color: "#1f9d4d" }
         : { text: "BIG HIT", icon: "tackle", color: "#d23a2a" },
     });
 
@@ -285,7 +288,7 @@ export class PracticeState implements GameState {
     drawButton(r, this.exitRect, "‹ EXIT", { fill: COLORS.concrete, size: 14 });
     drawButton(r, this.switchRect, "SWITCH", { fill: COLORS.steel, size: 14 });
     r.text("PRACTICE", r.width / 2, 18, { size: 14, align: "center", color: COLORS.blood, baseline: "top", font: FONT.display });
-    r.text(onOffense ? "RUN & JUKE — SWITCH TO PLAY DEFENSE" : "TACKLE THE DUMMY — SWITCH TO CARRY", r.width / 2, 36, {
+    r.text(onOffense ? "RUN & SPIN — SWITCH TO PLAY DEFENSE" : "TACKLE THE DUMMY — SWITCH TO CARRY", r.width / 2, 36, {
       size: 11, align: "center", color: COLORS.ash, baseline: "top", font: FONT.ui,
     });
   }
