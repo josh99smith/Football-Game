@@ -34,8 +34,8 @@ const POSTPLAY_MAX = 9;
 const MIN_DEAD_LINGER = 0.7;
 /** Farthest a pass can travel (yards) — a deep ball, not a 90-yard heave. */
 const MAX_PASS_YARDS = 52;
-// Tecmo-style 1-on-1 tackle battle (quick-tap to break / make the tackle).
-const STRUGGLE_CHANCE = 0.5; // chance a qualifying 1-on-1 hit becomes a battle
+// Tecmo-style tackle battle (quick-tap to break / make the tackle).
+const STRUGGLE_CHANCE = 0.8; // chance a qualifying hit (human involved) becomes a battle
 const STRUGGLE_TIME = 2.6;   // seconds before it resolves on whoever's ahead
 const STRUGGLE_TAP = 0.07;   // meter gained per mash
 const STRUGGLE_CPU = 0.2;    // meter drift per second toward the CPU's side
@@ -1096,13 +1096,12 @@ export class LivePlayState implements GameState {
     }
   }
 
-  /** Should this 1-on-1 hit become a quick-tap battle? Only when the human is one of the two and
-   *  no other defender is in on it (a real one-on-one in the open). */
+  /** Should this hit become a quick-tap battle? Whenever the human is one of the two players and
+   *  it isn't a clear gang pile (3+ defenders right on top), most of the time. */
   private shouldStruggle(tackler: Player, carrier: Player): boolean {
     if (this.struggleCd > 0) return false;
     if (this.controlled !== carrier && this.controlled !== tackler) return false;
-    if (carrier.diveTimer > 0 || tackler.bigHitArmed || tackler.diveTimer > 0) return false;
-    if (this.defendersNear(carrier, 50) > 1) return false; // must be one-on-one
+    if (this.defendersNear(carrier, 40) > 2) return false; // skip only a real gang tackle
     return chance(STRUGGLE_CHANCE);
   }
 
@@ -1117,6 +1116,8 @@ export class LivePlayState implements GameState {
     this.struggleFlash = 0;
     carrier.vel = { x: 0, y: 0 };
     tackler.vel = { x: 0, y: 0 };
+    tackler.bigHitArmed = false; // it's a battle now, not a committed hit (no later whiff)
+    tackler.diveTimer = 0;
     const ang = Math.atan2(carrier.pos.y - tackler.pos.y, carrier.pos.x - tackler.pos.x) || 0;
     this.faceStruggler(tackler, ang);
     this.faceStruggler(carrier, ang + Math.PI);
@@ -1171,7 +1172,7 @@ export class LivePlayState implements GameState {
     const t = this.struggleTackler!;
     this.struggleCarrier = null;
     this.struggleTackler = null;
-    this.struggleCd = 2.0;
+    this.struggleCd = 1.2;
     c.leanTarget = 0;
     t.leanTarget = 0;
     this.phase = "live";
