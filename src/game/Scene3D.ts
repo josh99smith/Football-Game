@@ -327,6 +327,23 @@ function makeMoteTexture(): THREE.Texture {
   _moteTex = new THREE.CanvasTexture(c);
   return _moteTex;
 }
+/** A soft dark blob for a fake contact shadow under a player (grounds them even outside the
+ *  cast-shadow frustum). Cached. */
+let _blobTex: THREE.Texture | null = null;
+function makeBlobTexture(): THREE.Texture {
+  if (_blobTex) return _blobTex;
+  const c = document.createElement("canvas");
+  c.width = c.height = 48;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createRadialGradient(24, 24, 0, 24, 24, 24);
+  g.addColorStop(0, "rgba(0,0,0,0.55)");
+  g.addColorStop(0.6, "rgba(0,0,0,0.28)");
+  g.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 48, 48);
+  _blobTex = new THREE.CanvasTexture(c);
+  return _blobTex;
+}
 /** Lerp an action's weight toward a target (~0.12s to fully change) for smooth crossfades. */
 function blendW(a: THREE.AnimationAction | null, target: number, dt: number): void {
   if (!a) return;
@@ -359,6 +376,7 @@ class FbxAvatar implements Avatar {
   private readonly ring: THREE.Mesh;
   private readonly chevron: THREE.Mesh;
   private readonly nub: THREE.Mesh;
+  private readonly blob: THREE.Mesh;
   private phase = Math.random() * Math.PI * 2;
   /** Rendered yaw (slewed toward the target heading for smooth turning). */
   private yaw = 0;
@@ -456,10 +474,19 @@ class FbxAvatar implements Avatar {
     this.nub.position.set(0.26, 1.22, 0.12); // tucked against the torso on the carry side
     this.nub.visible = false;
 
+    // Soft fake contact shadow so players read as planted even outside the cast-shadow frustum.
+    this.blob = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.7, 1.7),
+      new THREE.MeshBasicMaterial({ map: makeBlobTexture(), transparent: true, depthWrite: false, opacity: 0.75 }),
+    );
+    this.blob.rotation.x = -Math.PI / 2;
+    this.blob.position.y = 0.02;
+    this.blob.renderOrder = -1;
+
     // The lean group banks/leans the body; the holder group only yaws + positions,
     // so the ground ring / chevron / ball stay upright.
     this.lean.add(inner);
-    this.group.add(this.lean, this.ring, this.chevron, this.nub);
+    this.group.add(this.lean, this.ring, this.chevron, this.nub, this.blob);
 
     // Snapshot the bind pose now (before the mixer ever runs) — the get-up blends back to it.
     this.inner = inner;
