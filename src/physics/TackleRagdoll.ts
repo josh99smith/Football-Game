@@ -61,13 +61,19 @@ const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _pq = new THREE.Quaternion();
 const _wp = new THREE.Vector3();
+const _upVel = new THREE.Vector3();
+const _midVel = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
+
+const LOWER = new Set(["thighL", "shinL", "footL", "thighR", "shinR", "footR"]);
+const MAX_SPIN = 16; // rad/s — clamp so a body can never spin up into a contorted blur
 
 export class TackleRagdoll {
   active = false;
   private readonly physics: PhysicsWorld;
   private segs: Seg[] = [];
   private bones = new Map<string, THREE.Bone>();
+  private prevSubsteps = 2;
 
   constructor(physics: PhysicsWorld) {
     this.physics = physics;
@@ -94,14 +100,21 @@ export class TackleRagdoll {
   }
 
   /**
-   * Spawn the ragdoll at the skeleton's current world pose and launch it. `velocity` is the
-   * player's body velocity (carried into the fall); `impulse` is the tackle hit (world).
+   * Spawn the ragdoll at the skeleton's current world pose and knock it down. `carryVel` is
+   * the player's running velocity; the hit is a `hitDir` (unit) at `hitSpeed` (m/s) applied
+   * to the UPPER body while the legs lag — so the body topples over its feet and falls,
+   * instead of one segment being yanked by a giant impulse (which spun/contorted it).
    */
-  spawn(velocity: THREE.Vector3, impulse: THREE.Vector3): void {
+  spawn(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number): void {
     if (this.active) this.dispose();
     const world = this.physics.world;
     const R = this.physics.rapier;
     const byName = new Map<string, Seg>();
+    // Joints solve far more stably with more substeps — the key fix for "goes crazy".
+    this.prevSubsteps = this.physics.substeps;
+    this.physics.substeps = 8;
+    const upVel = _upVel.copy(hitDir).multiplyScalar(hitSpeed).add(carryVel);
+    const midVel = _midVel.copy(hitDir).multiplyScalar(hitSpeed * 0.45).add(carryVel);
 
     for (const def of SEGS) {
       const top = this.bone(def.top);
@@ -114,12 +127,14 @@ export class TackleRagdoll {
       _dir.divideScalar(len);
       _q.setFromUnitVectors(_UP, _dir); // capsule local +Y -> bone direction
 
+      // Velocity tier: legs lag (carry only), pelvis mid, upper body takes the hit.
+      const v = LOWER.has(def.name) ? carryVel : def.name === "pelvis" ? midVel : upVel;
       const bodyDesc = R.RigidBodyDesc.dynamic()
         .setTranslation(_c.x, _c.y, _c.z)
         .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })
-        .setLinvel(velocity.x, velocity.y, velocity.z)
-        .setAngularDamping(2.5)
-        .setLinearDamping(0.05)
+        .setLinvel(v.x, v.y, v.z)
+        .setAngularDamping(4.0)
+        .setLinearDamping(0.2)
         .setCanSleep(true);
       const body = world.createRigidBody(bodyDesc);
       const half = Math.max(0.02, len / 2 - def.r);
@@ -158,17 +173,20 @@ export class TackleRagdoll {
       world.createImpulseJoint(data, parent.body, seg.body, true);
     }
 
-    // The hit: an impulse on the torso (+ a bit on the head for whiplash).
-    const torso = byName.get("torso")!;
-    torso.body.applyImpulse(impulse, true);
-    byName.get("head")!.body.applyImpulse({ x: impulse.x * 0.25, y: impulse.y * 0.25, z: impulse.z * 0.25 }, true);
     this.active = true;
   }
 
-  /** Each frame after stepping physics: drive the skinned mesh bones from the bodies. */
+  /** Each frame after stepping physics: clamp spin, then drive the skinned mesh bones. */
   drive(): void {
     if (!this.active) return;
     for (const seg of this.segs) {
+      // Clamp angular velocity so no body can spin up into a contorted blur.
+      const w = seg.body.angvel();
+      const m2 = w.x * w.x + w.y * w.y + w.z * w.z;
+      if (m2 > MAX_SPIN * MAX_SPIN) {
+        const s = MAX_SPIN / Math.sqrt(m2);
+        seg.body.setAngvel({ x: w.x * s, y: w.y * s, z: w.z * s }, true);
+      }
       const t = seg.body.translation();
       const r = seg.body.rotation();
       _q.set(r.x, r.y, r.z, r.w); // body world Q
@@ -208,6 +226,7 @@ export class TackleRagdoll {
     for (const seg of this.segs) this.physics.world.removeRigidBody(seg.body);
     this.segs = [];
     this.active = false;
+    this.physics.substeps = this.prevSubsteps;
   }
 }
 

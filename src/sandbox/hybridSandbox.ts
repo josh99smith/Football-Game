@@ -103,6 +103,14 @@ async function main(): Promise<void> {
   const ragdoll = new TackleRagdoll(physics);
   ragdoll.bind(model);
 
+  // Snapshot the rig's rest pose so a reset is clean: the idle/walk clips have their Hips
+  // POSITION track stripped (root motion), so nothing animates the body back from where it
+  // fell — we must restore it ourselves.
+  const restPose = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
+  model.traverse((o) => {
+    if ((o as THREE.Bone).isBone) restPose.set(o as THREE.Bone, { p: o.position.clone(), q: o.quaternion.clone() });
+  });
+
   const mixer = new THREE.AnimationMixer(model);
   const c = asset.clips;
   const actions = {
@@ -128,17 +136,22 @@ async function main(): Promise<void> {
 
   // --- tackle: animation -> ragdoll -> settle ---
   let ragdolled = false;
-  // Impulses are N·s (kg·m/s): a hard hit shoves the torso a few m/s, not 15. The defender
-  // comes from front-left, knocking the carrier back (+z), up (+y), and aside (+x).
-  function triggerTackle(vel = [0, 0, 2], impulse = [22, 32, 48]): void {
+  // The hit is a direction + speed (m/s) applied to the upper body, not a giant impulse.
+  function triggerTackle(carry = [0, 0, 2], dir = [0, 0, 1], speed_ = 3.5): void {
     if (ragdolled) return;
     model.updateWorldMatrix(true, true); // freeze the live animated pose
-    ragdoll.spawn(new THREE.Vector3(...vel), new THREE.Vector3(...impulse));
+    const d = new THREE.Vector3(...dir);
+    if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
+    d.normalize();
+    ragdoll.spawn(new THREE.Vector3(...carry), d, speed_);
     ragdolled = true; // mixer paused; bodies now drive the bones
   }
   function reset(): void {
     if (ragdolled) { ragdoll.dispose(); ragdolled = false; }
-    speed = 0; applyLocomotion(); // back to idle stance
+    // Restore the rest pose (incl. Hips position the clips don't touch), then resume animation.
+    for (const [bone, r] of restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
+    model.updateWorldMatrix(true, true);
+    setSpeed01(0.5);
   }
 
   function setMsg(): void {
@@ -159,10 +172,9 @@ async function main(): Promise<void> {
 
   // A tackle from a random direction so every tap shows different physics.
   function tackleRandom(): void {
-    const ang = Math.random() * Math.PI * 2;
-    const mag = 32 + Math.random() * 20; // N·s, horizontal hit
-    const up = 24 + Math.random() * 18;
-    triggerTackle([0, 0, 2], [Math.cos(ang) * mag, up, Math.sin(ang) * mag]);
+    const ang = Math.random() * Math.PI * 2; // random horizontal hit direction
+    const speed_ = 3.2 + Math.random() * 1.8; // m/s
+    triggerTackle([0, 0, 2], [Math.cos(ang), 0.18, Math.sin(ang)], speed_);
   }
 
   // --- on-screen touch controls (the demo runs on a phone) ---
