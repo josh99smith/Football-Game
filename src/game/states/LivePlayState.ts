@@ -1616,7 +1616,7 @@ export class LivePlayState implements GameState {
     for (const t of taps) {
       if (tappedIn(this.rcClose, [t])) { this.exitReplay(); return; }
       if (tappedIn(this.rcPlay, [t])) {
-        if (this.replayT >= dur - 0.02) { this.replayT = 0; this.replay.rewind(); }
+        if (this.replayT >= dur - 0.02) { this.replayT = 0; this.replay.rewind(); this.app.scene3d.resetAvatars(); }
         this.replayPlaying = !this.replayPlaying;
       } else if (tappedIn(this.rcZoomIn, [t])) this.replayZoom = Math.min(1, this.replayZoom + 0.25);
       else if (tappedIn(this.rcZoomOut, [t])) this.replayZoom = Math.max(0, this.replayZoom - 0.25);
@@ -1638,6 +1638,9 @@ export class LivePlayState implements GameState {
     this.replayT = Math.max(0, Math.min(dur, this.replayT));
 
     const fr = this.replay.sample(this.replayT);
+    // When the replay reaches a tackle, re-spawn the physics ragdoll (instead of the canned clip)
+    // so the hit tumbles with real ragdoll physics, like it did live.
+    this.spawnReplayRagdolls(fr.players);
     this.app.scene3d.sync({
       players: fr.players, ball: fr.ball, colorFor: fr.colorFor,
       focusX: fr.focusX, focusY: fr.focusY, dir: this.dir,
@@ -1645,6 +1648,28 @@ export class LivePlayState implements GameState {
       shakeX: 0, shakeY: 0, dt,
     });
     this.app.scene3d.replayCam(fr.focusX, fr.focusY, this.dir, this.replayZoom);
+  }
+
+  /** On a recorded tackle event during forward playback, fire the ragdoll on those avatars and
+   *  clear the event so the canned tackle clip doesn't play instead. */
+  private spawnReplayRagdolls(players: Player[]): void {
+    const carrier = players.find((g) => g.animEvent === "tackle");
+    const tackler = players.find((g) => g.animEvent === "tackleMade");
+    const velOf = (g: Player) => ({ x: g.loco.speed * Math.cos(g.loco.heading), y: g.loco.speed * Math.sin(g.loco.heading) });
+    if (carrier) {
+      const v = velOf(carrier);
+      const dx = tackler ? carrier.pos.x - tackler.pos.x : Math.cos(carrier.loco.heading);
+      const dy = tackler ? carrier.pos.y - tackler.pos.y : Math.sin(carrier.loco.heading);
+      this.app.scene3d.startRagdoll(players.indexOf(carrier), { hitDirX: dx, hitDirY: dy, closingPx: 170, carryVx: v.x, carryVy: v.y, big: true, bit: 0x0002 });
+      carrier.animEvent = null;
+    }
+    if (tackler) {
+      const v = velOf(tackler);
+      const dx = carrier ? tackler.pos.x - carrier.pos.x : Math.cos(tackler.loco.heading);
+      const dy = carrier ? tackler.pos.y - carrier.pos.y : Math.sin(tackler.loco.heading);
+      this.app.scene3d.startRagdoll(players.indexOf(tackler), { hitDirX: dx, hitDirY: dy, closingPx: 110, carryVx: v.x, carryVy: v.y, big: true, bit: 0x0004 });
+      tackler.animEvent = null;
+    }
   }
 
   /** Open the between-downs play-call as a broadcast overlay over the still-live field. */

@@ -585,7 +585,7 @@ class FbxAvatar implements Avatar {
     // Fire one-shot overlays on game events: throw, catch, spin-move juke, the
     // carrier's getting-tackled reaction, the defender's tackle + ball-swat attempts,
     // and a celebration. (Spin supersedes the old change-direction juke clip.)
-    if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 1.1);
+    if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 0.75, 5, 0);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
     else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0);
