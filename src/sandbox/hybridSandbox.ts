@@ -134,34 +134,103 @@ async function main(): Promise<void> {
 
   const skeleton = dumpSkeleton(model);
 
-  // --- tackle: animation -> ragdoll -> settle ---
-  let ragdolled = false;
+  // --- tackle lifecycle: animation -> fall (physics) -> settle -> get up -> animation ---
+  type Phase = "anim" | "fall" | "getup";
+  let phase: Phase = "anim";
+  let fallTime = 0;    // seconds since the hit landed
+  let settleTimer = 0; // seconds the body has been calm (resets if it gets bumped)
+  let getupT = 0;      // get-up blend progress 0..1
+  const SETTLE_RESIDUAL = 0.8; // total body speed below which it counts as "calm" (settled ~0.35)
+  const MIN_FALL = 0.5;        // don't check for calm until the fall is underway
+  const CALM_NEEDED = 0.7;     // stay calm this long (incl. a beat lying there) before standing
+  const MAX_FALL = 6;          // safety: stand up even if it never fully settles
+  const GETUP_DUR = 1.1;       // seconds to rise to standing
+  // Lying pose captured at the moment we start standing, blended back toward the rest pose.
+  const getupFrom = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
+
   // The hit: a direction + speed (m/s) on one tier of the body. The runner's own momentum
   // (from the current locomotion speed, forward +Z) is carried into the fall, so a sprinting
   // player tumbles much farther than a walking one. `hitLow` cuts the legs out (forward flip).
   function triggerTackle(dir = [0, 0, 1], speed_ = 3.5, hitLow = false): void {
-    if (ragdolled) return;
+    if (phase !== "anim") return;
     model.updateWorldMatrix(true, true); // freeze the live animated pose
     const d = new THREE.Vector3(...dir);
     if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
     d.normalize();
     const carry = new THREE.Vector3(0, 0, speed * 5.5); // running momentum (idle 0 .. run ~5.5 m/s)
     ragdoll.spawn(carry, d, speed_, hitLow);
-    ragdolled = true; // mixer paused; bodies now drive the bones
+    phase = "fall"; fallTime = 0; settleTimer = 0; // mixer paused; bodies now drive the bones
   }
+
+  // Limbs gather before the torso rises and the arms swing in last, so the blend reads as
+  // pushing up off the ground rather than the whole body floating up at once.
+  function getupDelay(name: string): number {
+    if (/UpLeg|Leg|Foot|Toe|Hips/.test(name)) return 0;      // legs/hips lead
+    if (/Spine|Neck|Head/.test(name)) return 0.18;           // spine/head follow
+    return 0.3;                                               // arms/hands last
+  }
+  const _gp = new THREE.Vector3();
+  function startGetup(): void {
+    getupFrom.clear();
+    for (const [bone] of restPose) getupFrom.set(bone, { p: bone.position.clone(), q: bone.quaternion.clone() });
+    ragdoll.dispose(); // hand off from physics to the procedural blend
+    phase = "getup"; getupT = 0;
+  }
+  function blendGetup(t: number): void {
+    for (const [bone, from] of getupFrom) {
+      const to = restPose.get(bone)!;
+      const d = getupDelay(bone.name);
+      const e = ease(Math.min(1, Math.max(0, (t - d) / (1 - d))));
+      bone.quaternion.copy(from.q).slerp(to.q, e);
+      if (bone.name.endsWith("Hips")) {
+        // Stand up where the body settled: keep the fallen X/Z, raise Y to standing height.
+        _gp.set(from.p.x, THREE.MathUtils.lerp(from.p.y, to.p.y, ease(t)), from.p.z);
+        bone.position.copy(_gp);
+      } else {
+        bone.position.lerpVectors(from.p, to.p, e); // limbs return to their rest offsets
+      }
+    }
+    model.updateWorldMatrix(true, true);
+  }
+  function finishGetup(): void {
+    phase = "anim";
+    setSpeed01(0); // up and standing -> idle
+  }
+  function ease(x: number): number { return x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2; }
+
   function reset(): void {
-    if (ragdolled) { ragdoll.dispose(); ragdolled = false; }
+    if (phase !== "anim") { if (ragdoll.active) ragdoll.dispose(); phase = "anim"; }
     // Restore the rest pose (incl. Hips position the clips don't touch), then resume animation.
     for (const [bone, r] of restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
     model.updateWorldMatrix(true, true);
     setSpeed01(0.5);
   }
 
+  // One simulation tick, shared by the live loop and the deterministic headless stepper.
+  let shownPhase: Phase | null = null;
+  function update(dt: number): void {
+    if (phase !== shownPhase) { shownPhase = phase; setMsg(); } // auto get-up changes phase itself
+    if (phase === "fall") {
+      physics.step((sdt) => ragdoll.applyLimits(sdt)); // soft joint limits each substep
+      ragdoll.drive();                                  // bodies drive the skinned mesh bones
+      fallTime += dt;
+      if (fallTime > MIN_FALL && ragdoll.residualMotion() < SETTLE_RESIDUAL) settleTimer += dt;
+      else settleTimer = 0;
+      if (settleTimer > CALM_NEEDED || fallTime > MAX_FALL) startGetup();
+    } else if (phase === "getup") {
+      getupT += dt / GETUP_DUR;
+      blendGetup(Math.min(1, getupT));
+      if (getupT >= 1) finishGetup();
+    } else {
+      mixer.update(dt); // animation-driven
+    }
+  }
+
   function setMsg(): void {
     msg.textContent =
       `character — ${skeleton.length} bones, ${Object.entries(c).filter(([, v]) => v).length} clips\n` +
       `[1/2/3] idle/walk/run   [T] tackle   [R] reset\n` +
-      `state: ${ragdolled ? "RAGDOLL (physics)" : "animation"}`;
+      `state: ${phase === "fall" ? "RAGDOLL (physics)" : phase === "getup" ? "getting up…" : "animation"}`;
   }
   setMsg();
   window.addEventListener("keydown", (e) => {
@@ -218,7 +287,7 @@ async function main(): Promise<void> {
   (window as unknown as { __hybrid: unknown }).__hybrid = {
     THREE, scene, camera, model, mixer, actions, physics, ragdoll,
     setSpeed: (s: number) => { speed = s; applyLocomotion(); },
-    triggerTackle, reset, isRagdolled: () => ragdolled,
+    triggerTackle, reset, isRagdolled: () => phase !== "anim", getPhase: () => phase,
     skeleton,
   };
 
@@ -241,15 +310,11 @@ async function main(): Promise<void> {
   }
 
   const clock = new THREE.Clock();
+  let externalDrive = false; // headless stepFixed takes over; the rAF loop must not also step
   function frame(): void {
     requestAnimationFrame(frame);
-    const dt = clock.getDelta();
-    if (ragdolled) {
-      physics.step((sdt) => ragdoll.applyLimits(sdt)); // soft joint limits each substep
-      ragdoll.drive();     // bodies drive the skinned mesh bones
-    } else {
-      mixer.update(dt);    // animation-driven
-    }
+    if (externalDrive) return;
+    update(Math.min(0.05, clock.getDelta())); // clamp dt so a stalled tab can't blow up physics
     updateCamera();
     renderer.render(scene, camera);
   }
@@ -258,10 +323,8 @@ async function main(): Promise<void> {
   // Deterministic stepping for faithful headless capture (real-time dt destabilises physics
   // during slow screenshot loops — same lesson as the motion sandbox).
   (window as unknown as { __hybrid: { stepFixed?: (n: number) => void } }).__hybrid.stepFixed = (n: number) => {
-    for (let i = 0; i < (n || 1); i++) {
-      if (ragdolled) { physics.step((sdt) => ragdoll.applyLimits(sdt)); ragdoll.drive(); }
-      else { mixer.update(1 / 60); }
-    }
+    externalDrive = true; // stop the rAF loop double-stepping the sim
+    for (let i = 0; i < (n || 1); i++) update(1 / 60);
     updateCamera();
     renderer.render(scene, camera);
   };
