@@ -102,6 +102,8 @@ export class Player {
   jukeTimer = 0;
   /** Active dive/lunge window (carrier dive or defender dive-tackle). */
   diveTimer = 0;
+  /** This lunge is a committed BIG HIT (hit-stick): devastating on contact, a whiff if it misses. */
+  bigHitArmed = false;
   /** Receiver just made a route break — burst open while the DB reacts late. */
   cutTimer = 0;
   /** Wrapped-up beat: carrier + tackler slide/fall together before the whistle. */

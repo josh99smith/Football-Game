@@ -211,7 +211,7 @@ export class LivePlayState implements GameState {
   }
 
   /** DEV-only: force the ball carrier to be tackled by the nearest defender (headless tests). */
-  debugForceTackle(big = true): boolean {
+  debugForceTackle(big = true, hitStick = false): boolean {
     if (this.phase !== "live") return false;
     const carrier = this.ball.carrier ?? this.qb;
     if (!carrier) return false;
@@ -225,7 +225,7 @@ export class LivePlayState implements GameState {
     if (!tackler) return false;
     // Place the defender right on the carrier so the hit lands this frame.
     tackler.pos = { x: carrier.pos.x - 6, y: carrier.pos.y };
-    this.doTackle(tackler, carrier, big, 220);
+    this.doTackle(tackler, carrier, big || hitStick, 220, hitStick);
     return true;
   }
 
@@ -347,6 +347,7 @@ export class LivePlayState implements GameState {
       }
     } else {
       this.checkTackles();
+      this.checkBigHitWhiff();
       this.checkBoundaries();
     }
 
@@ -621,16 +622,36 @@ export class LivePlayState implements GameState {
     this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
   }
 
-  /** Defender ACTION is contextual: a dive tackle when on top of the carrier, otherwise
-   * switch to the defender best placed to make the play. */
+  /** Defender ACTION is contextual: unleash a committed BIG HIT when near the carrier,
+   * otherwise switch to the defender best placed to make the play. The big hit explodes
+   * forward — connect for a devastating, fumble-forcing launch; whiff and you overcommit. */
   private handleDefenseAction(c: Player): void {
     if (!this.app.input.actionPressed) return;
+    if (c.diveTimer > 0) return; // already committed to a lunge
     if (this.defenderInTackleRange(c)) {
-      c.diveTimer = 0.32;
-      c.vel.x += Math.cos(c.facing) * 95;
-      c.vel.y += Math.sin(c.facing) * 95;
+      c.diveTimer = 0.3;
+      c.bigHitArmed = true;
+      c.leanTarget = 0.7; // shoulder dips into the hit (the avatar banks)
+      const burst = 165;
+      c.vel.x += Math.cos(c.facing) * burst;
+      c.vel.y += Math.sin(c.facing) * burst;
+      this.app.particles.burst(c.pos.x, c.pos.y, "#dce6ff", 6, 80);
+      this.app.shake.add(0.12);
     } else {
       this.switchDefender();
+    }
+  }
+
+  /** A committed big hit that didn't connect leaves the defender overcommitted: when the lunge
+   *  window closes without a tackle, they stumble (and the carrier slips by). The risk side. */
+  private checkBigHitWhiff(): void {
+    for (const d of this.defense) {
+      if (d.bigHitArmed && d.diveTimer <= 0) {
+        d.bigHitArmed = false;
+        d.enterStumble(0.5);
+        this.app.particles.burst(d.pos.x, d.pos.y, "#9aa6b8", 5, 70);
+        if (d === this.controlled) this.app.floating.add("WHIFF!", d.pos.x, d.pos.y - 18, { size: 18, color: "#cdd6e6", life: 0.8 });
+      }
     }
   }
 
@@ -850,15 +871,17 @@ export class LivePlayState implements GameState {
       }
 
       const closing = Math.hypot(d.vel.x - carrier.vel.x, d.vel.y - carrier.vel.y);
-      const big = d.turbo || d.diveTimer > 0 || closing > 150;
+      const hitStick = d.bigHitArmed && d.diveTimer > 0; // a committed big hit connected
+      const big = hitStick || d.turbo || d.diveTimer > 0 || closing > 150;
 
       // Glancing side-hit: stumble (stay up, lose a beat) instead of a clean tackle.
       if (!big && this.tryStumble(carrier, d, closing)) return;
 
-      // Break tackle: shrug off hits (much easier on weak hits / with turbo).
-      if (this.tryBreakTackle(carrier, d, big)) continue;
+      // Break tackle: shrug off hits (much easier on weak hits / with turbo). A clean big hit
+      // can't be shrugged off.
+      if (!hitStick && this.tryBreakTackle(carrier, d, big)) continue;
 
-      this.doTackle(d, carrier, big, closing);
+      this.doTackle(d, carrier, big, closing, hitStick);
       return;
     }
   }
@@ -917,10 +940,12 @@ export class LivePlayState implements GameState {
     return true;
   }
 
-  private doTackle(tackler: Player, carrier: Player, big: boolean, closing: number): void {
+  private doTackle(tackler: Player, carrier: Player, big: boolean, closing: number, hitStick = false): void {
+    tackler.bigHitArmed = false; // consumed
     const hx = (tackler.pos.x + carrier.pos.x) / 2;
     const hy = (tackler.pos.y + carrier.pos.y) / 2;
-    const fumbleChance = big ? 0.08 : 0.02;
+    // A committed big hit forces a fumble far more often (it's the whole risk/reward).
+    const fumbleChance = hitStick ? 0.28 : big ? 0.08 : 0.02;
     const dirX = carrier.pos.x - tackler.pos.x;
     const dirY = carrier.pos.y - tackler.pos.y;
     const dl = Math.hypot(dirX, dirY) || 1;
@@ -928,13 +953,13 @@ export class LivePlayState implements GameState {
     // Impact FX fire at contact start: a quick freeze-punch, then bullet-time slow-mo while the
     // camera pushes in tight on the collision, so the hit reads in dramatic slow motion.
     if (big) {
-      this.app.time.freeze(0.05);
-      this.app.time.bulletTime(0.14, 0.55, 0.85);
-      this.app.scene3d.hitZoom(0.7);
-      this.app.shake.add(0.55);
-      this.app.particles.spark(hx, hy, dirX, dirY, 18);
-      this.app.audio.hit(Math.min(1, closing / 260 + 0.4));
-      this.app.floating.add(pickHitWord(), hx, hy - 16, { size: 28, color: "#ffd23a" });
+      this.app.time.freeze(hitStick ? 0.08 : 0.05);
+      this.app.time.bulletTime(hitStick ? 0.1 : 0.14, hitStick ? 0.7 : 0.55, 0.85);
+      this.app.scene3d.hitZoom(hitStick ? 0.9 : 0.7);
+      this.app.shake.add(hitStick ? 0.85 : 0.55);
+      this.app.particles.spark(hx, hy, dirX, dirY, hitStick ? 26 : 18);
+      this.app.audio.hit(Math.min(1, closing / 260 + (hitStick ? 0.7 : 0.4)));
+      this.app.floating.add(hitStick ? "BIG HIT!" : pickHitWord(), hx, hy - 16, { size: hitStick ? 34 : 28, color: hitStick ? "#ff5a3a" : "#ffd23a" });
       this.app.audio.crowdCheer();
     } else {
       this.app.time.bulletTime(0.3, 0.22, 0.45);
@@ -944,8 +969,9 @@ export class LivePlayState implements GameState {
       this.app.audio.hit(0.4);
     }
 
-    // Shared fall momentum: carrier + tackler travel together (with forward progress).
-    const fwd = big ? 60 : 28;
+    // Shared fall momentum: carrier + tackler travel together (with forward progress). A big
+    // hit launches the carrier back the way they came (negative progress) for the highlight.
+    const fwd = hitStick ? 95 : big ? 60 : 28;
     const bvx = (carrier.vel.x + tackler.vel.x) * 0.5 + (dirX / dl) * fwd;
     const bvy = (carrier.vel.y + tackler.vel.y) * 0.5 + (dirY / dl) * fwd;
     const beat = big ? 0.32 : 0.22;
@@ -982,8 +1008,8 @@ export class LivePlayState implements GameState {
     this.pendingTackleTimer = beat;
 
     // Physics tackle: hand the carrier (and the tackler driving him down) to the ragdoll,
-    // replacing the canned clips. If physics isn't ready yet, the canned reaction still plays.
-    this.startRagdollTackle(carrier, tackler, dirX, dirY, closing, big);
+    // replacing the canned clips. A big hit drives the ragdoll harder for a bigger launch.
+    this.startRagdollTackle(carrier, tackler, dirX, dirY, hitStick ? closing + 180 : closing, big);
   }
 
   /** Spawn physics ragdolls for the two players in a collision and hold the whistle for the
@@ -1347,8 +1373,8 @@ export class LivePlayState implements GameState {
     for (const p of this.all) {
       if (p.isDown) continue;
       if (m.team(p.team).onFire && (p.hasBall || p.controlled)) {
-        // A fuller flame on the hot ball-carrier: a broad base + a taller lick up the body.
-        this.app.particles.fire(p.pos.x, p.pos.y + p.radius * 0.4, 3, 1.15);
+        // A subtle flame aura on the hot ball-carrier (not a bonfire).
+        this.app.particles.fire(p.pos.x, p.pos.y + p.radius * 0.4, 2, 0.7);
       }
     }
   }
@@ -1535,9 +1561,9 @@ export class LivePlayState implements GameState {
       return { action: { text: "—", icon: "switch", color: grey } };
     }
 
-    // Defense: tackle when on the carrier, otherwise switch.
+    // Defense: a committed BIG HIT when on the carrier, otherwise switch.
     if (this.controlled && this.defenderInTackleRange(this.controlled)) {
-      return { action: { text: "TACKLE", icon: "tackle", color: green } };
+      return { action: { text: "BIG HIT", icon: "tackle", color: "#d23a2a" } };
     }
     return { action: { text: "SWITCH", icon: "switch", color: blue } };
   }
