@@ -48,6 +48,9 @@ const _com = new THREE.Vector3();
 const _prevCom = new THREE.Vector3();
 const _X = new THREE.Vector3(1, 0, 0);
 const _Y = new THREE.Vector3(0, 1, 0);
+const _Z = new THREE.Vector3(0, 0, 1);
+const _qa = new THREE.Quaternion();
+const _qb = new THREE.Quaternion();
 const _fk = new THREE.Vector3();
 const _hipQ = new THREE.Quaternion();
 const _pelvisPos = new THREE.Vector3();
@@ -178,7 +181,8 @@ export class LocomotionController {
   // proper stride (with the trailing leg extending behind, this gives the wide contact split)
   captureGain = 0.12; // capture-point feedback: plant further out when the COM is moving fast
   legStiffness = 1.0; // swing/stance leg muscle stiffness
-  armStiffness = 0.5; // arm-swing muscle stiffness
+  armStiffness = 0.8; // arm-swing muscle stiffness (high enough that the arms actually track)
+  shoulderAbduct = 0.14; // constant arm abduction (rad ~8°) so arms clear the torso
   stanceBend = 0.02; // near-straight: the support leg straightens at passing to lift the body
 
   private phase = 0; // global gait phase [0,1); right leg = phase, left = phase+0.5
@@ -342,13 +346,18 @@ export class LocomotionController {
     this.rag.setJointStiffness(leg.ankle, this.legStiffness);
   }
 
-  /** Contralateral arm swing from the reference (right arm back as the right leg swings up). */
+  /** Contralateral arm swing from the reference (right arm back as the right leg swings up),
+   * with a small constant abduction so the arms hang clear of the torso and the fore/aft
+   * swing reads instead of clipping the body. */
   private driveArms(g: GaitTuning): void {
     const eb = elbowFlex(g);
     for (const side of ["R", "L"] as Side[]) {
       const phi = side === "R" ? this.phase : (this.phase + 0.5) % 1;
       const a = armFlex(phi, g);
-      (this.pose[`shoulder${side}`] ??= new THREE.Quaternion()).setFromAxisAngle(_X, -a);
+      const sign = side === "R" ? 1 : -1;
+      _qa.setFromAxisAngle(_Z, sign * this.shoulderAbduct); // abduction (out from the body)
+      _qb.setFromAxisAngle(_X, -a); // fore/aft swing
+      (this.pose[`shoulder${side}`] ??= new THREE.Quaternion()).copy(_qa).multiply(_qb);
       (this.pose[`elbow${side}`] ??= new THREE.Quaternion()).setFromAxisAngle(_X, -eb);
       this.rag.setJointStiffness(`shoulder${side}`, this.armStiffness);
       this.rag.setJointStiffness(`elbow${side}`, this.armStiffness);
