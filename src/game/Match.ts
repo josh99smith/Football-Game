@@ -193,6 +193,28 @@ export class Match {
     return { scored: false, changedPossession: false, kickoff: false };
   }
 
+  /**
+   * Resolve a turnover RETURN (interception / fumble recovered by the defense, run back live).
+   * The team that took the ball (`toTeam`) either scores a defensive TD, or takes over on a
+   * fresh series at the spot they were tackled. Mirrors applyOutcome's result shape.
+   */
+  returnResult(toTeam: TeamId, ballX: number, scored: boolean): {
+    scored: boolean;
+    changedPossession: boolean;
+    kickoff: boolean;
+    scoringTeam?: TeamId;
+    kickReceiver?: TeamId;
+  } {
+    const other = this.opponent(toTeam);
+    if (scored) {
+      this.team(toTeam).score += TOUCHDOWN_POINTS + PAT_POINTS;
+      this.team(other).extinguish();
+      return { scored: true, changedPossession: true, kickoff: true, scoringTeam: toTeam, kickReceiver: other };
+    }
+    this.startSeries(toTeam, clampToField(ballX));
+    return { scored: false, changedPossession: true, kickoff: false };
+  }
+
   /** Run the play clock down, clamped at 0. The quarter is NOT advanced here — the
    * clock simply stops at 0 mid-play; the caller advances the quarter between plays. */
   tickClock(dt: number): void {

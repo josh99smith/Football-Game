@@ -16,6 +16,12 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
 
   for (const o of offense) {
     if (o === controlled || o.isDown) continue;
+    // A live loose ball (fumble): everyone dives on it.
+    if (ctx.ball.state === "loose") {
+      o.desired = seek(o.pos, ctx.ball.pos);
+      o.turbo = true;
+      continue;
+    }
     if (o === carrier) continue; // the ball carrier is driven by player/CPU controller
 
     // Once a teammate is running with the ball, everyone blocks downfield.

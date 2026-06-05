@@ -122,6 +122,15 @@ export class LivePlayState implements GameState {
   private huddleCenter: Vec2 | null = null;
   /** Where the play finished (ball spot) — the camera subject during the post-play beat. */
   private deadFocus: Vec2 | null = null;
+  /** Cooldown between CPU big hits so the defense doesn't spam hit-sticks. */
+  private cpuBigHitCd = 0;
+  /** A live turnover return is underway (the AI roles are flipped; the defense escorts/runs). */
+  private isReturn = false;
+  private returnFor: "HOME" | "AWAY" | null = null;
+  private returnKind: "interception" | "fumble" = "interception";
+  /** A fumble is on the ground, live, waiting to be recovered. */
+  private looseBall = false;
+  private looseTimer = 0;
   /** Broadcast play-call overlay shown over the live field between downs, with fade-in. */
   private playCall = new PlayCallOverlay();
   private playCallT = 0;
@@ -202,6 +211,11 @@ export class LivePlayState implements GameState {
     this.ragdollIdx = [];
     this.holdForRagdoll = false;
     this.ragdollFocus = null;
+    this.cpuBigHitCd = 0;
+    this.isReturn = false;
+    this.returnFor = null;
+    this.looseBall = false;
+    this.looseTimer = 0;
 
     // Break the huddle: scatter players off their spots so they walk to the line.
     this.setupPreSnap();
@@ -285,6 +299,7 @@ export class LivePlayState implements GameState {
       this.cpu.update(ctx, (from, target, receiver, power) => this.throwPass(from, target, receiver, power));
     }
     updateDefense(ctx, this.controlled);
+    this.maybeCpuBigHit(dt);
 
     // While the ball is in the air, the target receiver attacks the catch point —
     // unless the human has taken control of them (then their input wins).
@@ -345,6 +360,8 @@ export class LivePlayState implements GameState {
         this.pendingTackle = null;
         this.endPlay(pt.type, pt.spot);
       }
+    } else if (this.looseBall) {
+      this.checkLooseBall();
     } else {
       this.checkTackles();
       this.checkBigHitWhiff();
@@ -642,6 +659,109 @@ export class LivePlayState implements GameState {
     }
   }
 
+  /** CPU defenders unleash the big hit too: a well-positioned, closing defender (not the one the
+   *  human controls) occasionally commits a hit-stick on a ball-carrier in the open. Rate-limited
+   *  by a difficulty-scaled cooldown so the field isn't a fumble lottery. */
+  private maybeCpuBigHit(dt: number): void {
+    if (this.cpuBigHitCd > 0) this.cpuBigHitCd -= dt;
+    const carrier = this.ball.carrier;
+    if (!carrier || carrier.isDown || this.phase !== "live" || this.cpuBigHitCd > 0) return;
+    // Only on a runner in space — not the QB sitting in the pocket.
+    const running =
+      this.offensePlay.isRun || carrier.role !== "QB" ||
+      (this.dir > 0 ? carrier.pos.x > this.startLosX : carrier.pos.x < this.startLosX);
+    if (!running) return;
+    // The defender chosen to lay the hit must be on the carrier's side (defending, not blocking).
+    for (const d of this.defense) {
+      if (d === this.controlled || d.isDown || d.diveTimer > 0) continue;
+      const dx = carrier.pos.x - d.pos.x;
+      const dy = carrier.pos.y - d.pos.y;
+      const dd = Math.hypot(dx, dy) || 1;
+      if (dd < 40 || dd > 82) continue; // a launch window: closing in, not already on top
+      if (d.vel.x * dx + d.vel.y * dy <= 0) continue; // must actually be closing on him
+      if (!chance(0.55)) { this.cpuBigHitCd = 0.25; return; } // sometimes just wrap up normally
+      const f = Math.atan2(dy, dx);
+      d.facing = f;
+      d.heading = f;
+      d.diveTimer = 0.3;
+      d.bigHitArmed = true;
+      d.leanTarget = 0.7;
+      d.vel.x += Math.cos(f) * 165;
+      d.vel.y += Math.sin(f) * 165;
+      this.app.particles.burst(d.pos.x, d.pos.y, "#dce6ff", 5, 70);
+      const diff = this.app.match.difficulty;
+      this.cpuBigHitCd = diff === "allpro" ? 1.4 : diff === "pro" ? 1.9 : 2.8;
+      return;
+    }
+  }
+
+  /**
+   * Hand the ball to `newCarrier` on a turnover and keep the play LIVE as a return. The AI roles
+   * flip in place — the team that took the ball now escorts/blocks, the other team pursues — by
+   * swapping the offense/defense role arrays (but NOT `this.all`, so avatars keep their identity).
+   */
+  private startReturn(newCarrier: Player, kind: "interception" | "fumble"): void {
+    const m = this.app.match;
+    if (newCarrier.team !== this.offenseTeamId) {
+      const tmp = this.offense;
+      this.offense = this.defense;
+      this.defense = tmp;
+    }
+    this.offenseTeamId = newCarrier.team;
+    this.humanIsOffense = newCarrier.team === m.humanTeam;
+    this.dir = m.attackDir(newCarrier.team);
+    this.startLosX = newCarrier.pos.x;
+    this.qb = null;
+    this.passThrown = true;
+    this.passTarget = null;
+    this.sackPossible = false;
+    this.isReturn = true;
+    this.returnFor = newCarrier.team;
+    this.returnKind = kind;
+    this.looseBall = false;
+    this.ball.attachTo(newCarrier);
+    this.cpu.reset(); // the CPU now steers the returner (if it's the CPU's ball) as an open runner
+    if (this.controlled) this.controlled.controlled = false;
+    this.controlled = this.humanIsOffense ? newCarrier : this.nearestDefenderToBall();
+    if (this.controlled) this.controlled.controlled = true;
+  }
+
+  /** A fumble is live on the ground: the first player to reach it recovers. The offense keeping
+   *  it plays on; the defense recovering takes it back as a (returnable) turnover. */
+  private checkLooseBall(): void {
+    if (!this.looseBall || this.ball.state !== "loose" || this.phase !== "live") return;
+    this.looseTimer += 1 / 60;
+    // The nearest upright player; he recovers on touch, or falls on it once the scramble drags on.
+    let rec: Player | null = null;
+    let bestD = Infinity;
+    for (const p of this.all) {
+      if (p.isDown) continue;
+      const d = dist(p.pos, this.ball.pos);
+      if (d < bestD) { bestD = d; rec = p; }
+    }
+    if (!rec) return;
+    const onTouch = bestD < rec.radius + 10;
+    if (!onTouch && this.looseTimer < 2.6) return; // still scrambling for it
+    this.looseBall = false;
+    this.looseTimer = 0;
+    this.app.particles.burst(rec.pos.x, rec.pos.y, "#ffffff", 8, 90);
+    if (rec.team === this.offenseTeamId) {
+      // Offense fell on its own fumble — keep the ball, play on.
+      this.ball.attachTo(rec);
+      if (this.controlled) this.controlled.controlled = false;
+      this.controlled = this.humanIsOffense ? rec : this.controlled;
+      if (this.controlled) this.controlled.controlled = true;
+      this.app.audio.whistle();
+      this.app.floating.add("RECOVERED!", rec.pos.x, rec.pos.y - 18, { size: 18, color: "#bfffd0", life: 0.9 });
+    } else {
+      // Defense recovered — it's a live, returnable turnover.
+      this.app.audio.turnover();
+      this.app.floating.add("FUMBLE!", rec.pos.x, rec.pos.y - 18, { size: 20, color: "#ff8a8a", life: 0.9 });
+      if (rec.team === this.app.match.humanTeam) this.app.audio.crowdCheer(); else this.app.audio.crowdGroan();
+      this.startReturn(rec, "fumble");
+    }
+  }
+
   /** A committed big hit that didn't connect leaves the defender overcommitted: when the lunge
    *  window closes without a tackle, they stumble (and the carrier slips by). The risk side. */
   private checkBigHitWhiff(): void {
@@ -735,17 +855,17 @@ export class LivePlayState implements GameState {
         this.setControlled(res.caught);
       }
     } else if (res.intercepted) {
-      this.ball.attachTo(res.intercepted);
       res.intercepted.animEvent = "catch";
       this.app.audio.turnover();
       if (res.intercepted.team === this.app.match.humanTeam) this.app.audio.crowdCheer();
       else this.app.audio.crowdGroan();
-      this.app.floating.add("PICKED!", res.intercepted.pos.x, res.intercepted.pos.y - 20, {
+      this.app.floating.add("INTERCEPTED!", res.intercepted.pos.x, res.intercepted.pos.y - 20, {
         size: 22,
         color: "#ff8a8a",
       });
       this.app.shake.add(0.4);
-      this.endPlay("interception", { x: res.intercepted.pos.x, y: res.intercepted.pos.y });
+      // Live return: the pick is run back until the returner is tackled / scores / steps out.
+      this.startReturn(res.intercepted, "interception");
     } else if (res.incomplete) {
       this.app.audio.whistle();
       if (this.humanIsOffense) this.app.audio.crowdGroan();
@@ -977,35 +1097,32 @@ export class LivePlayState implements GameState {
     const beat = big ? 0.32 : 0.22;
     const spot = { x: carrier.pos.x + (dirX / dl) * (big ? 8 : 3), y: carrier.pos.y };
 
-    let type: OutcomeType;
-    if (chance(fumbleChance)) {
+    // Jar the ball loose on a fumble (no fumbles during a return — avoids endless turnover
+    // chains). The ball goes live: both teams scramble, and the defense recovering can run it
+    // back. Otherwise the carrier is simply downed after the contact beat.
+    const fumbled = !this.isReturn && chance(fumbleChance);
+    if (fumbled) {
       this.app.floating.add("FUMBLE!", hx, hy - 40, { size: 26, color: "#ff6a6a" });
       this.app.audio.turnover();
       this.ball.becomeLoose((dirX / dl) * 120 + (Math.random() * 80 - 40), (dirY / dl) * 120 + (Math.random() * 80 - 40), 220);
-      const recoverDefense = chance(0.6);
-      if (recoverDefense) {
-        const defenseIsHuman = this.app.match.opponent(this.offenseTeamId) === this.app.match.humanTeam;
-        if (defenseIsHuman) this.app.audio.crowdCheer();
-        else this.app.audio.crowdGroan();
-        this.bumpFireStreakOnDefense();
-        type = "fumbleLost";
-      } else {
-        type = this.sackIfBehindLine(spot);
-      }
-    } else {
-      if (tackler.team !== this.offenseTeamId && big) this.bumpFireStreakOnDefense();
-      type = this.sackIfBehindLine(spot);
+      this.looseBall = true;
+      this.looseTimer = 0;
+    } else if (tackler.team !== this.offenseTeamId && big) {
+      this.bumpFireStreakOnDefense();
     }
 
-    // Both players wrap up and go down together; the whistle blows after the beat.
+    // Both players wrap up and go down together (ragdoll). Without a fumble the whistle blows
+    // after the contact beat; with a fumble the ball stays live for the recovery scramble.
     carrier.enterContact(bvx, bvy, beat);
     carrier.animEvent = "tackle"; // the carrier's getting-tackled reaction (canned fallback)
     tackler.enterContact(bvx * 0.55, bvy * 0.55, beat);
     tackler.animEvent = "tackleMade"; // the defender's tackle hit (canned fallback)
     tackler.facing = Math.atan2(dirY, dirX);
     tackler.heading = tackler.facing;
-    this.pendingTackle = { type, spot };
-    this.pendingTackleTimer = beat;
+    if (!fumbled) {
+      this.pendingTackle = { type: this.sackIfBehindLine(spot), spot };
+      this.pendingTackleTimer = beat;
+    }
 
     // Physics tackle: hand the carrier (and the tackler driving him down) to the ragdoll,
     // replacing the canned clips. A big hit drives the ragdoll harder for a bigger launch.
@@ -1122,6 +1239,21 @@ export class LivePlayState implements GameState {
     }
   }
 
+  /** Celebrate every upright player on a team — used for big plays during the post-play beat. */
+  private celebrateTeam(team: "HOME" | "AWAY"): void {
+    this.celebrate(this.all.filter((q) => q.team === team && !q.isDown));
+  }
+
+  /** The quarter only advances between plays (not mid-down); show a beat when the clock expires. */
+  private quarterBeat(): void {
+    const m = this.app.match;
+    if (m.clockExpired && !m.isOver) {
+      const ev = m.advanceQuarter();
+      const label = ev === "half" ? "HALFTIME" : ev === "game" ? "FINAL" : `END OF Q${m.quarter - 1}`;
+      this.app.floating.add(label, this.app.field.maxX / 2, this.app.field.maxY / 2, { size: 30, color: COLORS.hazard, life: 2 });
+    }
+  }
+
   private ballSpot(): Vec2 {
     const c = this.ball.carrier;
     return c ? { x: c.pos.x, y: c.pos.y } : { x: this.ball.pos.x, y: this.ball.pos.y };
@@ -1132,8 +1264,32 @@ export class LivePlayState implements GameState {
     this.phase = "dead";
     if (this.controlled) this.controlled.controlled = false;
     this.passTarget = null;
-
+    this.looseBall = false;
     const m = this.app.match;
+
+    // A turnover RETURN ending: the returning team scores or takes over at the spot. (Handled
+    // separately because the play's offense/defense were flipped while the return was live.)
+    if (this.isReturn && this.returnFor) {
+      const scored = type === "touchdown";
+      this.playResult = m.returnResult(this.returnFor, spot.x, scored);
+      this.pendingOutcome = {
+        type: scored ? "touchdown" : "interception",
+        ballX: spot.x, ballY: spot.y, possessionAfter: this.returnFor,
+        yards: 0, firstDown: false,
+        headline: scored ? "RETURN TD!" : this.returnKind === "interception" ? "INTERCEPTION" : "FUMBLE!",
+      };
+      this.resultDetail = this.buildResultDetail();
+      this.quarterBeat();
+      this.celebrateTeam(this.returnFor); // the takeaway unit celebrates
+      this.deadTimer = scored ? 2.6 : 1.8;
+      this.deadElapsed = 0;
+      this.endSpot = { x: spot.x, y: spot.y };
+      this.regroupTargets = null;
+      this.deadFocus = { x: spot.x, y: spot.y };
+      this.app.input.consumeTaps();
+      return;
+    }
+
     const gained = (spot.x - this.startLosX) * this.dir / PX_PER_YARD;
     const possessionAfter =
       type === "interception" || type === "fumbleLost" || type === "safety"
@@ -1157,11 +1313,17 @@ export class LivePlayState implements GameState {
     this.playResult = m.applyOutcome(outcome);
     this.resultDetail = this.buildResultDetail();
 
-    // Clock: the quarter only advances between plays (not mid-down). Show a beat.
-    if (m.clockExpired && !m.isOver) {
-      const ev = m.advanceQuarter();
-      const label = ev === "half" ? "HALFTIME" : ev === "game" ? "FINAL" : `END OF Q${m.quarter - 1}`;
-      this.app.floating.add(label, this.app.field.maxX / 2, this.app.field.maxY / 2, { size: 30, color: COLORS.hazard, life: 2 });
+    this.quarterBeat();
+
+    // Celebrate the big plays during the post-play beat: the defense after a sack / takeaway, or
+    // the offense after a touchdown (handled in scoreTouchdown) or an explosive gain.
+    const defense = m.opponent(this.offenseTeamId);
+    if (type === "sack" || type === "safety" || type === "interception" || type === "fumbleLost") {
+      this.celebrateTeam(defense);
+    } else if (type === "touchdown") {
+      // already kicked off in scoreTouchdown
+    } else if (gained >= 18) {
+      this.celebrateTeam(this.offenseTeamId);
     }
 
     // Post-play: a short settle/celebration, then players regroup and amble toward the
