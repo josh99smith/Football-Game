@@ -47,8 +47,8 @@ export const defaultGait: GaitTuning = {
   kneeBase: 4,
   anklePush: 16,
   ankleDorsi: 6,
-  armAmp: 26,
-  elbowBend: 22,
+  armAmp: 34,
+  elbowBend: 26,
   spineLean: 6,
 };
 

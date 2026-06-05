@@ -72,6 +72,10 @@ function clampAbs(v: number, max: number): number {
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
+function smoothstep(t: number): number {
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return t * t * (3 - 2 * t);
+}
 
 // --- leg geometry (pelvis-local, from the ragdoll rest spec) ---
 const L1 = 0.42; // thigh: hip pivot (y 0.85) -> knee pivot (y 0.43)
@@ -161,8 +165,9 @@ export class LocomotionController {
   gait: GaitTuning = { ...defaultGait };
   cycleTime = 1.15; // seconds per full gait cycle (two steps) at speed ~1; quickens with speed
   stanceFrac = 0.62; // fraction of a leg's cycle spent in stance (rest is swing)
-  pushoff = 0.12; // small toe-off momentum kick (m/s)
+  pushoff = 0; // (off) a root impulse here catapults at resonant cadences; the ankle rolls instead
   stepHeight = 0.16; // swing-foot lift to clear the ground (m)
+  anklePush = 0.22; // terminal-stance plantarflexion (rad ~13°) — toe-off foot roll + mild push
   stepAhead = 0.22; // baseline foot plant AHEAD of the COM (m) so the COM stays behind the
   // support and the body stays upright instead of falling forward over trailing feet
   captureGain = 0.12; // capture-point feedback: plant further out when the COM is moving fast
@@ -267,7 +272,9 @@ export class LocomotionController {
       }
 
       if (stance) {
-        this.driveStance(leg); // IK-conform to the locked foot — no slip, no fight
+        // IK-conform to the locked foot (no slip), with a foot-roll: controlled lowering
+        // after heel-strike, then a terminal-stance plantarflexion push-off near toe-off.
+        this.driveStance(leg, phi / this.stanceFrac);
       } else {
         // Swing: place the foot AHEAD of the COM (capture point) via IK, along a lifted arc
         // shaped by the reference; landing ahead keeps the COM behind support → upright.
@@ -304,19 +311,23 @@ export class LocomotionController {
     this.rag.setJointStiffness(leg.ankle, this.legStiffness * 0.6);
   }
 
-  /** Stance leg: IK to its locked anchor so it supports and conforms (no slip) as the
-   * root is driven forward over it, without the reference angle fighting the lock. */
-  private driveStance(leg: Leg): void {
+  /** Stance leg: IK to its locked anchor so it supports and conforms (no slip) as the root is
+   * driven forward over it. The ankle rolls through stance — neutral after heel-strike, then a
+   * terminal-stance plantarflexion push-off (sp = stance progress 0→1) for propulsion + a
+   * natural toe-off. The locked foot pivots freely, so the ankle drive levers the body up/fwd. */
+  private driveStance(leg: Leg, sp: number): void {
     _targetL.copy(leg.anchor).add(_v.set(0, 0.01, 0)).sub(_pelvisPos).applyQuaternion(_pelvisQInv);
     const knee = legIK(HIP_LOCAL[leg.side], _targetL, _hipQ) + this.stanceBend;
     fkAnkle(HIP_LOCAL[leg.side], _hipQ, knee, _fk);
     this.ikErr = _fk.sub(_targetL).length();
+    // Push-off: plantarflex over the back third of stance, ramped to full at toe-off.
+    const roll = -this.anklePush * smoothstep((sp - 0.65) / 0.35);
     (this.pose[leg.hip] ??= new THREE.Quaternion()).copy(_hipQ);
     (this.pose[leg.knee] ??= new THREE.Quaternion()).setFromAxisAngle(_X, knee);
-    (this.pose[leg.ankle] ??= new THREE.Quaternion()).identity();
+    (this.pose[leg.ankle] ??= new THREE.Quaternion()).setFromAxisAngle(_X, roll);
     this.rag.setJointStiffness(leg.hip, this.legStiffness);
     this.rag.setJointStiffness(leg.knee, this.legStiffness);
-    this.rag.setJointStiffness(leg.ankle, this.legStiffness * 0.7);
+    this.rag.setJointStiffness(leg.ankle, this.legStiffness);
   }
 
   /** Contralateral arm swing from the reference (right arm back as the right leg swings up). */

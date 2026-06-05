@@ -84,6 +84,8 @@ export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld, 
       comKp: loco.comKp,
       comKd: loco.comKd,
       cycleTime: loco.cycleTime,
+      anklePush: loco.anklePush,
+      stepAhead: loco.stepAhead,
       pushoff: loco.pushoff,
       legStiffness: loco.legStiffness,
       armStiffness: loco.armStiffness,
@@ -107,6 +109,8 @@ export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld, 
     lf.add(locoState, "armAmp", 0, 60, 1).name("Arm swing °").onChange((v: number) => (loco.gait.armAmp = v));
     lf.add(locoState, "spineLean", 0, 25, 0.5).name("Trunk lean °").onChange((v: number) => (loco.gait.spineLean = v));
     lf.add(locoState, "cycleTime", 0.5, 2.0, 0.01).name("Cycle time").onChange((v: number) => (loco.cycleTime = v));
+    lf.add(locoState, "anklePush", 0, 0.7, 0.01).name("Toe-off °").onChange((v: number) => (loco.anklePush = v));
+    lf.add(locoState, "stepAhead", 0, 0.5, 0.01).name("Step ahead").onChange((v: number) => (loco.stepAhead = v));
     lf.add(locoState, "pushoff", 0, 1.5, 0.01).name("Push-off").onChange((v: number) => (loco.pushoff = v));
     lf.add(locoState, "assist", 0, 1, 0.01).name("Balance assist").onChange((v: number) => (loco.assist = v));
     lf.add(locoState, "legStiffness", 0, 1, 0.01).name("Leg stiffness").onChange((v: number) => (loco.legStiffness = v));
