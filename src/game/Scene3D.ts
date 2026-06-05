@@ -24,6 +24,7 @@ const RAG_MAX_FALL = 6;          // safety: stand up even if it never fully sett
 const RAG_GETUP_DUR = 1.1;       // seconds to rise to standing
 const _rgp = new THREE.Vector3();
 const _rhip = new THREE.Vector3();
+const _handPos = new THREE.Vector3();
 function ragEase(x: number): number { return x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2; }
 // Get-up stagger: legs/hips gather first, spine/head follow, arms swing in last.
 function ragGetupDelay(name: string): number {
@@ -330,6 +331,8 @@ class FbxAvatar implements Avatar {
   private yaw = 0;
   /** Fall progress 0 (upright) .. 1 (flat), lerped for a non-instant tackle. */
   private fallT = 0;
+  /** Smoothed body bank (roll) into turns/cuts, so direction changes read as a lean. */
+  private bankSmooth = 0;
   private readonly interp = new Interp();
 
   // --- physics ragdoll tackle (replaces the canned tackle clip when a hit lands) ---
@@ -544,6 +547,7 @@ class FbxAvatar implements Avatar {
     this.suppressFall = false;
     for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
     this.fallT = 0;
+    this.bankSmooth = 0;
     this.oneShot?.setEffectiveWeight(0);
     this.oneShot = null;
     this.lean.rotation.set(0, 0, 0);
@@ -666,13 +670,15 @@ class FbxAvatar implements Avatar {
       this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 3.2));
       this.backAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
       this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * STRAFE_PLANT_K, 0.7, 3.0));
-      // Lean forward when running ahead, back slightly when backpedaling; bank into turns/cuts.
+      // Bank hard into turns/cuts so a change of direction reads as a dynamic lean (plus the
+      // juke lean). Smoothed so it carves in rather than snapping, but quick enough to feel sharp.
       g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd;
-      const bank = clamp(clamp(-lo.turnRate * 0.05, -0.4, 0.4) + p.leanTarget * 0.35, -0.55, 0.55);
-      // Forward lean while running ahead, slight backward lean when backpedaling
+      const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.42, -0.62, 0.62);
+      this.bankSmooth += (bankTarget - this.bankSmooth) * Math.min(1, dt * 9);
+      // Forward lean while running ahead (more at speed), slight backward lean when backpedaling
       // (added on top of the fall pitch, which is ~0 while upright).
-      this.lean.rotation.x += (fwd - back) * 0.16 * moving01;
-      this.lean.rotation.z = bank;
+      this.lean.rotation.x += ((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01;
+      this.lean.rotation.z = this.bankSmooth;
       this.lean.rotation.y = 0;
       this.phase += dt;
       this.ring.visible = p.controlled;
@@ -695,9 +701,18 @@ class FbxAvatar implements Avatar {
       m.color.setHex(jersey);
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
-    // Carried ball is tucked stably against the body (a fixed carry spot). Riding the
-    // animated wrist made it swing/float, so it's anchored to the torso instead.
+    // Carried ball: keep it connected to the carrier's hand. The nub is a group child (so it
+    // stays world-sized despite the model's tiny bone scale); each frame we read the carry
+    // hand/forearm bone's world position and place the nub there, cradled a touch into the body.
     this.nub.visible = p.hasBall && !p.isDown;
+    if (this.nub.visible) {
+      const hand = this.bone("RightHand") ?? this.bone("RightForeArm");
+      if (hand) {
+        hand.getWorldPosition(_handPos);
+        this.group.worldToLocal(_handPos);
+        this.nub.position.set(_handPos.x, _handPos.y, _handPos.z);
+      }
+    }
   }
 
   hide(): void {
@@ -789,10 +804,10 @@ export class Scene3D {
 
     // Ball: a stretched ellipsoid that spirals in flight.
     this.ballMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 14, 12),
+      new THREE.SphereGeometry(0.26, 14, 12),
       new THREE.MeshStandardMaterial({ color: 0x8a4b22, roughness: 0.55 }),
     );
-    this.ballMesh.scale.set(1.6, 0.95, 0.95);
+    this.ballMesh.scale.set(1.55, 0.92, 0.92);
     this.ballMesh.castShadow = true;
     const ballShadow = new THREE.Mesh(
       new THREE.CircleGeometry(0.3, 12),
