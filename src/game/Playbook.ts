@@ -29,7 +29,7 @@ export interface OffensePlay {
   slots: OffSlot[];
 }
 
-export type DefenseScheme = "cover" | "blitz" | "spy";
+export type DefenseScheme = "cover" | "blitz" | "spy" | "zone";
 
 export interface DefensePlay {
   id: string;
@@ -127,12 +127,91 @@ export const OFFENSE_PLAYS: OffensePlay[] = [
       ...BASE_OL,
     ],
   },
+  {
+    id: "mesh",
+    name: "MESH",
+    blurb: "Crossing drags. Rub man coverage.",
+    isRun: false,
+    slots: [
+      { role: "QB", number: 7, start: { fwd: -4, lat: 0 }, job: "qb" },
+      { role: "HB", number: 28, start: { fwd: -6, lat: -2 }, job: "route", route: [
+        { fwd: 0, lat: -8 }, { fwd: 2, lat: -14 },
+      ] },
+      { role: "WR", number: 11, start: { fwd: 0, lat: -17 }, job: "route", route: [
+        { fwd: 4, lat: -6 }, { fwd: 5, lat: 12 },
+      ] },
+      { role: "WR", number: 84, start: { fwd: 0, lat: 17 }, job: "route", route: [
+        { fwd: 5, lat: 6 }, { fwd: 6, lat: -12 },
+      ] },
+      { role: "WR", number: 19, start: { fwd: 0, lat: 8 }, job: "route", route: [
+        { fwd: 12, lat: 5 }, { fwd: 26, lat: 0 },
+      ] },
+      ...BASE_OL,
+    ],
+  },
+  {
+    id: "outs",
+    name: "OUTS",
+    blurb: "Sideline cuts. Stop the clock.",
+    isRun: false,
+    slots: [
+      { role: "QB", number: 7, start: { fwd: -4, lat: 0 }, job: "qb" },
+      { role: "HB", number: 28, start: { fwd: -6, lat: 2 }, job: "route", route: [
+        { fwd: 3, lat: 8 }, { fwd: 4, lat: 15 },
+      ] },
+      { role: "WR", number: 11, start: { fwd: 0, lat: -17 }, job: "route", route: [
+        { fwd: 11, lat: -17 }, { fwd: 12, lat: -25 },
+      ] },
+      { role: "WR", number: 84, start: { fwd: 0, lat: 17 }, job: "route", route: [
+        { fwd: 11, lat: 17 }, { fwd: 12, lat: 25 },
+      ] },
+      { role: "WR", number: 19, start: { fwd: 0, lat: 7 }, job: "route", route: [
+        { fwd: 13, lat: 5 }, { fwd: 11, lat: 7 },
+      ] },
+      ...BASE_OL,
+    ],
+  },
+  {
+    id: "papost",
+    name: "PA POST",
+    blurb: "Fake the run. Take a deep shot.",
+    isRun: false,
+    slots: [
+      { role: "QB", number: 7, start: { fwd: -5, lat: 0 }, job: "qb" },
+      { role: "HB", number: 28, start: { fwd: -6, lat: 1 }, job: "block" },
+      { role: "WR", number: 11, start: { fwd: 0, lat: -16 }, job: "route", route: [
+        { fwd: 18, lat: -16 }, { fwd: 40, lat: -4 },
+      ] },
+      { role: "WR", number: 84, start: { fwd: 0, lat: 16 }, job: "route", route: [
+        { fwd: 16, lat: 16 }, { fwd: 14, lat: 18 },
+      ] },
+      { role: "WR", number: 19, start: { fwd: 0, lat: 6 }, job: "route", route: [
+        { fwd: 20, lat: 2 }, { fwd: 42, lat: 8 },
+      ] },
+      ...BASE_OL,
+    ],
+  },
+  {
+    id: "toss",
+    name: "HB TOSS",
+    blurb: "Pitch it wide. Get to the edge.",
+    isRun: true,
+    slots: [
+      { role: "QB", number: 7, start: { fwd: -4, lat: 0 }, job: "qb" },
+      { role: "HB", number: 28, start: { fwd: -6, lat: -5 }, job: "run" },
+      { role: "WR", number: 11, start: { fwd: 0, lat: -18 }, job: "block" },
+      { role: "WR", number: 84, start: { fwd: 0, lat: 18 }, job: "block" },
+      { role: "WR", number: 19, start: { fwd: 0, lat: -10 }, job: "block" },
+      ...BASE_OL,
+    ],
+  },
 ];
 
 export const DEFENSE_PLAYS: DefensePlay[] = [
   { id: "cover", name: "COVER", blurb: "Man up. Bend, don't break.", scheme: "cover" },
   { id: "blitz", name: "BLITZ", blurb: "Send the house. Sack the QB.", scheme: "blitz" },
   { id: "spy", name: "SPY", blurb: "Contain the run. Watch the QB.", scheme: "spy" },
+  { id: "zone", name: "ZONE", blurb: "Drop into zones. Wall off the deep ball.", scheme: "zone" },
 ];
 
 /** Fixed defensive alignment (7): 2 DL, 2 LB, 3 DB. */

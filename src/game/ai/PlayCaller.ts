@@ -25,12 +25,17 @@ export function cpuOffensePlay(m: Match): OffensePlay {
   const late = m.quarter >= m.totalQuarters && m.clock < 75;
 
   if (late && behind) return offById(chance(0.5) ? "streaks" : "hailmary");
-  if (dist <= 4) return offById(chance(0.6) ? "hbdive" : "slants");
-  if (m.down >= 3 && dist >= 12) return offById(chance(0.6) ? "streaks" : "slants");
+  if (dist <= 4) return offById(chance(0.55) ? "hbdive" : "toss");
+  if (m.down >= 3 && dist >= 12) return offById(chance(0.5) ? "streaks" : "outs");
 
+  // First/second down: mix runs, quick game, crossers and the occasional shot.
   const r = Math.random();
-  if (r < 0.35) return offById("hbdive");
-  if (r < 0.7) return offById("slants");
+  if (r < 0.22) return offById("hbdive");
+  if (r < 0.36) return offById("toss");
+  if (r < 0.54) return offById("slants");
+  if (r < 0.70) return offById("mesh");
+  if (r < 0.84) return offById("outs");
+  if (r < 0.93) return offById("papost");
   return offById("streaks");
 }
 
@@ -40,11 +45,13 @@ export function cpuOffensePlay(m: Match): OffensePlay {
  */
 export function cpuDefensePlay(m: Match): DefensePlay {
   const dist = m.distanceYards;
-  if (m.down >= 3 && dist >= 10) return defById(chance(0.45) ? "blitz" : "cover");
+  // Obvious passing down: bring pressure or sit back in a deep zone.
+  if (m.down >= 3 && dist >= 10) return defById(chance(0.4) ? "blitz" : chance(0.5) ? "zone" : "cover");
   if (dist <= 4) return defById(chance(0.5) ? "spy" : "cover");
 
   const r = Math.random();
-  if (r < 0.2) return defById("blitz");
-  if (r < 0.45) return defById("spy");
+  if (r < 0.18) return defById("blitz");
+  if (r < 0.38) return defById("spy");
+  if (r < 0.62) return defById("zone");
   return defById("cover");
 }

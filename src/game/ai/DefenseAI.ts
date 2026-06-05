@@ -62,6 +62,23 @@ export function assignDefense(ctx: PlayContext, scheme: DefenseScheme): void {
       dbSorted[1].job = "zone";
       dbSorted[1].zonePoint = { x: ctx.losX + ctx.dir * 18 * 16, y: ctx.defense[0].pos.y };
     }
+  } else if (scheme === "zone") {
+    // Cover-3 shell: the three DBs each wall off a deep third, the LBs sit in the underneath
+    // flats/hook, the DL rush. Strong against the deep ball; soft underneath.
+    const fieldCenterY = ctx.defense.reduce((s, p) => s + p.home.y, 0) / (ctx.defense.length || 1);
+    const deep = ctx.losX + ctx.dir * 20 * 16;
+    const thirds = [-14, 0, 14];
+    dbSorted.forEach((d, i) => {
+      d.job = "zone";
+      d.zonePoint = { x: deep, y: fieldCenterY + (thirds[i] ?? 0) * 16 };
+      d.assignment = null;
+    });
+    const under = ctx.losX + ctx.dir * 7 * 16;
+    lb.forEach((l, i) => {
+      l.job = "zone";
+      l.zonePoint = { x: under, y: fieldCenterY + (i === 0 ? -9 : 9) * 16 };
+      l.assignment = null;
+    });
   } else {
     // spy
     if (lb[0]) {

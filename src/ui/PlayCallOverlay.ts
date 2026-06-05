@@ -28,17 +28,22 @@ export class PlayCallOverlay {
     this.humanOffense = humanOffense;
     const plays = humanOffense ? OFFENSE_PLAYS : DEFENSE_PLAYS;
     const n = plays.length;
+    // Grid: up to 4 across, wrapping into rows so a deeper playbook still fits the lower screen.
     const cols = Math.min(n, 4);
-    const gap = 14;
-    const cardW = Math.min(180, (r.width - 40 - gap * (cols - 1)) / cols);
-    const cardH = Math.min(150, r.height * 0.4);
+    const rows = Math.ceil(n / cols);
+    const gap = 12;
+    const cardW = Math.min(170, (r.width - 36 - gap * (cols - 1)) / cols);
+    // Keep the whole grid in the lower ~46% of the screen so the field stays visible above it.
+    const cardH = Math.min(140, (r.height * 0.46 - gap * (rows - 1)) / rows);
     const totalW = cols * cardW + (cols - 1) * gap;
+    const totalH = rows * cardH + (rows - 1) * gap;
     const startX = (r.width - totalW) / 2;
-    // Sit the cards in the lower third so the field action stays visible above them.
-    const y = r.height * 0.62;
+    const startY = r.height - totalH - 22; // anchored near the bottom edge
 
     this.cards = plays.map((p, i) => {
-      const rect: Rect = { x: startX + i * (cardW + gap), y, w: cardW, h: cardH };
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const rect: Rect = { x: startX + col * (cardW + gap), y: startY + row * (cardH + gap), w: cardW, h: cardH };
       return humanOffense ? { rect, off: p as OffensePlay } : { rect, def: p as DefensePlay };
     });
   }
@@ -185,6 +190,23 @@ export class PlayCallOverlay {
       ctx.moveTo(cx, losY + 16);
       ctx.lineTo(cx, losY + 2);
       ctx.stroke();
+    } else if (play.scheme === "zone") {
+      // Deep-third shells up high + underneath drops — a soft umbrella.
+      ctx.strokeStyle = "#39b0e0";
+      ctx.lineWidth = 2;
+      for (const k of [-1.5, 0, 1.5]) {
+        const x = cx + k * 30;
+        ctx.beginPath();
+        ctx.arc(x, losY - 6, 11, Math.PI, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#7b8694";
+      for (const k of [-0.8, 0.8]) {
+        const x = cx + k * 30;
+        ctx.beginPath();
+        ctx.arc(x, losY + 20, 7, Math.PI, Math.PI * 2);
+        ctx.stroke();
+      }
     } else {
       ctx.strokeStyle = "#7b8694";
       ctx.lineWidth = 2;
