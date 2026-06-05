@@ -31,6 +31,8 @@ const MAX_PLAY_TIME = 16;
 const POSTPLAY_MAX = 9;
 /** Minimum post-play beat before a tap can skip to the play call (guarantees a post-play). */
 const MIN_DEAD_LINGER = 0.7;
+/** Farthest a pass can travel (yards) — a deep ball, not a 90-yard heave. */
+const MAX_PASS_YARDS = 52;
 /** Hold this long (s) to fully charge a bullet pass; a quick tap throws a lob. */
 const THROW_CHARGE_MAX = 0.5;
 /** Hold the ACTION button this long (s) as a ball carrier to dive instead of juke. */
@@ -124,6 +126,9 @@ export class LivePlayState implements GameState {
   private deadFocus: Vec2 | null = null;
   /** Cooldown between CPU big hits so the defense doesn't spam hit-sticks. */
   private cpuBigHitCd = 0;
+  /** Whether the game clock keeps running between plays (after an inbounds run/tackle) — it
+   *  stops on incompletions, out-of-bounds, scores and turnovers, just like real football. */
+  private clockRunning = false;
   /** A live turnover return is underway (the AI roles are flipped; the defense escorts/runs). */
   private isReturn = false;
   private returnFor: "HOME" | "AWAY" | null = null;
@@ -216,6 +221,7 @@ export class LivePlayState implements GameState {
     this.returnFor = null;
     this.looseBall = false;
     this.looseTimer = 0;
+    this.clockRunning = false;
 
     // Break the huddle: scatter players off their spots so they walk to the line.
     this.setupPreSnap();
@@ -479,11 +485,10 @@ export class LivePlayState implements GameState {
       }
     }
     this.preSnapReady = allSet;
-    const elapsed = PRESNAP_TIME - this.snapTimer;
 
     if (this.humanIsOffense) {
-      // Hurry-up: hike the instant you're set, or after a brief grace if you're impatient.
-      if (this.app.input.actionPressed && (allSet || elapsed > 0.8)) this.snap();
+      // Can't hike until the whole offense (and defense) is set on the line.
+      if (this.app.input.actionPressed && allSet) this.snap();
     } else {
       // On defense, ACTION cycles which man you'll control; the CPU hikes once set.
       if (this.app.input.actionPressed) this.cycleDefender();
@@ -533,8 +538,10 @@ export class LivePlayState implements GameState {
       return;
     }
 
-    // Movement.
-    c.desired = { x: input.move.x, y: input.move.y };
+    // Movement, made camera-relative: the chase cam yaws 180° with the offense's attack
+    // direction, so on defense (dir = -1) the view is reversed. Multiply the stick by `dir` so
+    // "up" is always downfield-on-screen and the controls never feel backwards.
+    c.desired = { x: input.move.x * this.dir, y: input.move.y * this.dir };
 
     // Turbo meter management.
     const wantTurbo = input.turbo && (input.move.x !== 0 || input.move.y !== 0);
@@ -830,9 +837,16 @@ export class LivePlayState implements GameState {
    * bullet. The receiver is led by the resulting flight time so fast WRs run onto it.
    */
   private throwPass(from: Player, target: Vec2, receiver: Player | null, power = 0.4): void {
+    // A QB can only throw so far: clamp the aim to a realistic max range so a pass can't sail
+    // 90 yards downfield. Beyond range the ball falls short (incomplete) rather than reaching.
+    const dx = target.x - from.pos.x;
+    const dy = target.y - from.pos.y;
+    const d = Math.hypot(dx, dy);
+    const maxPass = MAX_PASS_YARDS * PX_PER_YARD;
+    const aim = d > maxPass ? { x: from.pos.x + (dx / d) * maxPass, y: from.pos.y + (dy / d) * maxPass } : target;
     // Lob -> bullet: faster + flatter + a tighter, quicker spiral as power climbs.
     const { speed, loft, spin } = throwParams(power);
-    this.ball.throwTo(from, target, speed, loft, spin);
+    this.ball.throwTo(from, aim, speed, loft, spin);
     this.passThrown = true;
     this.passTarget = receiver;
     from.animEvent = "pass";
@@ -1284,6 +1298,7 @@ export class LivePlayState implements GameState {
       this.resultDetail = this.buildResultDetail();
       this.quarterBeat();
       this.celebrateTeam(this.returnFor); // the takeaway unit celebrates
+      this.clockRunning = false; // a turnover stops the clock
       this.deadTimer = scored ? 2.6 : 1.8;
       this.deadElapsed = 0;
       this.endSpot = { x: spot.x, y: spot.y };
@@ -1336,6 +1351,10 @@ export class LivePlayState implements GameState {
       : type === "interception" || type === "fumbleLost" ? 1.8
       : type === "incomplete" ? 1.8 // let the throwaway read + receivers pull up, not an instant cut
       : 1.4;
+    // Clock management (real football): it keeps running between plays only when the ball was
+    // downed inbounds (a run/tackle/sack); it stops on incompletions, out-of-bounds and scores.
+    this.clockRunning = (type === "tackle" || type === "sack") &&
+      spot.y > this.app.field.minY + 4 && spot.y < this.app.field.maxY - 4;
     this.deadElapsed = 0;
     this.endSpot = { x: spot.x, y: spot.y };
     this.regroupTargets = null;
@@ -1374,6 +1393,7 @@ export class LivePlayState implements GameState {
     // on the play and then the broadcast play-call comes up as an overlay (commitOutcome), with
     // the field still living behind it. The hold respects an in-progress ragdoll tackle.
     const busy = this.holdForRagdoll && this.app.scene3d.ragdollsBusy();
+    if (this.clockRunning) this.app.match.tickClock(dt); // clock runs on after an inbounds play
     for (const p of this.all) p.step(dt, 0); // coast to a stop / lie tackled / celebrate in place
     this.ball.update(dt);
     this.spawnFireFx();
@@ -1408,6 +1428,7 @@ export class LivePlayState implements GameState {
    */
   private updatePlayCall(dt: number): void {
     const m = this.app.match;
+    if (this.clockRunning) m.tickClock(dt); // a running clock keeps ticking through the huddle
     this.playCallT = Math.min(1, this.playCallT + dt * 3);
     for (const p of this.all) {
       if (!p.isDown) this.walkToRegroup(p, dt); // jog back to the huddle, then idle there
@@ -1566,6 +1587,7 @@ export class LivePlayState implements GameState {
       turbo: this.turbo,
       possessionLabel: this.phase === "presnap" ? this.preSnapLabel() : undefined,
       playClock: this.phase === "presnap" ? this.snapTimer : undefined,
+      minimal: this.phase === "live", // strip the board down during the snap
     });
 
     if (this.phase === "dead") {
