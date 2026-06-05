@@ -22,7 +22,7 @@ import { cpuOffensePlay, cpuDefensePlay } from "../ai/PlayCaller";
 import { KickoffState } from "./KickoffState";
 import { GameOverState } from "./GameOverState";
 
-type Phase = "presnap" | "live" | "dead" | "playcall" | "replay";
+type Phase = "presnap" | "live" | "dead" | "playcall" | "replay" | "struggle";
 
 // Pre-snap is player-controlled now; this is only a safety fallback so a play can't
 // hard-stall if the hike is never pressed.
@@ -34,6 +34,11 @@ const POSTPLAY_MAX = 9;
 const MIN_DEAD_LINGER = 0.7;
 /** Farthest a pass can travel (yards) — a deep ball, not a 90-yard heave. */
 const MAX_PASS_YARDS = 52;
+// Tecmo-style 1-on-1 tackle battle (quick-tap to break / make the tackle).
+const STRUGGLE_CHANCE = 0.5; // chance a qualifying 1-on-1 hit becomes a battle
+const STRUGGLE_TIME = 2.6;   // seconds before it resolves on whoever's ahead
+const STRUGGLE_TAP = 0.07;   // meter gained per mash
+const STRUGGLE_CPU = 0.2;    // meter drift per second toward the CPU's side
 /** Hold this long (s) to fully charge a bullet pass; a quick tap throws a lob. */
 const THROW_CHARGE_MAX = 0.5;
 /** Hold the ACTION button this long (s) as a ball carrier to dive instead of juke. */
@@ -127,6 +132,14 @@ export class LivePlayState implements GameState {
   private deadFocus: Vec2 | null = null;
   /** Cooldown between CPU big hits so the defense doesn't spam hit-sticks. */
   private cpuBigHitCd = 0;
+  /** 1-on-1 tackle battle (mash to break / make the tackle). */
+  private struggleCarrier: Player | null = null;
+  private struggleTackler: Player | null = null;
+  private struggleVal = 0.5; // 0 = tackle made, 1 = carrier breaks free
+  private struggleTimer = 0;
+  private struggleHumanCarrier = false;
+  private struggleCd = 0;    // cooldown so battles don't chain
+  private struggleFlash = 0; // mash feedback pulse
   /** Instant replay: records the play, then plays it back with scrub + zoom + ball-cam. */
   private readonly replay = new ReplaySystem();
   private replayT = 0;          // current replay time (s)
@@ -230,6 +243,9 @@ export class LivePlayState implements GameState {
     this.holdForRagdoll = false;
     this.ragdollFocus = null;
     this.cpuBigHitCd = 0;
+    this.struggleCd = 0;
+    this.struggleCarrier = null;
+    this.struggleTackler = null;
     this.replay.clear(); // start a fresh recording for this down
     this.cpu.reset(); // fresh QB read each down (the state persists across the drive)
     this.isReturn = false;
@@ -311,9 +327,14 @@ export class LivePlayState implements GameState {
       this.updateReplay(dt);
       return;
     }
+    if (this.phase === "struggle") {
+      this.updateStruggle(dt);
+      return;
+    }
 
     this.playTime += dt;
     m.tickClock(dt);
+    if (this.struggleCd > 0) this.struggleCd -= dt;
 
     const ctx = this.context();
     this.handleHumanControl(dt);
@@ -405,7 +426,9 @@ export class LivePlayState implements GameState {
     const m = this.app.match;
     this.trackRagdolls(); // glue ragdolling players to their physics hips before we frame them
     const busy = this.holdForRagdoll && this.app.scene3d.ragdollsBusy();
-    const focus = busy && this.ragdollFocus
+    const focus = this.phase === "struggle" && this.struggleCarrier && this.struggleTackler
+      ? { x: (this.struggleCarrier.pos.x + this.struggleTackler.pos.x) / 2, y: (this.struggleCarrier.pos.y + this.struggleTackler.pos.y) / 2 }
+      : busy && this.ragdollFocus
       ? this.ragdollFocus.pos // stay on the body being driven into the ground
       : this.phase === "playcall" && this.huddleCenter
         ? this.huddleCenter // ease onto the offense huddle while the call is up
@@ -1052,6 +1075,10 @@ export class LivePlayState implements GameState {
         continue;
       }
 
+      // Tecmo-style 1-on-1 battle: occasionally a clean 1-on-1 hit with the human involved
+      // becomes a quick-tap struggle to break / make the tackle.
+      if (this.shouldStruggle(d, carrier)) { this.startStruggle(d, carrier); return; }
+
       const closing = Math.hypot(d.vel.x - carrier.vel.x, d.vel.y - carrier.vel.y);
       const hitStick = d.bigHitArmed && d.diveTimer > 0; // a committed big hit connected
       const big = hitStick || d.turbo || d.diveTimer > 0 || closing > 150;
@@ -1065,6 +1092,102 @@ export class LivePlayState implements GameState {
 
       this.doTackle(d, carrier, big, closing, hitStick);
       return;
+    }
+  }
+
+  /** Should this 1-on-1 hit become a quick-tap battle? Only when the human is one of the two and
+   *  no other defender is in on it (a real one-on-one in the open). */
+  private shouldStruggle(tackler: Player, carrier: Player): boolean {
+    if (this.struggleCd > 0) return false;
+    if (this.controlled !== carrier && this.controlled !== tackler) return false;
+    if (carrier.diveTimer > 0 || tackler.bigHitArmed || tackler.diveTimer > 0) return false;
+    if (this.defendersNear(carrier, 50) > 1) return false; // must be one-on-one
+    return chance(STRUGGLE_CHANCE);
+  }
+
+  /** Lock the carrier + tackler into a mash battle. */
+  private startStruggle(tackler: Player, carrier: Player): void {
+    this.phase = "struggle";
+    this.struggleCarrier = carrier;
+    this.struggleTackler = tackler;
+    this.struggleVal = 0.5;
+    this.struggleTimer = STRUGGLE_TIME;
+    this.struggleHumanCarrier = this.controlled === carrier;
+    this.struggleFlash = 0;
+    carrier.vel = { x: 0, y: 0 };
+    tackler.vel = { x: 0, y: 0 };
+    const ang = Math.atan2(carrier.pos.y - tackler.pos.y, carrier.pos.x - tackler.pos.x) || 0;
+    this.faceStruggler(tackler, ang);
+    this.faceStruggler(carrier, ang + Math.PI);
+    this.app.scene3d.hitZoom(STRUGGLE_TIME + 0.4); // punch the camera in on the battle
+    this.app.audio.hit(0.4);
+    this.app.shake.add(0.2);
+    this.app.input.consumeTaps();
+  }
+
+  private faceStruggler(p: Player, ang: number): void {
+    p.heading = ang;
+    p.facing = ang;
+    p.loco.heading = ang;
+    p.loco.speed = 0;
+    p.loco.speed01 = 0;
+    p.loco.moveRel = 0;
+    p.loco.gait = "idle";
+    p.loco.down = false;
+    p.loco.contact = false;
+  }
+
+  private updateStruggle(dt: number): void {
+    const c = this.struggleCarrier;
+    const t = this.struggleTackler;
+    if (!c || !t) { this.phase = "live"; return; }
+    this.struggleTimer -= dt;
+    this.struggleFlash = Math.max(0, this.struggleFlash - dt * 4);
+
+    // Any tap (or the action button) is a mash.
+    const mashes = this.app.input.consumeTaps().length + (this.app.input.actionPressed ? 1 : 0);
+    if (mashes > 0) this.struggleFlash = 1;
+    const humanPush = mashes * STRUGGLE_TAP;
+    const cpuPush = STRUGGLE_CPU * dt;
+    // The carrier drives the meter toward 1 (break free); the tackler toward 0 (tackle).
+    this.struggleVal += this.struggleHumanCarrier ? humanPush - cpuPush : cpuPush - humanPush;
+    this.struggleVal = Math.max(0, Math.min(1, this.struggleVal));
+
+    // Jostle + lean so the two read as actually wrestling.
+    const j = 1.4;
+    c.pos.x += (Math.random() - 0.5) * j; c.pos.y += (Math.random() - 0.5) * j;
+    t.pos.x += (Math.random() - 0.5) * j; t.pos.y += (Math.random() - 0.5) * j;
+    c.leanTarget = -0.5; t.leanTarget = 0.5;
+    if (Math.random() < 0.25) this.app.particles.burst((c.pos.x + t.pos.x) / 2, (c.pos.y + t.pos.y) / 2, "#d9c7a0", 2, 50);
+
+    if (this.struggleVal >= 1 || (this.struggleTimer <= 0 && this.struggleVal >= 0.5)) { this.resolveStruggle(true); return; }
+    if (this.struggleVal <= 0 || this.struggleTimer <= 0) { this.resolveStruggle(false); return; }
+    this.syncScene(dt);
+  }
+
+  private resolveStruggle(carrierWon: boolean): void {
+    const c = this.struggleCarrier!;
+    const t = this.struggleTackler!;
+    this.struggleCarrier = null;
+    this.struggleTackler = null;
+    this.struggleCd = 2.0;
+    c.leanTarget = 0;
+    t.leanTarget = 0;
+    this.phase = "live";
+    if (carrierWon) {
+      c.jukeTimer = 0.5; // brief immunity so he actually escapes
+      const burst = c.baseSpeed * 0.95;
+      c.vel.x = this.dir * burst;
+      c.vel.y *= 0.4;
+      t.knockDown(0.95);
+      this.lastBreak = this.playTime;
+      this.app.particles.burst(c.pos.x, c.pos.y, "#bfffd0", 10, 120);
+      this.app.audio.juke();
+      this.app.shake.add(0.3);
+      this.app.floating.add("BROKE FREE!", c.pos.x, c.pos.y - 22, { size: 26, color: "#bfffd0" });
+    } else {
+      this.app.floating.add(this.struggleHumanCarrier ? "STUFFED!" : "TACKLE!", (c.pos.x + t.pos.x) / 2, c.pos.y - 22, { size: 24, color: "#ffd23a" });
+      this.doTackle(t, c, true, 200);
     }
   }
 
@@ -1670,6 +1793,13 @@ export class LivePlayState implements GameState {
     // FX and UI are drawn on the transparent 2D overlay above the 3D scene.
     const project = this.project;
     app.particles.render(r, project);
+
+    // 1-on-1 tackle battle UI over the locked combatants.
+    if (this.phase === "struggle") {
+      app.floating.render(r, project);
+      this.renderStruggle(r);
+      return;
+    }
     this.renderPassHints(r);
     this.renderThrowMeter(r);
     app.floating.render(r, project);
@@ -1693,6 +1823,54 @@ export class LivePlayState implements GameState {
       app.input.setLayout(this.controls.computeLayout(r));
       this.controls.render(r, app.input, this.controlLabels());
     }
+  }
+
+  /** Tecmo-style tug-of-war UI: a meter the human fills by mashing, with a TAP prompt + timer. */
+  private renderStruggle(r: Renderer): void {
+    const ctx = r.ctx;
+    const W = r.width;
+    const cx = W / 2;
+    const y = r.height * 0.3;
+    const carrierWins = this.struggleHumanCarrier;
+    const carrierCol = this.struggleCarrier ? `#${this.colorFor(this.struggleCarrier).jersey.toString(16).padStart(6, "0")}` : "#1fd17a";
+    const tacklerCol = this.struggleTackler ? `#${this.colorFor(this.struggleTackler).jersey.toString(16).padStart(6, "0")}` : "#e23b3b";
+
+    // Prompt.
+    r.text(carrierWins ? "BREAK THE TACKLE!" : "MAKE THE TACKLE!", cx, y - 34, { size: 24, align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display });
+
+    // Tug bar: left = tackler, right = carrier; the divider sits at struggleVal.
+    const bw = Math.min(440, W - 56);
+    const bx = cx - bw / 2;
+    const bh = 34;
+    const div = bx + bw * this.struggleVal;
+    ctx.save();
+    roundRect(ctx, bx - 3, y - 3, bw + 6, bh + 6, 10);
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fill();
+    ctx.fillStyle = tacklerCol;
+    roundRect(ctx, bx, y, div - bx, bh, 8);
+    ctx.fill();
+    ctx.fillStyle = carrierCol;
+    roundRect(ctx, div, y, bx + bw - div, bh, 8);
+    ctx.fill();
+    // Divider handle + flash on mash.
+    ctx.globalAlpha = 0.6 + 0.4 * this.struggleFlash;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(div - 3, y - 6, 6, bh + 12);
+    ctx.restore();
+    r.text("TACKLER", bx + 4, y + bh + 14, { size: 11, color: COLORS.ash, baseline: "middle", font: FONT.ui });
+    r.text("CARRIER", bx + bw - 4, y + bh + 14, { size: 11, align: "right", color: COLORS.ash, baseline: "middle", font: FONT.ui });
+
+    // Timer bar.
+    const tf = Math.max(0, this.struggleTimer / STRUGGLE_TIME);
+    ctx.fillStyle = "rgba(255,255,255,0.18)";
+    ctx.fillRect(bx, y - 12, bw, 4);
+    ctx.fillStyle = COLORS.hazard;
+    ctx.fillRect(bx, y - 12, bw * tf, 4);
+
+    // Mash prompt (pulsing).
+    const pulse = 0.5 + 0.5 * Math.sin(this.playTime * 22);
+    r.text("TAP!  TAP!  TAP!", cx, y + bh + 44, { size: 22 + pulse * 6, align: "center", color: COLORS.hazard, baseline: "middle", alpha: 0.7 + 0.3 * this.struggleFlash, font: FONT.display });
   }
 
   /** The "▶ REPLAY" button shown after a play (top-left, clear of the result banner + cards). */
