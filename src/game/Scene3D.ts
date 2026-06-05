@@ -858,6 +858,9 @@ export class Scene3D {
   private physics: PhysicsWorld | null = null;
   private readonly ballGroup = new THREE.Group();
   private readonly ballMesh: THREE.Mesh;
+  /** Glowing comet trail behind a thrown ball (sprite pool placed along recent positions). */
+  private readonly ballTrail: THREE.Sprite[] = [];
+  private readonly ballTrailHist: THREE.Vector3[] = [];
   private readonly losMarker: THREE.Object3D;
   private readonly firstDownMarker: THREE.Object3D;
   /** Pulsing glow-wall meshes for the LOS / first-down lines (animated each frame). */
@@ -955,6 +958,17 @@ export class Scene3D {
     this.ballGroup.add(this.ballMesh, ballShadow);
     this.ballGroup.visible = false;
     this.scene.add(this.ballGroup);
+
+    // Comet trail: a short pool of additive sprites laid along the ball's recent flight path.
+    const trailTex = makeMoteTexture();
+    for (let i = 0; i < 14; i++) {
+      const s = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: trailTex, color: 0xffdca0, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }),
+      );
+      s.visible = false;
+      this.ballTrail.push(s);
+      this.scene.add(s);
+    }
 
     this.losMarker = this.buildMarker(0x4aa0ff); // bright blue line of scrimmage
     this.firstDownMarker = this.buildMarker(0xffe24a); // bright yellow first-down line
@@ -1159,6 +1173,31 @@ export class Scene3D {
       if (a[i + 2] < loZ) a[i + 2] = hiZ; else if (a[i + 2] > hiZ) a[i + 2] = loZ;
     }
     p.needsUpdate = true;
+  }
+
+  /** Lay the comet-trail sprites along the ball's recent flight path; clear it when not airborne. */
+  private tickBallTrail(airborne: boolean): void {
+    if (!airborne) {
+      if (this.ballTrailHist.length) {
+        this.ballTrailHist.length = 0;
+        for (const s of this.ballTrail) { s.visible = false; (s.material as THREE.SpriteMaterial).opacity = 0; }
+      }
+      return;
+    }
+    // Push the freshest ball position to the front, cap the history at the pool size.
+    this.ballTrailHist.unshift(this.ballCur.clone());
+    if (this.ballTrailHist.length > this.ballTrail.length) this.ballTrailHist.pop();
+    for (let i = 0; i < this.ballTrail.length; i++) {
+      const s = this.ballTrail[i];
+      const h = this.ballTrailHist[i];
+      if (!h) { s.visible = false; continue; }
+      s.visible = true;
+      s.position.copy(h);
+      const f = 1 - i / this.ballTrail.length; // brightest/biggest near the ball
+      (s.material as THREE.SpriteMaterial).opacity = f * 0.55;
+      const sc = 0.35 + f * 0.5;
+      s.scale.set(sc, sc, sc);
+    }
   }
 
   /** One stand: ad board at field level + two raked seating tiers + a roof line. */
@@ -1509,6 +1548,7 @@ export class Scene3D {
         this.ballMesh.rotation.set(this.ballRoll, Math.atan2(ball.vel.x, ball.vel.y), this.ballRoll * 0.6);
       }
     }
+    this.tickBallTrail(ball.state === "inAir");
 
     this.losMarker.position.x = opts.losX * U;
     this.firstDownMarker.position.x = opts.firstDownX * U;
