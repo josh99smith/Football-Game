@@ -11,9 +11,11 @@ import {
   FIELD_GOAL_POINTS,
 } from "../Match";
 import { PX_PER_YARD } from "../Field";
+import { OFFENSE_PLAYS, DEFENSE_PLAYS } from "../Playbook";
 import { KickoffState } from "./KickoffState";
 import { PlaySelectState } from "./PlaySelectState";
 import { GameOverState } from "./GameOverState";
+import { LivePlayState } from "./LivePlayState";
 
 export type KickKind = "fg" | "pat" | "punt";
 
@@ -164,17 +166,22 @@ export class SpecialTeamsState implements GameState {
     if (m.isOver) { this.app.audio.stopCrowd(); this.app.setState(new GameOverState(this.app)); return; }
 
     if (k === "punt") {
-      // Ball travels downfield from the spot; opponent takes over where it's fielded (a live
-      // return slots in here later). A shank is short and angled; a clean punt nets more.
+      // Ball travels downfield from the spot; the receiving team fields it and runs it back live.
+      // A shank is short and angled; a clean punt nets more. A kick into the end zone is a
+      // touchback (no return) — the receiver just starts at its own 20.
       const dir = m.attackDir(kicking);
       const grossYd = 32 + this.power * 30 - (this.good ? 0 : 16);
       let landX = this.opts.spotX + dir * grossYd * PX_PER_YARD;
       const ownGoal = m.attackGoalX(receiver); // receiver's own goal line = kicking team's target
-      // Don't bury it through the end zone — that's a touchback to the 20.
       const intoEndzone = dir > 0 ? landX >= ownGoal : landX <= ownGoal;
-      if (intoEndzone) landX = m.ownYardX(receiver, 20);
-      m.startSeries(receiver, clampX(landX));
-      this.app.setState(new PlaySelectState(this.app));
+      if (intoEndzone) {
+        m.startSeries(receiver, m.ownYardX(receiver, 20));
+        this.app.setState(new PlaySelectState(this.app));
+        return;
+      }
+      landX = clampX(landX);
+      m.possession = receiver;
+      this.app.setState(new LivePlayState(this.app, OFFENSE_PLAYS[0], DEFENSE_PLAYS[0], { receiver, ballX: landX }));
       return;
     }
 

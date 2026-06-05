@@ -26,6 +26,12 @@ import { FourthDownState } from "./FourthDownState";
 
 type Phase = "presnap" | "live" | "dead" | "playcall" | "replay" | "struggle";
 
+/** Config for a live kickoff / punt return: who's receiving and where they field the ball. */
+export interface KickReturnSetup {
+  receiver: "HOME" | "AWAY";
+  ballX: number;
+}
+
 // Pre-snap is player-controlled now; this is only a safety fallback so a play can't
 // hard-stall if the hike is never pressed.
 const PRESNAP_TIME = 20;
@@ -165,7 +171,9 @@ export class LivePlayState implements GameState {
   /** A live turnover return is underway (the AI roles are flipped; the defense escorts/runs). */
   private isReturn = false;
   private returnFor: "HOME" | "AWAY" | null = null;
-  private returnKind: "interception" | "fumble" = "interception";
+  private returnKind: "interception" | "fumble" | "kick" = "interception";
+  /** When set, this state launches a live kickoff/punt return instead of a scrimmage down. */
+  private kickReturnSetup: KickReturnSetup | null = null;
   /** A fumble is on the ground, live, waiting to be recovered. */
   private looseBall = false;
   private looseTimer = 0;
@@ -178,10 +186,11 @@ export class LivePlayState implements GameState {
   private pendingTackle: { type: OutcomeType; spot: Vec2 } | null = null;
   private pendingTackleTimer = 0;
 
-  constructor(app: GameApp, offensePlay: OffensePlay, defensePlay: DefensePlay) {
+  constructor(app: GameApp, offensePlay: OffensePlay, defensePlay: DefensePlay, kickReturn?: KickReturnSetup) {
     this.app = app;
     this.offensePlay = offensePlay;
     this.defensePlay = defensePlay;
+    this.kickReturnSetup = kickReturn ?? null;
     this.cpu = new CPUOffense(app.match.difficulty);
   }
 
@@ -194,7 +203,71 @@ export class LivePlayState implements GameState {
     this.app.input.setLayout(this.controls.computeLayout(this.app.r));
     this.app.audio.startCrowd();
     if (import.meta.env.DEV) (window as unknown as { __live: LivePlayState }).__live = this;
-    this.armPlay(this.offensePlay, this.defensePlay);
+    if (this.kickReturnSetup) this.armKickReturn(this.kickReturnSetup);
+    else this.armPlay(this.offensePlay, this.defensePlay);
+  }
+
+  /**
+   * Build a live kickoff / punt return: the receiving team fields the ball with a returner +
+   * a wall of blockers, the kicking team sprints down in coverage. It starts live (no snap) and
+   * reuses the whole carrier/pursuit/tackle pipeline — a tackle spots the ball for the receiving
+   * team's drive, breaking it to the house is a return touchdown.
+   */
+  private armKickReturn(setup: KickReturnSetup): void {
+    const m = this.app.match;
+    const receiver = setup.receiver;
+    const kicking = m.opponent(receiver);
+    this.offenseTeamId = receiver;
+    this.humanIsOffense = receiver === m.humanTeam;
+    this.dir = m.attackDir(receiver);
+    const cy = this.app.field.maxY / 2;
+    const ballX = setup.ballX;
+    this.startLosX = ballX;
+    // Park the yard markers on the spot so there's no stray line at midfield during the return.
+    m.losX = ballX;
+    m.firstDownX = ballX;
+
+    // Returner + blockers (the receiving team) and the coverage unit (the kicking team).
+    const returner = new Player(receiver, "HB", 28, ballX, cy);
+    returner.job = "run";
+    const blockers: Player[] = [];
+    const bl = [-14, -6, 2, 10];
+    bl.forEach((latYd, i) => {
+      const b = new Player(receiver, i % 2 === 0 ? "WR" : "OL", 80 + i, ballX + this.dir * (10 + i * 4) * PX_PER_YARD, cy + latYd * PX_PER_YARD);
+      b.job = "block";
+      blockers.push(b);
+    });
+    const cover: Player[] = [];
+    const cl = [-18, -9, 0, 9, 18];
+    cl.forEach((latYd, i) => {
+      const c = new Player(kicking, i === 2 ? "LB" : "DB", 20 + i, ballX + this.dir * (26 + (i % 2) * 8) * PX_PER_YARD, cy + latYd * PX_PER_YARD);
+      cover.push(c);
+    });
+
+    this.offense = [returner, ...blockers];
+    this.defense = cover;
+    this.all = [...this.offense, ...this.defense];
+    for (const p of this.all) { p.home = { x: p.pos.x, y: p.pos.y }; p.facing = p.team === receiver ? (this.dir > 0 ? 0 : Math.PI) : (this.dir > 0 ? Math.PI : 0); p.heading = p.facing; }
+    this.qb = null;
+    this.ball.attachTo(returner);
+
+    this.resetPerPlay();
+    // Override the scrimmage defaults: this is a live return from frame one.
+    this.phase = "live";
+    this.isReturn = true;
+    this.returnFor = receiver;
+    this.returnKind = "kick";
+    this.passThrown = true;
+    this.sackPossible = false;
+    this.snapTimer = 0;
+
+    if (this.controlled) this.controlled.controlled = false;
+    this.controlled = this.humanIsOffense ? returner : this.nearestDefenderToBall();
+    if (this.controlled) this.controlled.controlled = true;
+
+    this.app.scene3d.resetAvatars();
+    this.app.scene3d.snapCamera(returner.pos.x, returner.pos.y, this.dir);
+    this.app.audio.whistle();
   }
 
   /** Build a fresh down for the given call against the current match state, then go pre-snap.
@@ -225,7 +298,17 @@ export class LivePlayState implements GameState {
     this.controlled = this.humanIsOffense ? this.qb : this.nearestDefenderToBall();
     if (this.controlled) this.controlled.controlled = true;
 
-    // Per-play state (reset every down since the state is reused across the drive).
+    this.resetPerPlay();
+
+    // Break the huddle: scatter players off their spots so they walk to the line.
+    this.setupPreSnap();
+
+    this.app.scene3d.resetAvatars();
+    if (this.qb) this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir);
+  }
+
+  /** Reset all per-play/down bookkeeping (shared by scrimmage downs and kick returns). */
+  private resetPerPlay(): void {
     this.phase = "presnap";
     this.snapTimer = PRESNAP_TIME;
     this.preSnapReady = false;
@@ -259,12 +342,6 @@ export class LivePlayState implements GameState {
     this.looseBall = false;
     this.looseTimer = 0;
     this.clockRunning = false;
-
-    // Break the huddle: scatter players off their spots so they walk to the line.
-    this.setupPreSnap();
-
-    this.app.scene3d.resetAvatars();
-    if (this.qb) this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir);
   }
 
   /** DEV-only: force the ball carrier to be tackled by the nearest defender (headless tests). */
@@ -1476,6 +1553,36 @@ export class LivePlayState implements GameState {
     this.passTarget = null;
     this.looseBall = false;
     const m = this.app.match;
+
+    // A kickoff / punt return ending: a return TD scores; otherwise the receiving team simply
+    // begins its drive at the spot (NOT a turnover — they always had the ball coming).
+    if (this.returnKind === "kick" && this.isReturn && this.returnFor) {
+      const scored = type === "touchdown";
+      if (scored) {
+        this.playResult = m.returnResult(this.returnFor, spot.x, true);
+      } else {
+        const spotX = Math.max(LEFT_GOAL_X, Math.min(RIGHT_GOAL_X, spot.x));
+        m.startSeries(this.returnFor, spotX);
+        this.playResult = { scored: false, changedPossession: false, kickoff: false };
+      }
+      this.pendingOutcome = {
+        type: scored ? "touchdown" : "tackle",
+        ballX: spot.x, ballY: spot.y, possessionAfter: this.returnFor,
+        yards: 0, firstDown: false,
+        headline: scored ? "RETURN TD!" : "RETURN",
+      };
+      this.resultDetail = this.buildResultDetail();
+      this.quarterBeat();
+      if (scored) this.celebrateTeam(this.returnFor);
+      this.clockRunning = false;
+      this.deadTimer = scored ? 2.6 : 1.4;
+      this.deadElapsed = 0;
+      this.endSpot = { x: spot.x, y: spot.y };
+      this.regroupTargets = null;
+      this.deadFocus = { x: spot.x, y: spot.y };
+      this.app.input.consumeTaps();
+      return;
+    }
 
     // A turnover RETURN ending: the returning team scores or takes over at the spot. (Handled
     // separately because the play's offense/defense were flipped while the return was live.)
