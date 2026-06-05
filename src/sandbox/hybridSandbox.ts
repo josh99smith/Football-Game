@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { loadCharacter, type CharacterAsset } from "../game/CharacterModel";
+import { PhysicsWorld } from "../physics/PhysicsWorld";
+import { TackleRagdoll } from "../physics/TackleRagdoll";
 
 /**
  * Hybrid sandbox — the animation+physics combination, built and tuned in isolation before
@@ -90,8 +92,16 @@ async function main(): Promise<void> {
   const model = asset.template;
   model.scale.setScalar(asset.scale);
   model.position.y = asset.groundOffset * asset.scale;
-  model.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true; });
+  model.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh) { m.castShadow = true; m.frustumCulled = false; } // bones leave the box when ragdolled
+  });
   scene.add(model);
+
+  // Physics ragdoll for tackles (built to match this rig's skeleton).
+  const physics = await PhysicsWorld.create();
+  const ragdoll = new TackleRagdoll(physics);
+  ragdoll.bind(model);
 
   const mixer = new THREE.AnimationMixer(model);
   const c = asset.clips;
@@ -115,17 +125,43 @@ async function main(): Promise<void> {
   applyLocomotion();
 
   const skeleton = dumpSkeleton(model);
-  msg.textContent = `character loaded — ${skeleton.length} bones\nclips: ${Object.entries(c).filter(([, v]) => v).map(([k]) => k).join(", ")}\n[1/2/3] idle/walk/run`;
+
+  // --- tackle: animation -> ragdoll -> settle ---
+  let ragdolled = false;
+  // Impulses are N·s (kg·m/s): a hard hit shoves the torso a few m/s, not 15. The defender
+  // comes from front-left, knocking the carrier back (+z), up (+y), and aside (+x).
+  function triggerTackle(vel = [0, 0, 2], impulse = [22, 32, 48]): void {
+    if (ragdolled) return;
+    model.updateWorldMatrix(true, true); // freeze the live animated pose
+    ragdoll.spawn(new THREE.Vector3(...vel), new THREE.Vector3(...impulse));
+    ragdolled = true; // mixer paused; bodies now drive the bones
+  }
+  function reset(): void {
+    if (ragdolled) { ragdoll.dispose(); ragdolled = false; }
+    speed = 0; applyLocomotion(); // back to idle stance
+  }
+
+  function setMsg(): void {
+    msg.textContent =
+      `character — ${skeleton.length} bones, ${Object.entries(c).filter(([, v]) => v).length} clips\n` +
+      `[1/2/3] idle/walk/run   [T] tackle   [R] reset\n` +
+      `state: ${ragdolled ? "RAGDOLL (physics)" : "animation"}`;
+  }
+  setMsg();
   window.addEventListener("keydown", (e) => {
     if (e.key === "1") { speed = 0; applyLocomotion(); }
     if (e.key === "2") { speed = 0.5; applyLocomotion(); }
     if (e.key === "3") { speed = 1; applyLocomotion(); }
+    if (e.key === "t" || e.key === "T") triggerTackle();
+    if (e.key === "r" || e.key === "R") reset();
+    setMsg();
   });
 
   // Dev handle for scripted/headless testing.
   (window as unknown as { __hybrid: unknown }).__hybrid = {
-    THREE, scene, camera, model, mixer, actions,
+    THREE, scene, camera, model, mixer, actions, physics, ragdoll,
     setSpeed: (s: number) => { speed = s; applyLocomotion(); },
+    triggerTackle, reset, isRagdolled: () => ragdolled,
     skeleton,
   };
 
@@ -135,13 +171,42 @@ async function main(): Promise<void> {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
+  // Follow camera so the falling body stays framed.
+  const hips = ragdoll.getBone("Hips");
+  const camFocus = new THREE.Vector3(0, 1.0, 0);
+  const _fp = new THREE.Vector3();
+  function updateCamera(): void {
+    if (hips) hips.getWorldPosition(_fp); else _fp.set(0, 1, 0);
+    _fp.y = Math.max(0.4, _fp.y);
+    camFocus.lerp(_fp, 0.12);
+    camera.position.set(camFocus.x + 2.8, camFocus.y + 1.2, camFocus.z + 3.6);
+    camera.lookAt(camFocus);
+  }
+
   const clock = new THREE.Clock();
   function frame(): void {
     requestAnimationFrame(frame);
-    mixer.update(clock.getDelta());
+    const dt = clock.getDelta();
+    if (ragdolled) {
+      physics.step();      // passive ragdoll falls under gravity + contact
+      ragdoll.drive();     // bodies drive the skinned mesh bones
+    } else {
+      mixer.update(dt);    // animation-driven
+    }
+    updateCamera();
     renderer.render(scene, camera);
   }
   requestAnimationFrame(frame);
+
+  // Deterministic stepping for faithful headless capture (real-time dt destabilises physics
+  // during slow screenshot loops — same lesson as the motion sandbox).
+  (window as unknown as { __hybrid: { stepFixed?: (n: number) => void } }).__hybrid.stepFixed = (n: number) => {
+    for (let i = 0; i < (n || 1); i++) {
+      if (ragdolled) { physics.step(); ragdoll.drive(); } else { mixer.update(1 / 60); }
+    }
+    updateCamera();
+    renderer.render(scene, camera);
+  };
 }
 
 main().catch((e) => {
