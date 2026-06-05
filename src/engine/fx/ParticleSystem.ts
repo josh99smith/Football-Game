@@ -110,18 +110,18 @@ export class ParticleSystem {
           drag: 1.2, gravity: -10, shrink: 2.6, soft: true,
         });
       } else {
-        // Flame tongue: hot white/yellow core or an orange/red body; rises fast and tapers.
+        // Flame tongue: hot white/yellow core or an orange/red body; rises and tapers.
         const hot = r < 0.52;
-        const life = rand(0.28, 0.55);
+        const life = rand(0.24, 0.46);
         this.spawn({
-          x: x + rand(-7, 7) * scale, y: y + rand(-4, 4) * scale, h: rand(0, 8),
-          vx: rand(-11, 11), vy: rand(-11, 11), vh: rand(130, 220) * (0.7 + 0.5 * scale),
+          x: x + rand(-5, 5) * scale, y: y + rand(-3, 3) * scale, h: rand(0, 6),
+          vx: rand(-8, 8), vy: rand(-8, 8), vh: rand(110, 170) * (0.7 + 0.4 * scale),
           life, maxLife: life,
-          size: (hot ? rand(7, 11) : rand(12, 18)) * scale,
+          size: (hot ? rand(4, 7) : rand(7, 11)) * scale,
           color: hot
-            ? (Math.random() < 0.5 ? "#fff4c2" : "#ffd23a")
-            : (Math.random() < 0.5 ? "#ff7b1e" : "#ff3210"),
-          drag: 1.4, gravity: -55, glow: true, shrink: 0.32,
+            ? (Math.random() < 0.5 ? "#ffe9a8" : "#ffc41e")
+            : (Math.random() < 0.5 ? "#ff7b1e" : "#ff4513"),
+          drag: 1.5, gravity: -45, glow: true, shrink: 0.34,
         });
       }
     }
@@ -130,14 +130,14 @@ export class ParticleSystem {
   /** A hot ember/flame trail streaming off a sprinting player (TURBO). */
   trail(x: number, y: number): void {
     const hot = Math.random() < 0.4;
-    const life = rand(0.22, 0.46);
+    const life = rand(0.2, 0.4);
     this.spawn({
-      x: x + rand(-4, 4), y: y + rand(-4, 4), h: rand(6, 20),
-      vx: rand(-14, 14), vy: rand(-14, 14), vh: rand(40, 95),
+      x: x + rand(-3, 3), y: y + rand(-3, 3), h: rand(5, 16),
+      vx: rand(-10, 10), vy: rand(-10, 10), vh: rand(35, 80),
       life, maxLife: life,
-      size: hot ? rand(3, 5) : rand(5, 9),
-      color: hot ? "#fff4c2" : (Math.random() < 0.5 ? "#ff9b2e" : "#ff5a1e"),
-      drag: 2, gravity: -34, glow: true, shrink: 0.3,
+      size: hot ? rand(2, 4) : rand(4, 6),
+      color: hot ? "#ffe9a8" : (Math.random() < 0.5 ? "#ff9b2e" : "#ff5a1e"),
+      drag: 2.2, gravity: -30, glow: true, shrink: 0.3,
     });
   }
 
@@ -211,7 +211,8 @@ export class ParticleSystem {
       if (!s.visible) continue;
       const t = p.life / p.maxLife;
       const sz = p.size * (p.shrink != null ? p.shrink + (1 - p.shrink) * t : 1);
-      ctx.globalAlpha = p.soft ? Math.sin(Math.PI * (1 - t)) : Math.max(0, Math.min(1, t));
+      // Slightly under 1 so stacked additive glows don't blow out to a solid white blob.
+      ctx.globalAlpha = (p.soft ? Math.sin(Math.PI * (1 - t)) : Math.max(0, Math.min(1, t))) * 0.7;
       const spr = this.glowSprite(p.color);
       ctx.drawImage(spr, s.x - sz, s.y - sz, sz * 2, sz * 2);
     }
