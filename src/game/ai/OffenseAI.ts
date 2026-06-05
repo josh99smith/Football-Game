@@ -38,27 +38,39 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
         break;
       }
       case "route": {
+        const cover = nearestDefenderTo(ctx, o.pos);
+        const coverD = cover ? dist(o.pos, cover.pos) : Infinity;
         if (o.routeIndex < o.route.length) {
           const wp = o.route[o.routeIndex];
+          const d = dist(o.pos, wp);
           steer = seek(o.pos, wp);
-          if (dist(o.pos, wp) < ROUTE_REACH) {
+          // Sprint down the stem; gather into the break, then burst out of it (a crisp cut the
+          // DB reacts late to). Open up extra hard if a defender is draped on the cut.
+          o.turbo = d > 30 || o.cutTimer > 0;
+          if (d < ROUTE_REACH) {
             o.routeIndex++;
-            o.cutTimer = 0.5; // sharp break: burst open while the DB reacts late
+            o.cutTimer = coverD < 50 ? 0.55 : 0.4;
           }
         } else {
-          // Route finished: work to open grass away from the nearest defender,
+          // Route finished: separate from the nearest defender and keep working to open grass,
           // continuing downfield so the QB has somewhere to lead the throw.
-          const cover = nearestDefenderTo(ctx, o.pos);
-          if (cover && dist(o.pos, cover.pos) < 90) {
-            const away = Math.sign(o.pos.y - cover.pos.y) || (o.pos.y < ctx.losX ? 1 : -1);
-            steer = { x: ctx.dir * 0.5, y: away };
-            if (dist(o.pos, cover.pos) < 40) o.cutTimer = 0.3; // shake free
+          if (cover && coverD < 95) {
+            // Break to the open side (away from the defender's leverage) while pressing downfield.
+            const away = Math.sign(o.pos.y - cover.pos.y) || 1;
+            steer = { x: ctx.dir * 0.55, y: away };
+            o.turbo = true;
+            if (coverD < 42) o.cutTimer = 0.3; // shake free
           } else {
-            steer = { x: ctx.dir * 0.5, y: 0 };
+            // Uncovered: drive into the open space downfield (give the QB a clean window).
+            steer = { x: ctx.dir * 0.7, y: 0 };
+            o.turbo = false;
           }
         }
-        // Push hard out of breaks to create separation.
-        o.turbo = o.cutTimer > 0;
+        // Scramble drill: if the QB has taken off, mirror toward his side to stay a live outlet.
+        if (ctx.carrier && ctx.carrier.role === "QB" && pastLine(ctx.carrier, ctx)) {
+          steer = addSteer(steer, { x: 0, y: Math.sign(ctx.carrier.pos.y - o.pos.y) || 1 }, 0.5);
+          o.turbo = true;
+        }
         break;
       }
       case "run":
@@ -106,6 +118,11 @@ function assignBlocks(ctx: PlayContext, carrierRunning: boolean): void {
     }
     if (taken.size === blockers.length) break;
   }
+}
+
+/** Has the player crossed the line of scrimmage toward the offense's goal? */
+function pastLine(p: Player, ctx: PlayContext): boolean {
+  return ctx.dir > 0 ? p.pos.x > ctx.losX + 4 : p.pos.x < ctx.losX - 4;
 }
 
 function nearestDefenderTo(ctx: PlayContext, point: Vec2): Player | null {

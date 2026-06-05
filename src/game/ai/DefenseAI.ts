@@ -114,24 +114,24 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
           break;
         }
         case "cover": {
-          // Break on the ball once it's in the air.
+          // Break hard on the ball once it's in the air (jump the route).
           if (ball.state === "inAir") {
             steer = seek(d.pos, ball.target);
             d.turbo = true;
             break;
           }
           if (d.assignment && !d.assignment.isDown) {
-            // Trail the receiver, staying a touch toward our own goal (downfield).
-            const lead = pursue(d.pos, d.assignment, 0.12);
-            const cushion = {
-              x: d.assignment.pos.x + ctx.dir * 14,
-              y: d.assignment.pos.y,
-            };
-            steer = addSteer(lead, seek(d.pos, cushion), 0.5);
+            const a = d.assignment;
+            // Mirror the receiver, anticipating their movement, with a small goal-side cushion
+            // so we keep leverage instead of trailing. Sprint to recover if we've lost a step.
+            const lead = pursue(d.pos, a, 0.2);
+            const cushion = { x: a.pos.x + ctx.dir * 10, y: a.pos.y };
+            steer = addSteer(lead, seek(d.pos, cushion), 0.6);
+            d.turbo = dist2(d.pos, a.pos) > 38 * 38; // glued unless beaten, then chase
           } else if (qb) {
             steer = seek(d.pos, qb.pos);
+            d.turbo = false;
           }
-          d.turbo = false;
           break;
         }
         case "spy": {
@@ -145,10 +145,17 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
           break;
         }
         case "zone": {
+          // Break on the ball in the air like everyone else.
+          if (ball.state === "inAir") {
+            steer = seek(d.pos, ball.target);
+            d.turbo = true;
+            break;
+          }
           const anchor = d.zonePoint ?? d.home;
-          // Break on the nearest threat entering the zone, else hold.
+          // Drive on the nearest threat entering the zone, else settle on the spot.
           const threat = nearestOffenseTo(ctx, anchor, 150);
           steer = threat ? seek(d.pos, threat.pos) : seek(d.pos, anchor);
+          d.turbo = threat != null && dist2(d.pos, threat.pos) > 70 * 70;
           break;
         }
         default:
