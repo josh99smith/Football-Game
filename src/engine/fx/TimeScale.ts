@@ -15,6 +15,16 @@ export class TimeScale {
   private btEaseDur = 1;
   private btScale = 1;
 
+  /** Snap back to full speed immediately, clearing any freeze / slow-mo / bullet-time. */
+  reset(): void {
+    this.freezeTimer = 0;
+    this.slowTimer = 0;
+    this.slowAmount = 1;
+    this.btHold = 0;
+    this.btEase = 0;
+    this.value = 1;
+  }
+
   /** Hard freeze for `seconds`, then resume normal time. */
   freeze(seconds: number): void {
     this.freezeTimer = Math.max(this.freezeTimer, seconds);
