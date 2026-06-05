@@ -13,7 +13,8 @@ import { chooseTarget, resolveAir } from "../Passing";
 import { HUD } from "../../ui/HUD";
 import { TouchControls, type ControlLabels } from "../../ui/TouchControls";
 import { FONT, COLORS } from "../../ui/Theme";
-import { drawPanel } from "../../ui/widgets";
+import { drawPanel, drawButton, tappedIn, type Rect } from "../../ui/widgets";
+import { ReplaySystem } from "../ReplaySystem";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
 import type { Match, PlayOutcome, OutcomeType } from "../Match";
 import { PlayCallOverlay } from "../../ui/PlayCallOverlay";
@@ -21,7 +22,7 @@ import { cpuOffensePlay, cpuDefensePlay } from "../ai/PlayCaller";
 import { KickoffState } from "./KickoffState";
 import { GameOverState } from "./GameOverState";
 
-type Phase = "presnap" | "live" | "dead" | "playcall";
+type Phase = "presnap" | "live" | "dead" | "playcall" | "replay";
 
 // Pre-snap is player-controlled now; this is only a safety fallback so a play can't
 // hard-stall if the hike is never pressed.
@@ -126,6 +127,19 @@ export class LivePlayState implements GameState {
   private deadFocus: Vec2 | null = null;
   /** Cooldown between CPU big hits so the defense doesn't spam hit-sticks. */
   private cpuBigHitCd = 0;
+  /** Instant replay: records the play, then plays it back with scrub + zoom + ball-cam. */
+  private readonly replay = new ReplaySystem();
+  private replayT = 0;          // current replay time (s)
+  private replayPlaying = true;
+  private replayZoom = 0.45;    // 0 wide .. 1 tight
+  private replayFrom: Phase = "dead"; // phase to return to when the replay closes
+  // UI hit-rects (set in render, read in update — one-frame lag is fine).
+  private replayBtn: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  private rcClose: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  private rcPlay: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  private rcZoomIn: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  private rcZoomOut: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  private rcSlider: Rect = { x: 0, y: 0, w: 0, h: 0 };
   /** Whether the game clock keeps running between plays (after an inbounds run/tackle) — it
    *  stops on incompletions, out-of-bounds, scores and turnovers, just like real football. */
   private clockRunning = false;
@@ -216,6 +230,7 @@ export class LivePlayState implements GameState {
     this.holdForRagdoll = false;
     this.ragdollFocus = null;
     this.cpuBigHitCd = 0;
+    this.replay.clear(); // start a fresh recording for this down
     this.cpu.reset(); // fresh QB read each down (the state persists across the drive)
     this.isReturn = false;
     this.returnFor = null;
@@ -290,6 +305,10 @@ export class LivePlayState implements GameState {
     }
     if (this.phase === "playcall") {
       this.updatePlayCall(dt);
+      return;
+    }
+    if (this.phase === "replay") {
+      this.updateReplay(dt);
       return;
     }
 
@@ -412,6 +431,11 @@ export class LivePlayState implements GameState {
       shakeY: this.app.shake.offsetY,
       dt,
     });
+
+    // Record the play (the snap through the post-whistle settle) for instant replay.
+    if (this.phase === "live" || this.phase === "dead") {
+      this.replay.record(this.all, this.ball, (p) => this.colorFor(p));
+    }
   }
 
   private colorFor(p: Player): { jersey: number; trim: number; onFire: boolean; defense: boolean } {
@@ -1420,7 +1444,12 @@ export class LivePlayState implements GameState {
     // deliberate tap can skip ahead, but only after a brief minimum linger — so input from the
     // play itself (a tap-throw, a held action button) can't instantly cut the post-play. We
     // drain taps every frame regardless, and the action button is NOT a skip (it's gameplay).
-    const tapped = this.app.input.consumeTaps().length > 0;
+    const taps = this.app.input.consumeTaps();
+    if (this.replay.available && taps.some((t) => tappedIn(this.replayBtn, [t]))) {
+      this.enterReplay();
+      return;
+    }
+    const tapped = taps.length > 0;
     const beatDone = this.deadTimer <= 0 && !busy;
     const skipped = tapped && this.deadElapsed >= MIN_DEAD_LINGER;
     if (beatDone || skipped || this.deadElapsed >= POSTPLAY_MAX) {
@@ -1428,6 +1457,68 @@ export class LivePlayState implements GameState {
       return;
     }
     this.syncScene(dt);
+  }
+
+  /** Open the instant replay (from the post-play beat or the play-call overlay). */
+  private enterReplay(): void {
+    if (!this.replay.available) return;
+    this.replayFrom = this.phase === "playcall" ? "playcall" : "dead";
+    this.phase = "replay";
+    this.replayT = 0;
+    this.replayPlaying = true;
+    this.app.scene3d.resetAvatars(); // clear any ragdoll so the ghosts animate cleanly
+    this.app.input.consumeTaps();
+  }
+
+  private exitReplay(): void {
+    this.phase = this.replayFrom;
+    this.app.scene3d.resetAvatars();
+    this.app.input.consumeTaps();
+  }
+
+  private scrubTime(x: number, dur: number): number {
+    const f = (x - this.rcSlider.x) / Math.max(1, this.rcSlider.w);
+    return Math.max(0, Math.min(1, f)) * dur;
+  }
+
+  /** Play back the recorded play: scrub with the slider, zoom in/out, camera tracks the ball. */
+  private updateReplay(dt: number): void {
+    const input = this.app.input;
+    const dur = this.replay.duration;
+
+    const taps = input.consumeTaps();
+    for (const t of taps) {
+      if (tappedIn(this.rcClose, [t])) { this.exitReplay(); return; }
+      if (tappedIn(this.rcPlay, [t])) {
+        if (this.replayT >= dur - 0.02) this.replayT = 0;
+        this.replayPlaying = !this.replayPlaying;
+      } else if (tappedIn(this.rcZoomIn, [t])) this.replayZoom = Math.min(1, this.replayZoom + 0.25);
+      else if (tappedIn(this.rcZoomOut, [t])) this.replayZoom = Math.max(0, this.replayZoom - 0.25);
+      else if (tappedIn(this.rcSlider, [t])) { this.replayT = this.scrubTime(t.x, dur); this.replayPlaying = false; }
+    }
+    // Drag anywhere along the slider band to scrub.
+    const d = input.drag;
+    if (d && this.rcSlider.w > 0 &&
+        d.x > this.rcSlider.x - 24 && d.x < this.rcSlider.x + this.rcSlider.w + 24 &&
+        d.y > this.rcSlider.y - 36 && d.y < this.rcSlider.y + this.rcSlider.h + 36) {
+      this.replayT = this.scrubTime(d.x, dur);
+      this.replayPlaying = false;
+    }
+
+    if (this.replayPlaying) {
+      this.replayT += dt;
+      if (this.replayT >= dur) { this.replayT = dur; this.replayPlaying = false; }
+    }
+    this.replayT = Math.max(0, Math.min(dur, this.replayT));
+
+    const fr = this.replay.sample(this.replayT);
+    this.app.scene3d.sync({
+      players: fr.players, ball: fr.ball, colorFor: fr.colorFor,
+      focusX: fr.focusX, focusY: fr.focusY, dir: this.dir,
+      losX: this.startLosX, firstDownX: this.app.match.firstDownX,
+      shakeX: 0, shakeY: 0, dt,
+    });
+    this.app.scene3d.replayCam(fr.focusX, fr.focusY, this.dir, this.replayZoom);
   }
 
   /** Open the between-downs play-call as a broadcast overlay over the still-live field. */
@@ -1456,7 +1547,12 @@ export class LivePlayState implements GameState {
     this.ball.update(dt);
     this.spawnFireFx();
 
-    const pick = this.playCall.pick(this.app.input.consumeTaps());
+    const taps = this.app.input.consumeTaps();
+    if (this.replay.available && taps.some((t) => tappedIn(this.replayBtn, [t]))) {
+      this.enterReplay();
+      return;
+    }
+    const pick = this.playCall.pick(taps);
     if (pick) {
       this.app.audio.uiConfirm();
       // The human picks their side; the CPU calls the opposing play situationally.
@@ -1560,9 +1656,13 @@ export class LivePlayState implements GameState {
     const r = app.r;
     const m = app.match;
 
-    // The 3D field + players are drawn to the WebGL canvas; sync happens in update().
-    // `alpha` is the fixed-step remainder used to interpolate body/ball/camera motion.
     app.scene3d.render(alpha);
+
+    // Replay takes over the screen with its own clean broadcast UI.
+    if (this.phase === "replay") {
+      this.renderReplay(r);
+      return;
+    }
 
     // FX and UI are drawn on the transparent 2D overlay above the 3D scene.
     const project = this.project;
@@ -1580,14 +1680,73 @@ export class LivePlayState implements GameState {
 
     if (this.phase === "dead") {
       this.renderResultBanner(r);
+      this.renderReplayButton(r);
     } else if (this.phase === "playcall") {
       // Broadcast-style call over the live field (players jogging back to the huddle behind it).
       this.renderResultBanner(r, false);
+      this.renderReplayButton(r);
       this.playCall.render(r, { alpha: this.playCallT });
     } else {
       app.input.setLayout(this.controls.computeLayout(r));
       this.controls.render(r, app.input, this.controlLabels());
     }
+  }
+
+  /** The "▶ REPLAY" button shown after a play (top-left, clear of the result banner + cards). */
+  private renderReplayButton(r: Renderer): void {
+    if (!this.replay.available) { this.replayBtn = { x: 0, y: 0, w: 0, h: 0 }; return; }
+    const w = Math.min(132, r.width * 0.3);
+    this.replayBtn = { x: 12, y: 56, w, h: 38 };
+    drawButton(r, this.replayBtn, "▶ REPLAY", { fill: COLORS.concrete, accent: COLORS.hazard, size: 15 });
+  }
+
+  /** The instant-replay overlay: scrub slider, play/pause, zoom, close, and a time/zoom readout. */
+  private renderReplay(r: Renderer): void {
+    const ctx = r.ctx;
+    const W = r.width;
+    const H = r.height;
+    const dur = this.replay.duration || 1;
+
+    // Top bar: title + REPLAY tag + close.
+    ctx.save();
+    ctx.fillStyle = "rgba(8,10,14,0.55)";
+    ctx.fillRect(0, 0, W, 46);
+    ctx.restore();
+    r.text("INSTANT REPLAY", W / 2, 16, { size: 16, align: "center", color: COLORS.hazard, baseline: "top", font: FONT.display });
+    this.rcClose = { x: W - 56, y: 8, w: 44, h: 32 };
+    drawButton(r, this.rcClose, "✕", { fill: COLORS.blood, size: 18 });
+
+    // Zoom buttons (right side).
+    const zb = 44;
+    this.rcZoomIn = { x: W - zb - 12, y: H * 0.4, w: zb, h: zb };
+    this.rcZoomOut = { x: W - zb - 12, y: H * 0.4 + zb + 10, w: zb, h: zb };
+    drawButton(r, this.rcZoomIn, "+", { fill: COLORS.concrete, size: 24 });
+    drawButton(r, this.rcZoomOut, "–", { fill: COLORS.concrete, size: 24 });
+
+    // Bottom transport: play/pause + scrub slider.
+    const by = H - 56;
+    this.rcPlay = { x: 14, y: by - 6, w: 56, h: 48 };
+    drawButton(r, this.rcPlay, this.replayPlaying ? "❚❚" : "▶", { fill: COLORS.concrete, accent: COLORS.hazard, size: 18 });
+
+    const sx = 84;
+    const sw = W - sx - 14 - zb - 16;
+    const sliderY = by + 14;
+    this.rcSlider = { x: sx, y: sliderY, w: sw, h: 14 };
+    // Track + progress + handle.
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.18)";
+    roundRect(ctx, sx, sliderY, sw, 6, 3);
+    ctx.fill();
+    const frac = Math.max(0, Math.min(1, this.replayT / dur));
+    ctx.fillStyle = COLORS.hazard;
+    roundRect(ctx, sx, sliderY, sw * frac, 6, 3);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(sx + sw * frac, sliderY + 3, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    r.text(`${this.replayT.toFixed(1)}s / ${dur.toFixed(1)}s`, sx, sliderY - 16, { size: 12, color: COLORS.ash, baseline: "bottom", font: FONT.ui });
   }
 
   /** On-field result banner during the post-play beat (replaces the old banner screen). */
@@ -1750,6 +1909,17 @@ export class LivePlayState implements GameState {
 /** Convert a "#rrggbb" CSS color to a numeric hex for Three.js materials. */
 function hexNum(css: string): number {
   return parseInt(css.replace("#", ""), 16);
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  const rr = Math.min(r, h / 2, w / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
 }
 
 function pickHitWord(): string {

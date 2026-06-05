@@ -1179,6 +1179,24 @@ export class Scene3D {
     }
   }
 
+  /**
+   * Replay camera: a cinematic chase that tracks the ball, with user zoom (0 = wide overview,
+   * 1 = tight). Set directly (no follow lerp) so scrubbing the timeline doesn't smear.
+   */
+  replayCam(focusX: number, focusY: number, dir: number, zoom: number): void {
+    const z = Math.max(0, Math.min(1, zoom));
+    const wx = focusX * U;
+    const wz = focusY * U;
+    const back = 15 - 8.5 * z; // closer as you zoom in
+    const high = 9.5 - 4.5 * z; // lower angle when zoomed in, higher overview when out
+    this.camPos.set(wx - dir * back, high, wz);
+    this.camLook.set(wx + dir * 1.5, 1.0, wz);
+    this.camPosPrev.copy(this.camPos);
+    this.camPosCur.copy(this.camPos);
+    this.camLookPrev.copy(this.camLook);
+    this.camLookCur.copy(this.camLook);
+  }
+
   snapCamera(focusX: number, focusY: number, dir: number): void {
     this.cine = 0; // a fresh play never starts mid hit-zoom
     this.cineHold = 0;

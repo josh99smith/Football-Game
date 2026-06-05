@@ -158,8 +158,16 @@ export class Input {
     this.keys.delete(e.key.toLowerCase());
   };
 
+  /** Live position of a currently-held pointer (any), or null — used for dragging UI like the
+   *  replay scrub slider. */
+  drag: Vec2 | null = null;
+
   /** Resolve intent for this frame. Call once per frame, before game logic reads input. */
   update(): void {
+    // Surface any held pointer's live position for drag UI.
+    this.drag = null;
+    for (const ptr of this.pointers.values()) { this.drag = { x: ptr.x, y: ptr.y }; break; }
+
     const R = this.layout.joystick.r || 56;
     let mx = 0;
     let my = 0;
