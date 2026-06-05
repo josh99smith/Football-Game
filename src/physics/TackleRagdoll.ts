@@ -31,6 +31,7 @@ interface SegDef {
   m: number; // mass (kg)
   sw?: number; // soft swing (cone) limit vs parent, radians — how far it can bend from rest
   tw?: number; // soft twist limit about the bone axis, radians — stops the candy-wrapper
+  fixed?: boolean; // weld rigidly to the parent (wrists/ankles: no twist -> no skin pinch)
 }
 
 // Major segments of the body, parents before children (drive order depends on it).
@@ -41,18 +42,18 @@ const SEGS: SegDef[] = [
   { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.09, m: 4.5, sw: 0.7, tw: 0.6 },
   { name: "thighL", top: "LeftUpLeg", bot: "LeftLeg", drives: "LeftUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
   { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
-  { name: "footL", top: "LeftFoot", bot: "LeftToe_End", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1, sw: 0.7, tw: 0.4 },
+  { name: "footL", top: "LeftFoot", bot: "LeftToe_End", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1, fixed: true },
   { name: "thighR", top: "RightUpLeg", bot: "RightLeg", drives: "RightUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
   { name: "shinR", top: "RightLeg", bot: "RightFoot", drives: "RightLeg", parent: "thighR", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
-  { name: "footR", top: "RightFoot", bot: "RightToe_End", drives: "RightFoot", parent: "shinR", r: 0.05, m: 1, sw: 0.7, tw: 0.4 },
+  { name: "footR", top: "RightFoot", bot: "RightToe_End", drives: "RightFoot", parent: "shinR", r: 0.05, m: 1, fixed: true },
   // Forearms end at the wrist; the hands get their own bodies (below) so they collide with
   // the ground instead of poking through it.
   { name: "uarmL", top: "LeftArm", bot: "LeftForeArm", drives: "LeftArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.5, tw: 0.7 },
   { name: "farmL", top: "LeftForeArm", bot: "LeftHand", drives: "LeftForeArm", parent: "uarmL", r: 0.045, m: 1.5, sw: 1.6, tw: 0.3 },
   { name: "uarmR", top: "RightArm", bot: "RightForeArm", drives: "RightArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.5, tw: 0.7 },
   { name: "farmR", top: "RightForeArm", bot: "RightHand", drives: "RightForeArm", parent: "uarmR", r: 0.045, m: 1.5, sw: 1.6, tw: 0.3 },
-  { name: "handL", top: "LeftHand", bot: "LeftHandMiddle3", drives: "LeftHand", parent: "farmL", r: 0.04, m: 0.5, sw: 0.6, tw: 0.4 },
-  { name: "handR", top: "RightHand", bot: "RightHandMiddle3", drives: "RightHand", parent: "farmR", r: 0.04, m: 0.5, sw: 0.6, tw: 0.4 },
+  { name: "handL", top: "LeftHand", bot: "LeftHandMiddle3", drives: "LeftHand", parent: "farmL", r: 0.04, m: 0.5, fixed: true },
+  { name: "handR", top: "RightHand", bot: "RightHandMiddle3", drives: "RightHand", parent: "farmR", r: 0.04, m: 0.5, fixed: true },
 ];
 
 interface Seg extends SegDef {
@@ -211,12 +212,21 @@ export class TackleRagdoll {
       // Neutral relative orientation at spawn (the pose the soft limits measure deviation from).
       seg.qRelRest.copy(quatOf(parent.body)).invert().multiply(quatOf(seg.body));
       this.bone(seg.top).getWorldPosition(_a); // joint world pos
+      // _q becomes childBodyQ^-1, _q2 becomes parentBodyQ^-1 (reused as the fixed-joint frames).
       const aChild = _b.copy(_a).sub(seg.center).applyQuaternion(_q.copy(quatOf(seg.body)).invert());
       const aParent = _c.copy(_a).sub(parent.center).applyQuaternion(_q2.copy(quatOf(parent.body)).invert());
-      const data = R.JointData.spherical(
-        { x: aParent.x, y: aParent.y, z: aParent.z },
-        { x: aChild.x, y: aChild.y, z: aChild.z },
-      );
+      // Wrists/ankles are welded rigid (fixed joint) so they can't twist and pinch the mesh;
+      // everything else is a ball joint with soft cone+twist limits. Frames = the bodies'
+      // inverse rotations, so the weld preserves the spawn relative pose.
+      const data = seg.fixed
+        ? R.JointData.fixed(
+            { x: aParent.x, y: aParent.y, z: aParent.z }, { x: _q2.x, y: _q2.y, z: _q2.z, w: _q2.w },
+            { x: aChild.x, y: aChild.y, z: aChild.z }, { x: _q.x, y: _q.y, z: _q.z, w: _q.w },
+          )
+        : R.JointData.spherical(
+            { x: aParent.x, y: aParent.y, z: aParent.z },
+            { x: aChild.x, y: aChild.y, z: aChild.z },
+          );
       const joint = world.createImpulseJoint(data, parent.body, seg.body, true);
       // Adjacent segments share a joint and overlap there — don't let them collide.
       (joint as unknown as { setContactsEnabled?: (b: boolean) => void }).setContactsEnabled?.(false);
