@@ -29,6 +29,8 @@ const PRESNAP_TIME = 20;
 const MAX_PLAY_TIME = 16;
 /** Hard cap on the post-play beat so it can't hang if the player never taps. */
 const POSTPLAY_MAX = 9;
+/** Minimum post-play beat before a tap can skip to the play call (guarantees a post-play). */
+const MIN_DEAD_LINGER = 0.7;
 /** Hold this long (s) to fully charge a bullet pass; a quick tap throws a lob. */
 const THROW_CHARGE_MAX = 0.5;
 /** Hold the ACTION button this long (s) as a ball carrier to dive instead of juke. */
@@ -118,6 +120,8 @@ export class LivePlayState implements GameState {
   private endSpot: Vec2 = { x: 0, y: 0 };
   /** The offense huddle center — the camera subject between downs. */
   private huddleCenter: Vec2 | null = null;
+  /** Where the play finished (ball spot) — the camera subject during the post-play beat. */
+  private deadFocus: Vec2 | null = null;
   /** Broadcast play-call overlay shown over the live field between downs, with fade-in. */
   private playCall = new PlayCallOverlay();
   private playCallT = 0;
@@ -194,6 +198,7 @@ export class LivePlayState implements GameState {
     this.deadElapsed = 0;
     this.regroupTargets = null;
     this.huddleCenter = null;
+    this.deadFocus = null;
     this.ragdollIdx = [];
     this.holdForRagdoll = false;
     this.ragdollFocus = null;
@@ -361,13 +366,15 @@ export class LivePlayState implements GameState {
       ? this.ragdollFocus.pos // stay on the body being driven into the ground
       : this.phase === "playcall" && this.huddleCenter
         ? this.huddleCenter // ease onto the offense huddle while the call is up
-        : this.ball.carrier
-          ? this.ball.carrier.pos
-          : this.ball.state === "inAir"
-            ? this.ball.pos
-            : this.qb
-              ? this.qb.pos
-              : { x: this.startLosX, y: this.app.field.maxY / 2 };
+        : this.phase === "dead" && this.deadFocus
+          ? this.deadFocus // hold on where the play finished (incompletion / down spot)
+          : this.ball.carrier
+            ? this.ball.carrier.pos
+            : this.ball.state === "inAir"
+              ? this.ball.pos
+              : this.qb
+                ? this.qb.pos
+                : { x: this.startLosX, y: this.app.field.maxY / 2 };
     this.app.scene3d.sync({
       players: this.all,
       ball: this.ball,
@@ -1141,6 +1148,13 @@ export class LivePlayState implements GameState {
     this.deadElapsed = 0;
     this.endSpot = { x: spot.x, y: spot.y };
     this.regroupTargets = null;
+    // Hold the post-play camera on where the play actually finished (the ball — i.e. an
+    // incompletion at the catch point, or the spot of the down), not back on the QB.
+    const bs = this.ballSpot();
+    this.deadFocus = { x: bs.x, y: bs.y };
+    // Drain any stale taps so input from the play itself (e.g. a quick tap-throw leaves a tap in
+    // the buffer, since the live phase never consumes taps) can't instantly skip the post-play.
+    this.app.input.consumeTaps();
   }
 
   /** The line under the result headline, read from the applied match state. */
@@ -1172,11 +1186,14 @@ export class LivePlayState implements GameState {
     for (const p of this.all) p.step(dt, 0); // coast to a stop / lie tackled / celebrate in place
     this.ball.update(dt);
     this.spawnFireFx();
-    // A tap (or ACTION) skips the beat; otherwise it advances once the result has shown and any
-    // tackle has resolved. The hard cap is a safety so it can never hang on a stuck ragdoll.
-    const tapped = this.app.input.consumeTaps().length > 0 || this.app.input.actionPressed;
+    // The beat advances on its own once the result has shown and any tackle has resolved. A
+    // deliberate tap can skip ahead, but only after a brief minimum linger — so input from the
+    // play itself (a tap-throw, a held action button) can't instantly cut the post-play. We
+    // drain taps every frame regardless, and the action button is NOT a skip (it's gameplay).
+    const tapped = this.app.input.consumeTaps().length > 0;
     const beatDone = this.deadTimer <= 0 && !busy;
-    if (beatDone || tapped || this.deadElapsed >= POSTPLAY_MAX) {
+    const skipped = tapped && this.deadElapsed >= MIN_DEAD_LINGER;
+    if (beatDone || skipped || this.deadElapsed >= POSTPLAY_MAX) {
       this.commitOutcome();
       return;
     }
