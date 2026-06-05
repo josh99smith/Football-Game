@@ -21,6 +21,8 @@ import { PlayCallOverlay } from "../../ui/PlayCallOverlay";
 import { cpuOffensePlay, cpuDefensePlay } from "../ai/PlayCaller";
 import { KickoffState } from "./KickoffState";
 import { GameOverState } from "./GameOverState";
+import { SpecialTeamsState } from "./SpecialTeamsState";
+import { FourthDownState } from "./FourthDownState";
 
 type Phase = "presnap" | "live" | "dead" | "playcall" | "replay" | "struggle";
 
@@ -1800,10 +1802,19 @@ export class LivePlayState implements GameState {
     if (m.isOver) {
       this.app.audio.stopCrowd();
       this.app.setState(new GameOverState(this.app));
+    } else if (res.touchdown && res.scoringTeam) {
+      // A touchdown: run the extra-point try (its own special-teams beat), then the kickoff.
+      this.app.audio.stopCrowd();
+      const sp = m.attackGoalX(res.scoringTeam) - m.attackDir(res.scoringTeam) * 2 * PX_PER_YARD;
+      this.app.setState(new SpecialTeamsState(this.app, { kind: "pat", kicking: res.scoringTeam, spotX: sp }));
     } else if (res.kickoff && res.kickReceiver) {
       // A score is its own sequence (kickoff/return); cut to it.
       this.app.audio.stopCrowd();
       this.app.setState(new KickoffState(this.app, res.kickReceiver));
+    } else if (m.down === 4 && !res.changedPossession && !res.scored) {
+      // The offense faces 4th down: go for it, punt, or try a field goal.
+      this.app.audio.stopCrowd();
+      this.app.setState(new FourthDownState(this.app));
     } else {
       // Normal play-to-play (incl. turnovers on the field): stay mounted and bring up the
       // play-call as a broadcast overlay while players jog back to the huddle behind it.

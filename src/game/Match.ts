@@ -37,7 +37,21 @@ export interface PlayOutcome {
 export const FIRST_DOWN_YARDS = 30; // NFL Blitz: 30 yards to go
 export const TOUCHDOWN_POINTS = 6;
 export const PAT_POINTS = 1;
+export const TWO_POINT_POINTS = 2;
+export const FIELD_GOAL_POINTS = 3;
 export const SAFETY_POINTS = 2;
+const ENDZONE_FG_YARDS = 10; // uprights sit at the back of the 10-yard end zone
+
+/** What the game flow should do next after applying a play/kick result. */
+export interface OutcomeResult {
+  scored: boolean;
+  changedPossession: boolean;
+  kickoff: boolean;
+  /** A touchdown was scored — the flow runs the extra-point try before the kickoff. */
+  touchdown?: boolean;
+  scoringTeam?: TeamId;
+  kickReceiver?: TeamId;
+}
 
 /** Holds all game-flow / rules state for a single match. */
 export class Match {
@@ -136,22 +150,15 @@ export class Match {
    * Apply a finished play to the rules state. Returns flags telling the flow what
    * to do next (kickoff after score, or just spot the ball for the next snap).
    */
-  applyOutcome(o: PlayOutcome): {
-    scored: boolean;
-    changedPossession: boolean;
-    kickoff: boolean;
-    scoringTeam?: TeamId;
-    kickReceiver?: TeamId;
-  } {
+  applyOutcome(o: PlayOutcome): OutcomeResult {
     const offense = this.possession;
     const defense = this.opponent(offense);
 
     if (o.type === "touchdown") {
-      const t = this.team(offense);
-      t.score += TOUCHDOWN_POINTS + PAT_POINTS; // auto PAT for v1
+      this.team(offense).score += TOUCHDOWN_POINTS; // the extra-point try is its own beat now
       this.team(defense).extinguish(); // opponent scoring puts out their fire
-      // Scoring team kicks off; the team that was on defense receives.
-      return { scored: true, changedPossession: true, kickoff: true, scoringTeam: offense, kickReceiver: defense };
+      // The scoring team will try the PAT, then kick off; flag it for the special-teams flow.
+      return { scored: true, changedPossession: false, kickoff: false, touchdown: true, scoringTeam: offense, kickReceiver: defense };
     }
 
     if (o.type === "safety") {
@@ -198,21 +205,27 @@ export class Match {
    * The team that took the ball (`toTeam`) either scores a defensive TD, or takes over on a
    * fresh series at the spot they were tackled. Mirrors applyOutcome's result shape.
    */
-  returnResult(toTeam: TeamId, ballX: number, scored: boolean): {
-    scored: boolean;
-    changedPossession: boolean;
-    kickoff: boolean;
-    scoringTeam?: TeamId;
-    kickReceiver?: TeamId;
-  } {
+  returnResult(toTeam: TeamId, ballX: number, scored: boolean): OutcomeResult {
     const other = this.opponent(toTeam);
     if (scored) {
-      this.team(toTeam).score += TOUCHDOWN_POINTS + PAT_POINTS;
+      this.team(toTeam).score += TOUCHDOWN_POINTS;
       this.team(other).extinguish();
-      return { scored: true, changedPossession: true, kickoff: true, scoringTeam: toTeam, kickReceiver: other };
+      return { scored: true, changedPossession: false, kickoff: false, touchdown: true, scoringTeam: toTeam, kickReceiver: other };
     }
     this.startSeries(toTeam, clampToField(ballX));
     return { scored: false, changedPossession: true, kickoff: false };
+  }
+
+  /** Add raw points (extra point, two-point, field goal). */
+  addPoints(team: TeamId, n: number): void {
+    this.team(team).score += n;
+  }
+
+  /** Yards from the spot of the kick to the back of the target uprights (FG distance). */
+  fieldGoalYards(team: TeamId, losX: number): number {
+    const goalX = this.attackGoalX(team);
+    // The posts sit at the back of the end zone (~10yd past the goal line); add the ~7yd snap/hold.
+    return Math.round(Math.abs(goalX - losX) / PX_PER_YARD + ENDZONE_FG_YARDS + 7);
   }
 
   /** Run the play clock down, clamped at 0. The quarter is NOT advanced here — the

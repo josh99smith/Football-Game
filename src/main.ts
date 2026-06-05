@@ -10,7 +10,19 @@ const app = new GameApp(canvas, canvas3d);
 app.start(new MenuState(app));
 
 // Dev-only handle for headless/scripted testing (stripped from production builds).
-if (import.meta.env.DEV) (window as unknown as { __app: GameApp }).__app = app;
+if (import.meta.env.DEV) {
+  (window as unknown as { __app: GameApp }).__app = app;
+  // Expose special-teams states so scripted tests can jump straight into a kick / decision.
+  void Promise.all([
+    import("./game/states/SpecialTeamsState"),
+    import("./game/states/FourthDownState"),
+  ]).then(([st, fd]) => {
+    (window as unknown as { __states: unknown }).__states = {
+      SpecialTeamsState: st.SpecialTeamsState,
+      FourthDownState: fd.FourthDownState,
+    };
+  });
+}
 
 // Resume audio on the very first interaction (autoplay policy).
 const unlock = () => {
