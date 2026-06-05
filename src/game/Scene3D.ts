@@ -978,7 +978,9 @@ export class Scene3D {
     // the yard-line markers and big-hit FX bleed light), then tone-map + sRGB to the screen.
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.62, 0.7, 0.62);
+    // Restrained bloom: only genuine highlights (floodlights, on-fire glow, markers) bleed —
+    // a high threshold + modest strength keeps the scene crisp, not washed out.
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.3, 0.6, 0.85);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
@@ -1244,7 +1246,7 @@ export class Scene3D {
     g.add(pole);
     const bank = new THREE.Mesh(
       new THREE.BoxGeometry(5, 2.4, 0.6),
-      new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff0c0, emissiveIntensity: 2.6 }),
+      new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff0c0, emissiveIntensity: 1.6 }),
     );
     bank.position.set(0, 21, 0);
     // Aim the bank toward the field center.

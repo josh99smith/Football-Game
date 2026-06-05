@@ -35,7 +35,7 @@ const MIN_DEAD_LINGER = 0.7;
 /** Farthest a pass can travel (yards) — a deep ball, not a 90-yard heave. */
 const MAX_PASS_YARDS = 52;
 // Tecmo-style tackle battle (quick-tap to break / make the tackle).
-const STRUGGLE_CHANCE = 0.8; // chance a qualifying hit (human involved) becomes a battle
+const STRUGGLE_CHANCE = 0.28; // chance a qualifying hit (human involved) becomes a battle
 const STRUGGLE_TIME = 2.6;   // seconds before it resolves on whoever's ahead
 const STRUGGLE_TAP = 0.07;   // meter gained per mash
 const STRUGGLE_CPU = 0.2;    // meter drift per second toward the CPU's side
@@ -1193,7 +1193,7 @@ export class LivePlayState implements GameState {
     const t = this.struggleTackler!;
     this.struggleCarrier = null;
     this.struggleTackler = null;
-    this.struggleCd = 1.2;
+    this.struggleCd = 3.0; // long cooldown so battles don't chain across a single play
     c.leanTarget = 0;
     t.leanTarget = 0;
     this.phase = "live";
