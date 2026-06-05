@@ -160,7 +160,6 @@ export class LivePlayState implements GameState {
     this.app.scene3d.setVisible(true);
     this.app.input.setLayout(this.controls.computeLayout(this.app.r));
     this.app.audio.startCrowd();
-    this.showHint = !LivePlayState.hintShown;
     if (import.meta.env.DEV) (window as unknown as { __live: LivePlayState }).__live = this;
     this.armPlay(this.offensePlay, this.defensePlay);
   }
@@ -217,6 +216,7 @@ export class LivePlayState implements GameState {
     this.holdForRagdoll = false;
     this.ragdollFocus = null;
     this.cpuBigHitCd = 0;
+    this.cpu.reset(); // fresh QB read each down (the state persists across the drive)
     this.isReturn = false;
     this.returnFor = null;
     this.looseBall = false;
@@ -943,7 +943,10 @@ export class LivePlayState implements GameState {
       } else {
         p.step(dt, target, accelMul);
       }
+      // Keep everyone on the field: clamp to the sidelines and the back of the end zones (a TD
+      // is detected at the goal line, well before the back, so this never blocks a score).
       p.pos.y = this.app.field.clampY(p.pos.y);
+      p.pos.x = Math.max(this.app.field.minX, Math.min(this.app.field.maxX, p.pos.x));
     }
   }
 
@@ -1507,37 +1510,6 @@ export class LivePlayState implements GameState {
     this.regroupTargets = targets;
   }
 
-  /** Show the one-time controls hint on the first live play of the session. */
-  private static hintShown = false;
-  private showHint = false;
-
-  /** A fading, contextual controls hint shown once at the start of a session. */
-  private renderControlHint(r: Renderer): void {
-    if (!this.showHint) return;
-    // Fade out once the play has been live a few seconds, then retire it for good.
-    const fade = this.phase === "live" ? Math.max(0, 1 - (this.playTime - 2) / 2) : 1;
-    if (this.phase === "live" && this.playTime > 4) {
-      this.showHint = false;
-      LivePlayState.hintShown = true;
-      return;
-    }
-    const msg = this.humanIsOffense
-      ? "STICK: MOVE   ·   HOLD: PASS / TAP: JUKE   ·   TURBO: SPRINT"
-      : "STICK: MOVE   ·   TAP: SWITCH / TACKLE   ·   TURBO: SPRINT";
-    const ctx = r.ctx;
-    ctx.save();
-    ctx.letterSpacing = "1px";
-    r.text(msg, r.width / 2, r.height - 84, {
-      size: 13,
-      align: "center",
-      color: COLORS.bone,
-      baseline: "middle",
-      alpha: 0.85 * fade,
-      font: FONT.ui,
-    });
-    ctx.restore();
-  }
-
   private committed = false;
   private commitOutcome(): void {
     if (this.committed || !this.playResult) return;
@@ -1615,7 +1587,6 @@ export class LivePlayState implements GameState {
     } else {
       app.input.setLayout(this.controls.computeLayout(r));
       this.controls.render(r, app.input, this.controlLabels());
-      if (this.phase === "live" || this.phase === "presnap") this.renderControlHint(r);
     }
   }
 
