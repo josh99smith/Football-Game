@@ -14,8 +14,9 @@ export default defineConfig({
     // Three.js is a single ~500kb chunk; that's expected for a 3D game.
     chunkSizeWarningLimit: 1200,
     rollupOptions: {
-      // Multi-page: the game (index.html) + the standalone motion-engine sandbox.
-      input: { main: "index.html", motion: "motion.html" },
+      // Multi-page: the game (index.html), the physics sandbox (motion.html), and the
+      // animation+physics hybrid prototype (hybrid.html).
+      input: { main: "index.html", motion: "motion.html", hybrid: "hybrid.html" },
     },
   },
 });
