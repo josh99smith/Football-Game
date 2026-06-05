@@ -143,6 +143,7 @@ export class LivePlayState implements GameState {
   /** Instant replay: records the play, then plays it back with scrub + zoom + ball-cam. */
   private readonly replay = new ReplaySystem();
   private replayT = 0;          // current replay time (s)
+  private replayLastIdx = -1;   // last sampled frame, to detect a scrub/rewind jump
   private replayPlaying = true;
   private replayZoom = 0.45;    // 0 wide .. 1 tight
   private replayFrom: Phase = "dead"; // phase to return to when the replay closes
@@ -1590,6 +1591,7 @@ export class LivePlayState implements GameState {
     this.replayFrom = this.phase === "playcall" ? "playcall" : "dead";
     this.phase = "replay";
     this.replayT = 0;
+    this.replayLastIdx = -1;
     this.replayPlaying = true;
     this.replay.rewind();
     this.app.scene3d.resetAvatars(); // clear any ragdoll so the ghosts animate cleanly
@@ -1636,6 +1638,16 @@ export class LivePlayState implements GameState {
       if (this.replayT >= dur) { this.replayT = dur; this.replayPlaying = false; }
     }
     this.replayT = Math.max(0, Math.min(dur, this.replayT));
+
+    // A scrub/rewind jump can't drive live ragdoll physics, which only moves forward. If the
+    // timeline jumped backward (or skipped ahead), dispose any active ragdoll so the avatar
+    // renders the RECORDED pose at the new time instead of staying flopped; it re-spawns when
+    // forward playback reaches the tackle again.
+    const idx = Math.round(this.replayT * 60);
+    if ((idx < this.replayLastIdx || idx > this.replayLastIdx + 6) && this.app.scene3d.ragdollsBusy()) {
+      this.app.scene3d.resetAvatars();
+    }
+    this.replayLastIdx = idx;
 
     const fr = this.replay.sample(this.replayT);
     // When the replay reaches a tackle, re-spawn the physics ragdoll (instead of the canned clip)
