@@ -12,6 +12,7 @@ interface PlayerFrame {
   controlled: boolean;
   isDown: boolean;
   leanTarget: number;
+  anim: Player["animEvent"]; // one-shot (throw/catch/spin/tackle/...) fired on this frame, if any
   jersey: number;
   trim: number;
   onFire: boolean;
@@ -46,11 +47,18 @@ export class ReplaySystem {
   private frames: ReplayFrame[] = [];
   private readonly ghosts: GhostPlayer[] = [];
   private readonly ghostBall: GhostBall = makeGhostBall();
+  private lastIndex = -1; // last sampled frame, to fire one-shots only on forward playback
   /** ~13s cap so a long play can't grow the buffer without bound. */
   private readonly maxFrames = 800;
 
   clear(): void {
     this.frames.length = 0;
+    this.lastIndex = -1;
+  }
+
+  /** Call when (re)starting playback so one-shots fire from the top, not on a scrub jump. */
+  rewind(): void {
+    this.lastIndex = -1;
   }
 
   get frameCount(): number {
@@ -76,7 +84,7 @@ export class ReplaySystem {
       p.push({
         x: o.pos.x, y: o.pos.y,
         loco: { gait: l.gait, speed: l.speed, speed01: l.speed01, heading: l.heading, moveRel: l.moveRel, turnRate: l.turnRate, down: l.down, contact: l.contact, stumbling: l.stumbling },
-        hasBall: o.hasBall, controlled: o.controlled, isDown: o.isDown, leanTarget: o.leanTarget,
+        hasBall: o.hasBall, controlled: o.controlled, isDown: o.isDown, leanTarget: o.leanTarget, anim: o.animEvent,
         jersey: c.jersey, trim: c.trim, onFire: c.onFire, defense: c.defense, role: o.role, team: o.team,
       });
     }
@@ -93,6 +101,9 @@ export class ReplaySystem {
   sample(t: number): { players: Player[]; ball: Ball; colorFor: ColorFor; focusX: number; focusY: number } {
     const i = Math.max(0, Math.min(this.frames.length - 1, Math.round(t * 60)));
     const f = this.frames[i];
+    // Fire one-shot animations only when playing FORWARD (not when paused or scrubbing); scan the
+    // skipped frames so an event isn't missed if a couple of frames were stepped over.
+    const forward = i > this.lastIndex && i - this.lastIndex <= 5;
     while (this.ghosts.length < f.p.length) this.ghosts.push(makeGhostPlayer());
     for (let k = 0; k < f.p.length; k++) {
       const g = this.ghosts[k];
@@ -107,7 +118,13 @@ export class ReplaySystem {
       g.role = s.role;
       g.team = s.team;
       g.color = { jersey: s.jersey, trim: s.trim, onFire: s.onFire, defense: s.defense };
+      let anim: Player["animEvent"] = null;
+      if (forward) {
+        for (let j = i; j > this.lastIndex; j--) { const a = this.frames[j].p[k].anim; if (a) { anim = a; break; } }
+      }
+      g.animEvent = anim;
     }
+    this.lastIndex = i;
     const gb = this.ghostBall;
     gb.state = f.b.state;
     gb.pos.x = f.b.x;
@@ -143,7 +160,7 @@ interface GhostPlayer {
   controlled: boolean;
   isDown: boolean;
   leanTarget: number;
-  animEvent: null;
+  animEvent: Player["animEvent"];
   role: Player["role"];
   team: Player["team"];
   color: { jersey: number; trim: number; onFire: boolean; defense: boolean };

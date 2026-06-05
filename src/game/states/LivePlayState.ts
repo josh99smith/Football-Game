@@ -418,6 +418,13 @@ export class LivePlayState implements GameState {
               : this.qb
                 ? this.qb.pos
                 : { x: this.startLosX, y: this.app.field.maxY / 2 };
+
+    // Record the play for instant replay BEFORE sync — the avatar consumes (clears) animEvent, so
+    // we must snapshot the one-shot (throw/catch/spin/tackle) first.
+    if (this.phase === "live" || this.phase === "dead") {
+      this.replay.record(this.all, this.ball, (p) => this.colorFor(p));
+    }
+
     this.app.scene3d.sync({
       players: this.all,
       ball: this.ball,
@@ -431,11 +438,6 @@ export class LivePlayState implements GameState {
       shakeY: this.app.shake.offsetY,
       dt,
     });
-
-    // Record the play (the snap through the post-whistle settle) for instant replay.
-    if (this.phase === "live" || this.phase === "dead") {
-      this.replay.record(this.all, this.ball, (p) => this.colorFor(p));
-    }
   }
 
   private colorFor(p: Player): { jersey: number; trim: number; onFire: boolean; defense: boolean } {
@@ -1466,6 +1468,7 @@ export class LivePlayState implements GameState {
     this.phase = "replay";
     this.replayT = 0;
     this.replayPlaying = true;
+    this.replay.rewind();
     this.app.scene3d.resetAvatars(); // clear any ragdoll so the ghosts animate cleanly
     this.app.input.consumeTaps();
   }
@@ -1490,7 +1493,7 @@ export class LivePlayState implements GameState {
     for (const t of taps) {
       if (tappedIn(this.rcClose, [t])) { this.exitReplay(); return; }
       if (tappedIn(this.rcPlay, [t])) {
-        if (this.replayT >= dur - 0.02) this.replayT = 0;
+        if (this.replayT >= dur - 0.02) { this.replayT = 0; this.replay.rewind(); }
         this.replayPlaying = !this.replayPlaying;
       } else if (tappedIn(this.rcZoomIn, [t])) this.replayZoom = Math.min(1, this.replayZoom + 0.25);
       else if (tappedIn(this.rcZoomOut, [t])) this.replayZoom = Math.max(0, this.replayZoom - 0.25);
