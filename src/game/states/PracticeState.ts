@@ -10,7 +10,7 @@ import { LEFT_GOAL_X, PX_PER_YARD, FIELD_WIDTH, FIELD_LENGTH } from "../Field";
 import { dist, type Vec2 } from "../../engine/math/Vec2";
 import { MenuState } from "./MenuState";
 
-const DIR = 1; // offense attacks +X; camera + controls are oriented this way
+const OFF_DIR = 1; // the offense always attacks +X (the dummy runs this way)
 
 /**
  * Free-roam practice mode: run a ball carrier around the field to drill jukes/cuts, or switch
@@ -24,6 +24,7 @@ export class PracticeState implements GameState {
   private carrier!: Player;
   private ball = new Ball();
   private controlIdx = 0;        // which player the human drives (0 = carrier)
+  private dir = OFF_DIR;         // camera/control orientation: +1 on offense, -1 on defense
   private homeColor = 0xffd23a;
   private awayColor = 0xe23b3b;
   private tackledTimer = 0;       // >0 while a tackle cinematic plays out, then we reset
@@ -44,7 +45,8 @@ export class PracticeState implements GameState {
     this.buildPlayers();
     this.app.scene3d.setVisible(true);
     this.app.scene3d.resetAvatars();
-    this.app.scene3d.snapCamera(this.carrier.pos.x, this.carrier.pos.y, DIR);
+    this.dir = OFF_DIR;
+    this.app.scene3d.snapCamera(this.carrier.pos.x, this.carrier.pos.y, this.dir);
     this.app.input.setLayout(this.controls.computeLayout(this.app.r));
     this.app.audio.startCrowd();
   }
@@ -91,7 +93,7 @@ export class PracticeState implements GameState {
 
   private stickToField(): Vec2 {
     const m = this.app.input.move;
-    return { x: -m.y * DIR, y: m.x * DIR };
+    return { x: -m.y * this.dir, y: m.x * this.dir };
   }
 
   update(dt: number): void {
@@ -138,7 +140,7 @@ export class PracticeState implements GameState {
         // Uncontrolled ball carrier = the tackling dummy: stand a beat, then run downfield.
         this.dummyRunTimer += dt;
         if (this.dummyRunTimer < 1.4) { p.desired = { x: 0, y: 0 }; p.turbo = false; }
-        else { p.desired = { x: DIR, y: 0 }; p.turbo = true; }
+        else { p.desired = { x: OFF_DIR, y: 0 }; p.turbo = true; }
       } else {
         // A defender: pursue the ball carrier.
         const t = this.carrier.pos;
@@ -226,6 +228,11 @@ export class PracticeState implements GameState {
   private cycleControl(): void {
     this.controlIdx = (this.controlIdx + 1) % this.all.length;
     this.dummyRunTimer = 0; // a fresh dummy beat when we hand the ball to the AI
+    // Flip the camera to the controlled side's perspective (defense looks back at the carrier),
+    // snapping so it doesn't swing 180° across the field.
+    this.dir = this.controlIdx === 0 ? OFF_DIR : -OFF_DIR;
+    const c = this.all[this.controlIdx];
+    this.app.scene3d.snapCamera(c.pos.x, c.pos.y, this.dir);
     this.app.audio.uiTap();
   }
 
@@ -246,7 +253,7 @@ export class PracticeState implements GameState {
       }),
       focusX: c.pos.x,
       focusY: c.pos.y,
-      dir: DIR,
+      dir: this.dir,
       losX: LEFT_GOAL_X + 22 * PX_PER_YARD,
       firstDownX: LEFT_GOAL_X + 32 * PX_PER_YARD,
       shakeX: this.app.shake.offsetX,
