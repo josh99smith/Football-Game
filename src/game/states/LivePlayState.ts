@@ -902,8 +902,11 @@ export class LivePlayState implements GameState {
       // Glancing-hit stumble drains a beat of speed.
       if (p.isStumbling) mult *= 0.5;
       const target = p.speedFor(p.turbo || diving, onFire) * mult;
-      // The human-controlled player gets much snappier acceleration/turning.
-      const accelMul = p === this.controlled ? 2.3 : 1;
+      // The human-controlled player gets much snappier acceleration + sharper turning, so the
+      // stick feels responsive — easy to cut, reverse, and weave — while the AI stays grounded.
+      const human = p === this.controlled;
+      const accelMul = human ? 3.2 : 1;
+      p.agility = human ? 1.8 : 1;
       if (diving) {
         // Keep momentum during a dive (don't steer).
         p.step(dt, Math.hypot(p.vel.x, p.vel.y));

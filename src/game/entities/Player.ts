@@ -112,6 +112,8 @@ export class Player {
   contactVel: Vec2 = { x: 0, y: 0 };
   /** Glancing-hit stumble window. */
   stumbleTimer = 0;
+  /** Turn-rate multiplier (the human-controlled player turns/cuts more sharply than the AI). */
+  agility = 1;
   /** Juke/cut lean signal (-1..1), consumed by the avatar for an extra bank. */
   leanTarget = 0;
   /** One-shot animation trigger consumed by the renderer. */
@@ -238,7 +240,9 @@ export class Player {
       let d = target - this.heading;
       while (d > Math.PI) d -= Math.PI * 2;
       while (d < -Math.PI) d += Math.PI * 2;
-      const maxTurn = HEADING_TURN_RAD * (0.5 + 0.7 * (1 - speed01)) * dt;
+      // Turn faster when slow; the high-speed throttle is gentler now (0.75 vs 0.5) so cuts and
+      // reversals read quickly, and the human-controlled player (agility>1) carves sharper still.
+      const maxTurn = HEADING_TURN_RAD * this.agility * (0.75 + 0.6 * (1 - speed01)) * dt;
       this.heading += clamp(d, -maxTurn, maxTurn);
     }
     // Movement direction relative to where we're facing (drives fwd/back/strafe blend).
@@ -292,9 +296,10 @@ export class Player {
   /** Pick an acceleration rate: faster when decelerating / reversing for snappier control. */
   private brakeStep(v: number, target: number, baseA: number, moving: boolean): number {
     if (!moving) return baseA * 2.6; // no input: stop quickly
-    // Decelerating toward target (opposite sign or shrinking magnitude) gets more grip.
+    // Decelerating toward target (opposite sign or shrinking magnitude) gets a little extra grip
+    // so stops/cuts stay crisp — but not so much that changing direction feels sluggish.
     const decel = Math.sign(target - v) !== Math.sign(v) || Math.abs(target) < Math.abs(v);
-    return decel ? baseA * 1.9 : baseA;
+    return decel ? baseA * 1.5 : baseA;
   }
 
   knockDown(downSeconds = 1.1): void {
