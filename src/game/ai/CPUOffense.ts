@@ -45,40 +45,43 @@ export class CPUOffense {
     // QB has the ball.
     const qb = carrier;
     const pressure = nearestDefender(qb, ctx);
-    const pressured = pressure && distance(qb.pos, pressure.pos) < 42;
+    const pressDist = pressure ? distance(qb.pos, pressure.pos) : Infinity;
+    const behindLine = ctx.dir > 0 ? qb.pos.x < ctx.losX : qb.pos.x > ctx.losX;
+    const target = bestReceiver(ctx);
+    const openD = target ? nearestDefDist(target, ctx) : 0;
 
-    if (this.scrambling || (pressured && this.timer > 0.6)) {
+    // --- decide what to do with the ball (the QB shouldn't hold it and eat sacks) ---
+    if (!this.decided && behindLine) {
+      const scanned = this.timer > 0.7;          // let the routes develop before firing
+      const pressured = pressDist < 48;
+      const imminent = pressDist < 26;            // about to be sacked right now
+      if (scanned && target && (openD > 64 || this.timer >= this.patience)) {
+        // Fire to the open man the moment there's a window — or by the patience cap, throw it
+        // anyway rather than hold (a contested throw still beats a sack).
+        return this.fire(qb, target, throwFn);
+      }
+      if (pressured && scanned) {
+        // Under pressure with no clean window: dump it to the most-open man, throw it away if
+        // the sack is imminent, otherwise break the pocket and scramble.
+        if (target && openD > 36) return this.fire(qb, target, throwFn);
+        if (imminent) return this.throwAway(qb, ctx, throwFn);
+        this.scrambling = true;
+      }
+    }
+
+    // --- scramble: run for it, but keep trying to throw (dump-off / throwaway) on the move ---
+    if (this.scrambling || (pressDist < 42 && this.timer > 0.6)) {
       this.scrambling = true;
-      const behindLine = ctx.dir > 0 ? qb.pos.x < ctx.losX : qb.pos.x > ctx.losX;
-      // A scrambling QB still keeps his eyes downfield: rather than rolling out until he runs
-      // out of bounds, throw to an open man, or throw it away when cornered near a sideline /
-      // about to be sacked. Otherwise scramble for yards (steerCarrier keeps him off the line).
       if (behindLine && !this.decided) {
-        const target = bestReceiver(ctx);
-        const trapped =
-          (pressure && distance(qb.pos, pressure.pos) < 26) ||
-          qb.pos.y < SIDELINE_MARGIN ||
-          qb.pos.y > FIELD_WIDTH - SIDELINE_MARGIN;
-        if (target && nearestDefDist(target, ctx) > 64) {
-          this.decided = true;
-          const aim = leadPoint(target);
-          const d = distance(qb.pos, aim);
-          throwFn(qb, aim, target, Math.max(0.2, Math.min(0.9, 1 - d / 360)));
-          return;
-        }
-        if (trapped) {
-          // Throw it away downfield past the sideline — an incompletion beats a sack/OOB loss.
-          this.decided = true;
-          const awayY = qb.pos.y < FIELD_WIDTH / 2 ? -40 : FIELD_WIDTH + 40;
-          throwFn(qb, { x: ctx.losX + ctx.dir * 60, y: awayY }, null, 0.6);
-          return;
-        }
+        if (target && openD > 52) return this.fire(qb, target, throwFn);
+        const trapped = pressDist < 30 || qb.pos.y < SIDELINE_MARGIN || qb.pos.y > FIELD_WIDTH - SIDELINE_MARGIN;
+        if (trapped) return this.throwAway(qb, ctx, throwFn);
       }
       steerCarrier(qb, ctx);
       return;
     }
 
-    // Drop back for the first beat, then settle in the pocket.
+    // --- drop back, then settle in the pocket ---
     if (this.timer < 0.6) {
       qb.desired = { x: -ctx.dir, y: 0 };
       qb.turbo = false;
@@ -91,20 +94,29 @@ export class CPUOffense {
       qb.turbo = false;
     }
     keepInbounds(qb); // never let the pocket QB drift out of bounds behind the line
+  }
 
-    if (!this.decided && this.timer >= this.patience) {
-      this.decided = true;
-      const target = bestReceiver(ctx);
-      if (target) {
-        const aim = leadPoint(target);
-        // Short routes get fired in (bullet); deep balls are lofted (lob).
-        const d = distance(qb.pos, aim);
-        const power = Math.max(0.15, Math.min(0.9, 1 - d / 380));
-        throwFn(qb, aim, target, power);
-      } else {
-        this.scrambling = true;
-      }
-    }
+  /** Throw to a receiver, leading him; power scales down with distance (bullet -> lob). */
+  private fire(
+    qb: Player,
+    target: Player,
+    throwFn: (from: Player, t: Vec2, r: Player | null, p?: number) => void,
+  ): void {
+    this.decided = true;
+    const aim = leadPoint(target);
+    const d = distance(qb.pos, aim);
+    throwFn(qb, aim, target, Math.max(0.18, Math.min(0.9, 1 - d / 370)));
+  }
+
+  /** Spike it away (past the near sideline) to avoid a sack — an incompletion beats a loss. */
+  private throwAway(
+    qb: Player,
+    ctx: PlayContext,
+    throwFn: (from: Player, t: Vec2, r: Player | null, p?: number) => void,
+  ): void {
+    this.decided = true;
+    const awayY = qb.pos.y < FIELD_WIDTH / 2 ? -40 : FIELD_WIDTH + 40;
+    throwFn(qb, { x: ctx.losX + ctx.dir * 60, y: awayY }, null, 0.6);
   }
 }
 
