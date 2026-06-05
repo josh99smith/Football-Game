@@ -9,6 +9,12 @@ export class TimeScale {
   private slowTimer = 0;
   private slowAmount = 1;
 
+  // Bullet-time: hold deep slow-mo, then ease smoothly back to full speed.
+  private btHold = 0;
+  private btEase = 0;
+  private btEaseDur = 1;
+  private btScale = 1;
+
   /** Hard freeze for `seconds`, then resume normal time. */
   freeze(seconds: number): void {
     this.freezeTimer = Math.max(this.freezeTimer, seconds);
@@ -26,6 +32,17 @@ export class TimeScale {
     this.slow(0.4, 0.22);
   }
 
+  /**
+   * Cinematic "bullet time" for a contact hit: hold deep slow-mo for `hold` seconds, then
+   * ease back to full speed over `ease` seconds (a long, dramatic ramp-out).
+   */
+  bulletTime(scale = 0.16, hold = 0.5, ease = 0.8): void {
+    this.btScale = scale;
+    this.btHold = hold;
+    this.btEase = ease;
+    this.btEaseDur = ease;
+  }
+
   /** Advance using REAL (unscaled) dt; returns the time scale to apply this frame. */
   update(realDt: number): number {
     if (this.freezeTimer > 0) {
@@ -33,13 +50,26 @@ export class TimeScale {
       this.value = 0;
       return 0;
     }
+    let v = 1;
     if (this.slowTimer > 0) {
       this.slowTimer -= realDt;
-      // Ease back toward 1 as the slow window elapses.
-      this.value = this.slowAmount;
-    } else {
-      this.value = 1;
+      v = Math.min(v, this.slowAmount);
     }
-    return this.value;
+    // Bullet time takes over: full slow-mo through the hold, then a smooth ramp back to 1.
+    if (this.btHold > 0 || this.btEase > 0) {
+      let bt: number;
+      if (this.btHold > 0) {
+        this.btHold -= realDt;
+        bt = this.btScale;
+      } else {
+        this.btEase -= realDt;
+        const k = Math.max(0, Math.min(1, this.btEase / this.btEaseDur)); // 1 -> 0 over the ease
+        const s = k * k * (3 - 2 * k); // smoothstep
+        bt = this.btScale + (1 - this.btScale) * (1 - s); // btScale -> 1
+      }
+      v = Math.min(v, bt);
+    }
+    this.value = v;
+    return v;
   }
 }

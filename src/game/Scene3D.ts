@@ -4,6 +4,7 @@ import type { Player } from "./entities/Player";
 import type { Ball } from "./entities/Ball";
 import type { CharacterAsset } from "./CharacterModel";
 import { clamp, moveToward } from "../engine/math/Vec2";
+import { STEP } from "../engine/Loop";
 import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD } from "./Field";
 import { PhysicsWorld } from "../physics/PhysicsWorld";
 import { TackleRagdoll } from "../physics/TackleRagdoll";
@@ -736,6 +737,10 @@ export class Scene3D {
   private readonly camLookCur = new THREE.Vector3(70, 1.5, 27);
   private shakeX = 0;
   private shakeY = 0;
+  // Cinematic hit push-in: `cine` (0..1) blends the chase cam toward a tight close-up; held
+  // for `cineHold` seconds (real time) on a contact hit, then eased back out.
+  private cine = 0;
+  private cineHold = 0;
 
   constructor(canvas: HTMLCanvasElement, field: Field) {
     this.canvas = canvas;
@@ -818,6 +823,11 @@ export class Scene3D {
     const hitLow = hit.big ? Math.random() < 0.2 : Math.random() < 0.5; // big hits mostly blow up high
     av.startRagdoll(this.physics, carry, dir, hitSpeed, hitLow, hit.bit);
     return true;
+  }
+
+  /** Punch the camera in tight on the action for `hold` seconds (a contact-hit close-up). */
+  hitZoom(hold = 0.5): void {
+    this.cineHold = Math.max(this.cineHold, hold);
   }
 
   /** True while any avatar is mid-tackle (falling or getting up). */
@@ -1112,6 +1122,8 @@ export class Scene3D {
   }
 
   snapCamera(focusX: number, focusY: number, dir: number): void {
+    this.cine = 0; // a fresh play never starts mid hit-zoom
+    this.cineHold = 0;
     this.computeCamTarget(focusX, focusY, dir, this.camPos, this.camLook);
     this.camPosPrev.copy(this.camPos);
     this.camPosCur.copy(this.camPos);
@@ -1204,8 +1216,27 @@ export class Scene3D {
     const tp = _tmpPos;
     const tl = _tmpLook;
     this.computeCamTarget(opts.focusX, opts.focusY, opts.dir, tp, tl);
-    // Tighter follow so the camera stays connected to decisive player movement.
-    const t = Math.min(1, opts.dt * 9);
+
+    // Cinematic hit push-in. Advance `cine` on REAL time (fixed 1/60 step) so it snaps in even
+    // while bullet-time slows the sim dt to a crawl: fast ease-in, slower ease-out.
+    const wantCine = this.cineHold > 0 ? 1 : 0;
+    if (this.cineHold > 0) this.cineHold -= STEP;
+    this.cine = moveToward(this.cine, wantCine, STEP / (wantCine > this.cine ? 0.09 : 0.5));
+    if (this.cine > 0.001) {
+      const e = this.cine * this.cine * (3 - 2 * this.cine); // smoothstep ease
+      const fx = opts.focusX * U;
+      const fz = opts.focusY * U;
+      // Tight 3/4 angle pushed in on the collision, aimed down at the bodies so the pile sits
+      // centered in frame (the chase cam looks downfield & high, which drops a hit to the floor).
+      _cinePos.set(fx - opts.dir * 2.6, 3.3, fz + 3.0);
+      _cineLook.set(fx, 0.5, fz);
+      tp.lerp(_cinePos, e);
+      tl.lerp(_cineLook, e);
+    }
+
+    // Tighter follow so the camera stays connected to decisive player movement; while pushing
+    // in, add a real-time term so the close-up snaps in despite the slowed dt.
+    const t = Math.min(1, opts.dt * 9 + this.cine * 0.5);
     this.camPosPrev.copy(this.camPos);
     this.camLookPrev.copy(this.camLook);
     this.camPos.lerp(tp, t);
@@ -1253,6 +1284,8 @@ const _tmpLook = new THREE.Vector3();
 const _tmpVec = new THREE.Vector3();
 const _ragDir = new THREE.Vector3();
 const _ragCarry = new THREE.Vector3();
+const _cinePos = new THREE.Vector3();
+const _cineLook = new THREE.Vector3();
 // Scratch objects for the spiraling-ball orientation (no per-frame allocation).
 const _ballVel = new THREE.Vector3();
 const _ballQ = new THREE.Quaternion();

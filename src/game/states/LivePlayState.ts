@@ -886,16 +886,20 @@ export class LivePlayState implements GameState {
     const dirY = carrier.pos.y - tackler.pos.y;
     const dl = Math.hypot(dirX, dirY) || 1;
 
-    // Impact FX fire at contact start, so the hit-stop/slow-mo plays over the wrap-up.
+    // Impact FX fire at contact start: a quick freeze-punch, then bullet-time slow-mo while the
+    // camera pushes in tight on the collision, so the hit reads in dramatic slow motion.
     if (big) {
-      this.app.time.bigHit();
+      this.app.time.freeze(0.05);
+      this.app.time.bulletTime(0.14, 0.55, 0.85);
+      this.app.scene3d.hitZoom(0.7);
       this.app.shake.add(0.55);
       this.app.particles.spark(hx, hy, dirX, dirY, 18);
       this.app.audio.hit(Math.min(1, closing / 260 + 0.4));
       this.app.floating.add(pickHitWord(), hx, hy - 16, { size: 28, color: "#ffd23a" });
       this.app.audio.crowdCheer();
     } else {
-      this.app.time.slow(0.6, 0.12);
+      this.app.time.bulletTime(0.3, 0.22, 0.45);
+      this.app.scene3d.hitZoom(0.32);
       this.app.shake.add(0.2);
       this.app.particles.burst(hx, hy, "#d9c7a0", 8, 110);
       this.app.audio.hit(0.4);
