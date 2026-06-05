@@ -15,6 +15,7 @@ import { TouchControls, type ControlLabels } from "../../ui/TouchControls";
 import { FONT, COLORS } from "../../ui/Theme";
 import { drawPanel, drawButton, tappedIn, type Rect } from "../../ui/widgets";
 import { ReplaySystem } from "../ReplaySystem";
+import { TackleEngine, type GangTackle } from "../TackleEngine";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
 import type { Match, PlayOutcome, OutcomeType } from "../Match";
 import { PlayCallOverlay } from "../../ui/PlayCallOverlay";
@@ -42,8 +43,8 @@ const POSTPLAY_MAX = 9;
 const MIN_DEAD_LINGER = 0.7;
 /** Farthest a pass can travel (yards) — a deep ball, not a 90-yard heave. */
 const MAX_PASS_YARDS = 52;
-// Tecmo-style tackle battle (quick-tap to break / make the tackle).
-const STRUGGLE_CHANCE = 0.28; // chance a qualifying hit (human involved) becomes a battle
+// Tecmo-style tackle battle (quick-tap to break / make the tackle). The trigger chance lives in
+// the tackling engine; these tune the battle itself.
 const STRUGGLE_TIME = 2.6;   // seconds before it resolves on whoever's ahead
 const STRUGGLE_TAP = 0.07;   // meter gained per mash
 const STRUGGLE_CPU = 0.2;    // meter drift per second toward the CPU's side
@@ -182,11 +183,11 @@ export class LivePlayState implements GameState {
   /** Broadcast play-call overlay shown over the live field between downs, with fade-in. */
   private playCall = new PlayCallOverlay();
   private playCallT = 0;
-  /** Cooldown so broken tackles can't chain every frame. */
-  private lastBreak = -1;
   /** A tackle is wrapping up; endPlay fires when this timer elapses (the contact beat). */
   private pendingTackle: { type: OutcomeType; spot: Vec2 } | null = null;
   private pendingTackleTimer = 0;
+
+  private readonly tackle: TackleEngine;
 
   constructor(app: GameApp, offensePlay: OffensePlay, defensePlay: DefensePlay, kickReturn?: KickReturnSetup) {
     this.app = app;
@@ -194,6 +195,7 @@ export class LivePlayState implements GameState {
     this.defensePlay = defensePlay;
     this.kickReturnSetup = kickReturn ?? null;
     this.cpu = new CPUOffense(app.match.difficulty);
+    this.tackle = new TackleEngine(app);
   }
 
   enter(): void {
@@ -345,6 +347,7 @@ export class LivePlayState implements GameState {
     this.struggleTackler = null;
     this.replay.clear(); // start a fresh recording for this down
     this.cpu.reset(); // fresh QB read each down (the state persists across the drive)
+    this.tackle.reset();
     this.isReturn = false;
     this.returnFor = null;
     this.looseBall = false;
@@ -356,7 +359,7 @@ export class LivePlayState implements GameState {
   }
 
   /** DEV-only: force the ball carrier to be tackled by the nearest defender (headless tests). */
-  debugForceTackle(big = true, hitStick = false): boolean {
+  debugForceTackle(_big = true, hitStick = false): boolean {
     if (this.phase !== "live") return false;
     const carrier = this.ball.carrier ?? this.qb;
     if (!carrier) return false;
@@ -370,7 +373,8 @@ export class LivePlayState implements GameState {
     if (!tackler) return false;
     // Place the defender right on the carrier so the hit lands this frame.
     tackler.pos = { x: carrier.pos.x - 6, y: carrier.pos.y };
-    this.doTackle(tackler, carrier, big || hitStick, 220, hitStick);
+    if (hitStick) tackler.bigHitArmed = true;
+    this.applyGangTackle(this.tackle.commitTackle(this.tackleQuery(carrier), tackler));
     return true;
   }
 
@@ -1162,50 +1166,45 @@ export class LivePlayState implements GameState {
     }
   }
 
+  /** Per-frame contact, delegated to the tackling engine (dynamic + gang tackles). */
   private checkTackles(): void {
     const carrier = this.ball.carrier;
     if (!carrier || carrier.isDown || this.phase !== "live") return;
-
-    for (const d of this.defense) {
-      if (d.isDown) continue;
-      const reach = d.diveTimer > 0 ? (d.radius + carrier.radius) * 0.92 : (d.radius + carrier.radius) * 0.78;
-      if (dist(d.pos, carrier.pos) > reach) continue;
-
-      // Juke: the carrier shrugs the first tackler and the defender whiffs.
-      if (carrier.jukeTimer > 0) {
-        carrier.jukeTimer = 0;
-        d.knockDown(0.8);
-        this.app.particles.burst(d.pos.x, d.pos.y, "#ffffff", 6, 80);
-        continue;
-      }
-
-      // Tecmo-style 1-on-1 battle: occasionally a clean 1-on-1 hit with the human involved
-      // becomes a quick-tap struggle to break / make the tackle.
-      if (this.shouldStruggle(d, carrier)) { this.startStruggle(d, carrier); return; }
-
-      const closing = Math.hypot(d.vel.x - carrier.vel.x, d.vel.y - carrier.vel.y);
-      const hitStick = d.bigHitArmed && d.diveTimer > 0; // a committed big hit connected
-      const big = hitStick || d.turbo || d.diveTimer > 0 || closing > 150;
-
-      // Glancing side-hit: stumble (stay up, lose a beat) instead of a clean tackle.
-      if (!big && this.tryStumble(carrier, d, closing)) return;
-
-      // Break tackle: shrug off hits (much easier on weak hits / with turbo). A clean big hit
-      // can't be shrugged off.
-      if (!hitStick && this.tryBreakTackle(carrier, d, big)) continue;
-
-      this.doTackle(d, carrier, big, closing, hitStick);
-      return;
-    }
+    const outcome = this.tackle.resolve(this.tackleQuery(carrier));
+    if (outcome.kind === "struggle") this.startStruggle(outcome.tackler, carrier);
+    else if (outcome.kind === "gang") this.applyGangTackle(outcome.data);
+    // none / whiff / stumble / broken: the engine already applied any effects; play continues.
   }
 
-  /** Should this hit become a quick-tap battle? Whenever the human is one of the two players and
-   *  it isn't a clear gang pile (3+ defenders right on top), most of the time. */
-  private shouldStruggle(tackler: Player, carrier: Player): boolean {
-    if (this.struggleCd > 0) return false;
-    if (this.controlled !== carrier && this.controlled !== tackler) return false;
-    if (this.defendersNear(carrier, 40) > 2) return false; // skip only a real gang tackle
-    return chance(STRUGGLE_CHANCE);
+  /** Bundle the live-play context the tackling engine needs. */
+  private tackleQuery(carrier: Player) {
+    return {
+      carrier,
+      defense: this.defense,
+      dir: this.dir,
+      isReturn: this.isReturn,
+      controlled: this.controlled,
+      struggleReady: this.struggleCd <= 0,
+      playTime: this.playTime,
+      indexOf: (p: Player) => this.all.indexOf(p),
+    };
+  }
+
+  /** Finish a committed (gang) tackle: pop a fumble loose, or schedule the whistle, and hold the
+   *  camera for the ragdoll pile. */
+  private applyGangTackle(data: GangTackle): void {
+    if (data.fumble) {
+      this.ball.becomeLoose(data.fumbleVel.x, data.fumbleVel.y, data.fumbleVel.up);
+      this.looseBall = true;
+      this.looseTimer = 0;
+    } else {
+      this.pendingTackle = { type: this.sackIfBehindLine(data.spot), spot: data.spot };
+      this.pendingTackleTimer = data.beat;
+      if (data.big && data.lead.team !== this.offenseTeamId) this.bumpFireStreakOnDefense();
+    }
+    this.ragdollIdx = data.ragdollIdx;
+    this.holdForRagdoll = data.ragdollIdx.length > 0;
+    this.ragdollFocus = data.focus;
   }
 
   /** Lock the carrier + tackler into a mash battle. */
@@ -1304,161 +1303,14 @@ export class LivePlayState implements GameState {
       c.vel.x = this.dir * burst;
       c.vel.y *= 0.4;
       t.knockDown(0.95);
-      this.lastBreak = this.playTime;
       this.app.particles.burst(c.pos.x, c.pos.y, "#bfffd0", 10, 120);
       this.app.audio.juke();
       this.app.shake.add(0.3);
       this.app.floating.add("BROKE FREE!", c.pos.x, c.pos.y - 22, { size: 26, color: "#bfffd0" });
     } else {
       this.app.floating.add(this.struggleHumanCarrier ? "STUFFED!" : "TACKLE!", (c.pos.x + t.pos.x) / 2, c.pos.y - 22, { size: 24, color: "#ffd23a" });
-      this.doTackle(t, c, true, 200);
+      this.applyGangTackle(this.tackle.commitTackle(this.tackleQuery(c), t));
     }
-  }
-
-  /** Attempt to break a tackle. Returns true if the carrier stays up. */
-  private tryBreakTackle(carrier: Player, tackler: Player, big: boolean): boolean {
-    if (this.playTime - this.lastBreak < 0.55) return false;
-    // Big hits can only be broken by powering through with turbo.
-    let p = big ? (carrier.turbo ? 0.25 : 0.06) : carrier.turbo ? 0.6 : 0.38;
-    // Power battle: a strong back shrugs off a weaker defender; a stout tackler hangs on.
-    p *= clamp(carrier.strength / tackler.strength, 0.55, 1.7);
-    if (this.defendersNear(carrier, 32) >= 2) p *= 0.4; // gang tackles still win
-    if (Math.random() >= p) return false;
-    this.lastBreak = this.playTime;
-    tackler.knockDown(0.7);
-    carrier.vel.x *= 0.78;
-    carrier.vel.y *= 0.78;
-    this.app.particles.burst(tackler.pos.x, tackler.pos.y, "#ffffff", 7, 90);
-    this.app.audio.juke();
-    this.app.shake.add(0.14);
-    this.app.floating.add("BROKE IT!", carrier.pos.x, carrier.pos.y, { size: 18, color: "#bfffd0", life: 0.8 });
-    return true;
-  }
-
-  private defendersNear(p: Player, radius: number): number {
-    let n = 0;
-    const r2 = radius * radius;
-    for (const d of this.defense) {
-      if (d.isDown) continue;
-      const dx = d.pos.x - p.pos.x;
-      const dy = d.pos.y - p.pos.y;
-      if (dx * dx + dy * dy < r2) n++;
-    }
-    return n;
-  }
-
-  /** Glancing side-hit: the carrier staggers but stays up. Returns true if applied. */
-  private tryStumble(carrier: Player, tackler: Player, closing: number): boolean {
-    if (this.playTime - this.lastBreak < 0.5) return false;
-    const cv = Math.hypot(carrier.vel.x, carrier.vel.y);
-    if (cv < 45 || closing > 110 || this.defendersNear(carrier, 28) >= 2) return false;
-    const hvx = tackler.pos.x - carrier.pos.x;
-    const hvy = tackler.pos.y - carrier.pos.y;
-    const hl = Math.hypot(hvx, hvy) || 1;
-    const dot = (carrier.vel.x / cv) * (hvx / hl) + (carrier.vel.y / cv) * (hvy / hl);
-    if (dot > 0.5) return false; // tackler is square in front -> real tackle, not a brush
-
-    carrier.enterStumble(0.28);
-    // Nudge away from the hit + lean to that side.
-    carrier.vel.x -= (hvx / hl) * 30;
-    carrier.vel.y -= (hvy / hl) * 30;
-    const cross = carrier.vel.x * hvy - carrier.vel.y * hvx;
-    carrier.leanTarget = Math.sign(cross) || 1;
-    this.app.time.slow(0.85, 0.12);
-    this.app.shake.add(0.1);
-    this.app.particles.burst((carrier.pos.x + tackler.pos.x) / 2, (carrier.pos.y + tackler.pos.y) / 2, "#ffffff", 5, 70);
-    this.app.audio.hit(0.3);
-    return true;
-  }
-
-  private doTackle(tackler: Player, carrier: Player, big: boolean, closing: number, hitStick = false): void {
-    tackler.bigHitArmed = false; // consumed
-    const hx = (tackler.pos.x + carrier.pos.x) / 2;
-    const hy = (tackler.pos.y + carrier.pos.y) / 2;
-    // A committed big hit forces a fumble far more often (it's the whole risk/reward).
-    const fumbleChance = hitStick ? 0.28 : big ? 0.08 : 0.02;
-    const dirX = carrier.pos.x - tackler.pos.x;
-    const dirY = carrier.pos.y - tackler.pos.y;
-    const dl = Math.hypot(dirX, dirY) || 1;
-
-    // Impact FX fire at contact start: a quick freeze-punch, then bullet-time slow-mo while the
-    // camera pushes in tight on the collision, so the hit reads in dramatic slow motion.
-    if (big) {
-      this.app.time.freeze(hitStick ? 0.08 : 0.05);
-      this.app.time.bulletTime(hitStick ? 0.1 : 0.14, hitStick ? 0.7 : 0.55, 0.85);
-      this.app.scene3d.hitZoom(hitStick ? 0.9 : 0.7);
-      this.app.shake.add(hitStick ? 0.85 : 0.55);
-      this.app.particles.spark(hx, hy, dirX, dirY, hitStick ? 26 : 18);
-      this.app.audio.hit(Math.min(1, closing / 260 + (hitStick ? 0.7 : 0.4)));
-      this.app.floating.add(hitStick ? "BIG HIT!" : pickHitWord(), hx, hy - 16, { size: hitStick ? 34 : 28, color: hitStick ? "#ff5a3a" : "#ffd23a" });
-      this.app.audio.crowdCheer();
-    } else {
-      this.app.time.bulletTime(0.3, 0.22, 0.45);
-      this.app.scene3d.hitZoom(0.32);
-      this.app.shake.add(0.2);
-      this.app.particles.burst(hx, hy, "#d9c7a0", 8, 110);
-      this.app.audio.hit(0.4);
-    }
-
-    // Shared fall momentum: carrier + tackler travel together (with forward progress). A big
-    // hit launches the carrier back the way they came (negative progress) for the highlight.
-    const fwd = hitStick ? 95 : big ? 60 : 28;
-    const bvx = (carrier.vel.x + tackler.vel.x) * 0.5 + (dirX / dl) * fwd;
-    const bvy = (carrier.vel.y + tackler.vel.y) * 0.5 + (dirY / dl) * fwd;
-    const beat = big ? 0.32 : 0.22;
-    const spot = { x: carrier.pos.x + (dirX / dl) * (big ? 8 : 3), y: carrier.pos.y };
-
-    // Jar the ball loose on a fumble (no fumbles during a return — avoids endless turnover
-    // chains). The ball goes live: both teams scramble, and the defense recovering can run it
-    // back. Otherwise the carrier is simply downed after the contact beat.
-    const fumbled = !this.isReturn && chance(fumbleChance);
-    if (fumbled) {
-      this.app.floating.add("FUMBLE!", hx, hy - 40, { size: 26, color: "#ff6a6a" });
-      this.app.audio.turnover();
-      this.ball.becomeLoose((dirX / dl) * 120 + (Math.random() * 80 - 40), (dirY / dl) * 120 + (Math.random() * 80 - 40), 220);
-      this.looseBall = true;
-      this.looseTimer = 0;
-    } else if (tackler.team !== this.offenseTeamId && big) {
-      this.bumpFireStreakOnDefense();
-    }
-
-    // Both players wrap up and go down together (ragdoll). Without a fumble the whistle blows
-    // after the contact beat; with a fumble the ball stays live for the recovery scramble.
-    carrier.enterContact(bvx, bvy, beat);
-    carrier.animEvent = "tackle"; // the carrier's getting-tackled reaction (canned fallback)
-    tackler.enterContact(bvx * 0.55, bvy * 0.55, beat);
-    tackler.animEvent = "tackleMade"; // the defender's tackle hit (canned fallback)
-    tackler.facing = Math.atan2(dirY, dirX);
-    tackler.heading = tackler.facing;
-    if (!fumbled) {
-      this.pendingTackle = { type: this.sackIfBehindLine(spot), spot };
-      this.pendingTackleTimer = beat;
-    }
-
-    // Physics tackle: hand the carrier (and the tackler driving him down) to the ragdoll,
-    // replacing the canned clips. A big hit drives the ragdoll harder for a bigger launch.
-    this.startRagdollTackle(carrier, tackler, dirX, dirY, hitStick ? closing + 180 : closing, big);
-  }
-
-  /** Spawn physics ragdolls for the two players in a collision and hold the whistle for the
-   *  full fall + get-up. The carrier and tackler get distinct collision bits so they tumble
-   *  near each other without their bodies exploding into one another. */
-  private startRagdollTackle(carrier: Player, tackler: Player, dirX: number, dirY: number, closing: number, big: boolean): void {
-    const scene = this.app.scene3d;
-    const ci = this.all.indexOf(carrier);
-    const ti = this.all.indexOf(tackler);
-    const carrierDown = ci >= 0 && scene.startRagdoll(ci, {
-      hitDirX: dirX, hitDirY: dirY, closingPx: closing, carryVx: carrier.vel.x, carryVy: carrier.vel.y, big, bit: 0x0002,
-    });
-    // The tackler is thrown back along the hit (opposite the carrier) at a lighter strength.
-    const tacklerDown = ti >= 0 && scene.startRagdoll(ti, {
-      hitDirX: -dirX, hitDirY: -dirY, closingPx: closing * 0.6, carryVx: tackler.vel.x, carryVy: tackler.vel.y, big, bit: 0x0004,
-    });
-    this.ragdollIdx = [];
-    if (carrierDown) this.ragdollIdx.push(ci);
-    if (tacklerDown) this.ragdollIdx.push(ti);
-    this.holdForRagdoll = this.ragdollIdx.length > 0;
-    this.ragdollFocus = carrierDown ? carrier : null;
   }
 
   /** Keep each ragdolling player's sim position glued to its physics hips, so the camera, the
@@ -2316,11 +2168,6 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.arcTo(x, y + h, x, y, rr);
   ctx.arcTo(x, y, x + w, y, rr);
   ctx.closePath();
-}
-
-function pickHitWord(): string {
-  const words = ["BOOM!", "POW!", "CRUNCH!", "WHAM!", "LEVELED!"];
-  return words[Math.floor(Math.random() * words.length)];
 }
 
 function ordinal(n: number): string {
