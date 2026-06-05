@@ -22,7 +22,7 @@ function reachPose(): Record<string, THREE.Quaternion> {
  * knob, PD gains, solver substeps, pelvis pin, and Hold/Limp/Nudge/Reset/Pose actions.
  */
 export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld, loco?: LocomotionController): GUI {
-  const gui = new GUI({ title: `Motion — Slice 2  (${specMass(ragdoll.spec).toFixed(0)} kg)` });
+  const gui = new GUI({ title: `Motion — Slice 3  (${specMass(ragdoll.spec).toFixed(0)} kg)` });
 
   const state = {
     stiffness: 0.8,
@@ -84,14 +84,15 @@ export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld, 
       comKp: loco.comKp,
       comKd: loco.comKd,
       stepDur: loco.stepDur,
-      strideAmp: loco.strideAmp,
-      liftAmp: loco.liftAmp,
+      stepHeight: loco.stepHeight,
+      captureGain: loco.captureGain,
+      pushoff: loco.pushoff,
       walkLean: loco.walkLean,
       legStiffness: loco.legStiffness,
       stand: () => { locoState.walk = false; loco.setMode("idle"); loco.desiredSpeed = 0; },
       restand: () => { locoState.walk = false; loco.activate(); loco.desiredSpeed = 0; },
     };
-    const lf = gui.addFolder("Locomotion (Slice 2)");
+    const lf = gui.addFolder("Locomotion (Slice 3)");
     lf.add(locoState, "walk").name("Walk").listen().onChange((v: boolean) => {
       loco.setMode(v ? "walk" : "idle");
       loco.desiredSpeed = v ? locoState.desiredSpeed : 0;
@@ -101,9 +102,10 @@ export function createMotionDebugPanel(ragdoll: Ragdoll, physics: PhysicsWorld, 
     });
     lf.add(locoState, "assist", 0, 1, 0.01).name("Balance assist").onChange((v: number) => (loco.assist = v));
     lf.add(locoState, "legStiffness", 0, 1, 0.01).name("Leg stiffness").onChange((v: number) => (loco.legStiffness = v));
+    lf.add(locoState, "pushoff", 0, 1.5, 0.01).name("Push-off").onChange((v: number) => (loco.pushoff = v));
     lf.add(locoState, "stepDur", 0.2, 0.9, 0.01).name("Step time").onChange((v: number) => (loco.stepDur = v));
-    lf.add(locoState, "strideAmp", 0.1, 1.2, 0.01).name("Stride").onChange((v: number) => (loco.strideAmp = v));
-    lf.add(locoState, "liftAmp", 0.1, 1.6, 0.01).name("Foot lift").onChange((v: number) => (loco.liftAmp = v));
+    lf.add(locoState, "stepHeight", 0.02, 0.35, 0.01).name("Foot lift").onChange((v: number) => (loco.stepHeight = v));
+    lf.add(locoState, "captureGain", 0, 0.4, 0.01).name("Capture gain").onChange((v: number) => (loco.captureGain = v));
     lf.add(locoState, "walkLean", 0, 0.5, 0.01).name("Lean").onChange((v: number) => (loco.walkLean = v));
     const bal = lf.addFolder("Assist gains");
     bal.close();

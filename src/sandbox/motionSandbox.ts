@@ -90,6 +90,7 @@ async function main(): Promise<void> {
       `com Y     ${fmt(h.comY)} m\n` +
       `tip (side) ${fmt(h.tip)} m${tipFlag}\n` +
       `assist    ${fmt(h.assist)}\n` +
+      `ik err    ${(h.ikErr * 1000).toFixed(0).padStart(4)} mm\n` +
       `feet      ${slip}`;
   }
 
