@@ -16,11 +16,12 @@ import { FONT, COLORS } from "../../ui/Theme";
 import { drawPanel } from "../../ui/widgets";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
 import type { Match, PlayOutcome, OutcomeType } from "../Match";
-import { PlaySelectState } from "./PlaySelectState";
+import { PlayCallOverlay } from "../../ui/PlayCallOverlay";
+import { cpuOffensePlay, cpuDefensePlay } from "../ai/PlayCaller";
 import { KickoffState } from "./KickoffState";
 import { GameOverState } from "./GameOverState";
 
-type Phase = "presnap" | "live" | "dead";
+type Phase = "presnap" | "live" | "dead" | "playcall";
 
 // Pre-snap is player-controlled now; this is only a safety fallback so a play can't
 // hard-stall if the hike is never pressed.
@@ -56,8 +57,8 @@ const DIFFICULTY = {
  */
 export class LivePlayState implements GameState {
   private readonly app: GameApp;
-  private readonly offensePlay: OffensePlay;
-  private readonly defensePlay: DefensePlay;
+  private offensePlay: OffensePlay; // re-armed each down from the play-call overlay
+  private defensePlay: DefensePlay;
 
   private offense: Player[] = [];
   private defense: Player[] = [];
@@ -115,6 +116,11 @@ export class LivePlayState implements GameState {
   private ragdollFocus: Player | null = null;
   /** Ball spot the play ended at (anchors the regroup huddle). */
   private endSpot: Vec2 = { x: 0, y: 0 };
+  /** The offense huddle center — the camera subject between downs. */
+  private huddleCenter: Vec2 | null = null;
+  /** Broadcast play-call overlay shown over the live field between downs, with fade-in. */
+  private playCall = new PlayCallOverlay();
+  private playCallT = 0;
   /** Cooldown so broken tackles can't chain every frame. */
   private lastBreak = -1;
   /** A tackle is wrapping up; endPlay fires when this timer elapses (the contact beat). */
@@ -129,7 +135,24 @@ export class LivePlayState implements GameState {
   }
 
   enter(): void {
+    // Persistent, once-per-state-lifetime setup. This state now lives across the whole drive:
+    // it stays mounted through the between-downs play-call overlay and re-arms each play in
+    // place (so the 3D field keeps living behind the broadcast-style call), instead of bouncing
+    // out to a separate play-select screen.
+    this.app.scene3d.setVisible(true);
+    this.app.input.setLayout(this.controls.computeLayout(this.app.r));
+    this.app.audio.startCrowd();
+    this.showHint = !LivePlayState.hintShown;
+    if (import.meta.env.DEV) (window as unknown as { __live: LivePlayState }).__live = this;
+    this.armPlay(this.offensePlay, this.defensePlay);
+  }
+
+  /** Build a fresh down for the given call against the current match state, then go pre-snap.
+   *  Called on entry and again for every subsequent play picked from the overlay. */
+  private armPlay(offensePlay: OffensePlay, defensePlay: DefensePlay): void {
     const m = this.app.match;
+    this.offensePlay = offensePlay;
+    this.defensePlay = defensePlay;
     this.offenseTeamId = m.possession;
     this.humanIsOffense = m.possession === m.humanTeam;
     this.dir = m.attackDir(this.offenseTeamId);
@@ -148,35 +171,38 @@ export class LivePlayState implements GameState {
     assignDefense(ctx, this.defensePlay.scheme);
 
     // Choose who the human controls.
-    if (this.humanIsOffense) {
-      this.controlled = this.qb;
-    } else {
-      this.controlled = this.nearestDefenderToBall();
-    }
+    if (this.controlled) this.controlled.controlled = false;
+    this.controlled = this.humanIsOffense ? this.qb : this.nearestDefenderToBall();
     if (this.controlled) this.controlled.controlled = true;
 
+    // Per-play state (reset every down since the state is reused across the drive).
     this.phase = "presnap";
     this.snapTimer = PRESNAP_TIME;
     this.preSnapReady = false;
     this.cpuHikeTimer = -1;
     this.playTime = 0;
     this.passThrown = false;
+    this.passTarget = null;
     this.sackPossible = true;
     this.turbo = 1;
+    this.pendingTackle = null;
+    this.pendingTackleTimer = 0;
+    this.pendingOutcome = null;
+    this.playResult = null;
+    this.committed = false;
+    this.deadTimer = 0;
+    this.deadElapsed = 0;
+    this.regroupTargets = null;
+    this.huddleCenter = null;
+    this.ragdollIdx = [];
+    this.holdForRagdoll = false;
+    this.ragdollFocus = null;
 
     // Break the huddle: scatter players off their spots so they walk to the line.
     this.setupPreSnap();
 
-    this.app.scene3d.setVisible(true);
     this.app.scene3d.resetAvatars();
-    this.ragdollIdx = [];
-    this.holdForRagdoll = false;
-    this.ragdollFocus = null;
     if (this.qb) this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir);
-    this.app.input.setLayout(this.controls.computeLayout(this.app.r));
-    this.app.audio.startCrowd();
-    this.showHint = !LivePlayState.hintShown;
-    if (import.meta.env.DEV) (window as unknown as { __live: LivePlayState }).__live = this;
   }
 
   /** DEV-only: force the ball carrier to be tackled by the nearest defender (headless tests). */
@@ -235,6 +261,10 @@ export class LivePlayState implements GameState {
     }
     if (this.phase === "dead") {
       this.updateDeadBeat(dt);
+      return;
+    }
+    if (this.phase === "playcall") {
+      this.updatePlayCall(dt);
       return;
     }
 
@@ -329,13 +359,15 @@ export class LivePlayState implements GameState {
     const busy = this.holdForRagdoll && this.app.scene3d.ragdollsBusy();
     const focus = busy && this.ragdollFocus
       ? this.ragdollFocus.pos // stay on the body being driven into the ground
-      : this.ball.carrier
-        ? this.ball.carrier.pos
-        : this.ball.state === "inAir"
-          ? this.ball.pos
-          : this.qb
-            ? this.qb.pos
-            : { x: this.startLosX, y: this.app.field.maxY / 2 };
+      : this.phase === "playcall" && this.huddleCenter
+        ? this.huddleCenter // ease onto the offense huddle while the call is up
+        : this.ball.carrier
+          ? this.ball.carrier.pos
+          : this.ball.state === "inAir"
+            ? this.ball.pos
+            : this.qb
+              ? this.qb.pos
+              : { x: this.startLosX, y: this.app.field.maxY / 2 };
     this.app.scene3d.sync({
       players: this.all,
       ball: this.ball,
@@ -1102,7 +1134,10 @@ export class LivePlayState implements GameState {
     // Post-play: a short settle/celebration, then players regroup and amble toward the
     // huddle until the player taps to continue (or the hard cap elapses).
     this.deadTimer =
-      type === "touchdown" ? 2.4 : type === "interception" || type === "fumbleLost" ? 1.6 : 1.0;
+      type === "touchdown" ? 2.6
+      : type === "interception" || type === "fumbleLost" ? 1.8
+      : type === "incomplete" ? 1.8 // let the throwaway read + receivers pull up, not an instant cut
+      : 1.4;
     this.deadElapsed = 0;
     this.endSpot = { x: spot.x, y: spot.y };
     this.regroupTargets = null;
@@ -1129,21 +1164,57 @@ export class LivePlayState implements GameState {
   private updateDeadBeat(dt: number): void {
     this.deadTimer -= dt;
     this.deadElapsed += dt;
-    // Hold the whistle: while the physics fall + get-up is still playing out, nobody regroups
-    // and the auto-advance is suspended (a tap can still skip it).
+    // A brief on-field result beat: the whistle blows, the result reads, players settle / the
+    // ball-carrier's ragdoll finishes falling and gets up. We DON'T cut away — the camera holds
+    // on the play and then the broadcast play-call comes up as an overlay (commitOutcome), with
+    // the field still living behind it. The hold respects an in-progress ragdoll tackle.
     const busy = this.holdForRagdoll && this.app.scene3d.ragdollsBusy();
-    const regrouping = this.deadTimer <= 0 && !busy;
+    for (const p of this.all) p.step(dt, 0); // coast to a stop / lie tackled / celebrate in place
+    this.ball.update(dt);
+    this.spawnFireFx();
+    // A tap (or ACTION) skips the beat; otherwise it advances once the result has shown and any
+    // tackle has resolved. The hard cap is a safety so it can never hang on a stuck ragdoll.
+    const tapped = this.app.input.consumeTaps().length > 0 || this.app.input.actionPressed;
+    const beatDone = this.deadTimer <= 0 && !busy;
+    if (beatDone || tapped || this.deadElapsed >= POSTPLAY_MAX) {
+      this.commitOutcome();
+      return;
+    }
+    this.syncScene(dt);
+  }
+
+  /** Open the between-downs play-call as a broadcast overlay over the still-live field. */
+  private enterPlayCall(): void {
+    const m = this.app.match;
+    this.phase = "playcall";
+    this.playCallT = 0;
+    this.computeRegroupTargets();
+    this.playCall.layout(this.app.r, m.possession === m.humanTeam);
+    this.app.input.consumeTaps(); // don't let the skip-tap also pick a card
+  }
+
+  /**
+   * Between-downs broadcast view: the cards are overlaid while the field keeps living —
+   * players amble back to the huddle and settle, the camera eases onto the huddle — until the
+   * human picks a play, which arms the next down in place (no cut to a separate screen).
+   */
+  private updatePlayCall(dt: number): void {
+    const m = this.app.match;
+    this.playCallT = Math.min(1, this.playCallT + dt * 3);
     for (const p of this.all) {
-      if (regrouping && !p.isDown) this.walkToRegroup(p, dt);
-      else p.step(dt, 0); // settle / celebrate / lie tackled
+      if (!p.isDown) this.walkToRegroup(p, dt); // jog back to the huddle, then idle there
+      else p.step(dt, 0);
     }
     this.ball.update(dt);
     this.spawnFireFx();
-    // A tap anywhere (or ACTION) skips ahead; otherwise it auto-advances at the hard cap
-    // (but never mid-tackle — let the body land and rise first unless the player skips).
-    const tapped = this.app.input.consumeTaps().length > 0 || this.app.input.actionPressed;
-    if (tapped || (!busy && this.deadElapsed >= POSTPLAY_MAX)) {
-      this.commitOutcome();
+
+    const pick = this.playCall.pick(this.app.input.consumeTaps());
+    if (pick) {
+      this.app.audio.uiConfirm();
+      // The human picks their side; the CPU calls the opposing play situationally.
+      const off = pick.off ?? cpuOffensePlay(m);
+      const def = pick.def ?? cpuDefensePlay(m);
+      this.armPlay(off, def);
       return;
     }
     this.syncScene(dt);
@@ -1179,6 +1250,7 @@ export class LivePlayState implements GameState {
     const cy = f.maxY / 2;
     const clampX = (x: number) => Math.max(LEFT_GOAL_X + 16, Math.min(RIGHT_GOAL_X - 16, x));
     const huddleX = clampX(this.endSpot.x - this.dir * PX_PER_YARD * 7);
+    this.huddleCenter = { x: huddleX, y: cy }; // camera subject between downs
     this.offense.forEach((o, i) => {
       const ang = (i / this.offense.length) * Math.PI * 2;
       targets.set(o, { x: huddleX + Math.cos(ang) * PX_PER_YARD * 2, y: cy + Math.sin(ang) * PX_PER_YARD * 2 });
@@ -1225,15 +1297,19 @@ export class LivePlayState implements GameState {
   private commitOutcome(): void {
     if (this.committed || !this.playResult) return;
     this.committed = true;
-    this.app.audio.stopCrowd();
     const m = this.app.match;
     const res = this.playResult;
     if (m.isOver) {
+      this.app.audio.stopCrowd();
       this.app.setState(new GameOverState(this.app));
     } else if (res.kickoff && res.kickReceiver) {
+      // A score is its own sequence (kickoff/return); cut to it.
+      this.app.audio.stopCrowd();
       this.app.setState(new KickoffState(this.app, res.kickReceiver));
     } else {
-      this.app.setState(new PlaySelectState(this.app));
+      // Normal play-to-play (incl. turnovers on the field): stay mounted and bring up the
+      // play-call as a broadcast overlay while players jog back to the huddle behind it.
+      this.enterPlayCall();
     }
   }
 
@@ -1280,6 +1356,10 @@ export class LivePlayState implements GameState {
 
     if (this.phase === "dead") {
       this.renderResultBanner(r);
+    } else if (this.phase === "playcall") {
+      // Broadcast-style call over the live field (players jogging back to the huddle behind it).
+      this.renderResultBanner(r, false);
+      this.playCall.render(r, { alpha: this.playCallT });
     } else {
       app.input.setLayout(this.controls.computeLayout(r));
       this.controls.render(r, app.input, this.controlLabels());
@@ -1288,7 +1368,7 @@ export class LivePlayState implements GameState {
   }
 
   /** On-field result banner during the post-play beat (replaces the old banner screen). */
-  private renderResultBanner(r: Renderer): void {
+  private renderResultBanner(r: Renderer, showTapPrompt = true): void {
     if (!this.pendingOutcome) return;
     const w = Math.min(440, r.width - 48);
     const h = 92;
@@ -1307,6 +1387,7 @@ export class LivePlayState implements GameState {
     });
     ctx.restore();
     r.text(this.resultDetail, r.width / 2, y + 68, { size: 17, align: "center", color: COLORS.blood, baseline: "middle", font: FONT.ui });
+    if (!showTapPrompt) return;
     const a = 0.5 + 0.5 * Math.sin(this.deadElapsed * 4);
     r.text("TAP TO CONTINUE", r.width / 2, r.height - 24, {
       size: 15,
