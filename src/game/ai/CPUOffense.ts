@@ -83,7 +83,11 @@ export class CPUOffense {
       qb.desired = { x: -ctx.dir, y: 0 };
       qb.turbo = false;
     } else {
-      qb.desired = { x: -ctx.dir * 0.15, y: pressure ? Math.sign(qb.pos.y - pressure.pos.y) * 0.5 : 0 };
+      // Slide away from pressure, but toward midfield — never drift toward a sideline.
+      const center = FIELD_WIDTH / 2;
+      let lat = pressure ? Math.sign(qb.pos.y - pressure.pos.y) * 0.5 : 0;
+      if (Math.abs(qb.pos.y - center) > center - SIDELINE_MARGIN) lat = Math.sign(center - qb.pos.y) * 0.5;
+      qb.desired = { x: -ctx.dir * 0.15, y: lat };
       qb.turbo = false;
     }
 
@@ -124,18 +128,24 @@ export function steerCarrier(carrier: Player, ctx: PlayContext): void {
       ay += (dy / dd) * w * 1.3; // emphasize lateral jukes
     }
   }
-  // Stay off the sidelines: the closer to a boundary, the harder we steer back infield, so a
-  // carrier (especially a scrambling QB) gains yards upfield instead of running out of bounds.
-  if (carrier.pos.y < SIDELINE_MARGIN) {
-    ay += (1 - carrier.pos.y / SIDELINE_MARGIN) * 1.6;
-  } else if (carrier.pos.y > FIELD_WIDTH - SIDELINE_MARGIN) {
-    ay -= (1 - (FIELD_WIDTH - carrier.pos.y) / SIDELINE_MARGIN) * 1.6;
-  }
-
   steer = addSteer(steer, { x: ax, y: ay });
   // Keep strong forward intent even while evading, so a scramble presses upfield for yards
   // rather than drifting laterally toward the boundary.
   steer.x += ctx.dir * 0.9;
+
+  // Sideline avoidance is AUTHORITATIVE — a carrier must never run himself out of bounds. The
+  // closer to a boundary, the harder we steer infield; inside a hard margin we forbid ANY further
+  // outward intent (overriding defender-repulsion that would shove him across the line).
+  const center = FIELD_WIDTH / 2;
+  const edge = Math.min(carrier.pos.y, FIELD_WIDTH - carrier.pos.y);
+  if (edge < SIDELINE_MARGIN) {
+    const inward = carrier.pos.y < center ? 1 : -1; // +y pushes down from the top edge, etc.
+    const urgency = 1 - edge / SIDELINE_MARGIN; // 0 at the margin, 1 at the line
+    steer.y += inward * (1.0 + 3.0 * urgency);
+    // Within the hard margin, never allow movement toward the near sideline.
+    if (edge < 30 && Math.sign(steer.y) === -inward) steer.y = inward * 1.2;
+  }
+
   carrier.desired = steer;
   carrier.turbo = near > 34;
 }
