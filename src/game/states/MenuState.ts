@@ -7,6 +7,7 @@ import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveSettings, loadSettings } from "../storage";
 import { KickoffState } from "./KickoffState";
 import { PracticeState } from "./PracticeState";
+import { versionLabel, buildDate } from "../buildInfo";
 
 const DIFFS: GameApp["config"]["difficulty"][] = ["rookie", "pro", "allpro"];
 
@@ -205,6 +206,17 @@ export class MenuState implements GameState {
       fill: COLORS.concrete,
       size: clamp(this.rects.practice.h * 0.26, 12, 18),
     });
+
+    // Build stamp: version + last-updated date/time (bumped automatically on every build/push).
+    ctx.save();
+    ctx.letterSpacing = "1px";
+    r.text(versionLabel(), cx, r.height - 26, {
+      size: 11, align: "center", color: COLORS.steel, weight: "normal", baseline: "middle", font: FONT.ui,
+    });
+    r.text(`UPDATED ${buildDate().toUpperCase()}`, cx, r.height - 12, {
+      size: 10, align: "center", color: COLORS.ash, weight: "normal", baseline: "middle", font: FONT.ui,
+    });
+    ctx.restore();
   }
 
   /** Heavy poster wordmark with a blood-red mis-registration shadow + dark outline. */
