@@ -17,6 +17,12 @@ interface Particle {
   color: string;
   drag: number;
   gravity: number; // pulls height down
+  /** Soft additive glow sprite (flames/embers) vs a hard square (dust/confetti). */
+  glow?: boolean;
+  /** Size multiplier reached at end of life: <1 tapers (flames narrow), >1 grows (smoke). */
+  shrink?: number;
+  /** Fade with a soft in/out bell instead of linear (smoke / soft glows). */
+  soft?: boolean;
 }
 
 /**
@@ -26,9 +32,33 @@ interface Particle {
  */
 export class ParticleSystem {
   private readonly pool: Particle[] = [];
+  /** Cache of soft radial glow sprites keyed by color (additive flame/ember rendering). */
+  private readonly glowCache = new Map<string, HTMLCanvasElement>();
 
   private spawn(p: Particle): void {
     this.pool.push(p);
+  }
+
+  /** A soft round glow sprite (bright core fading to transparent) for additive flames/embers. */
+  private glowSprite(color: string): HTMLCanvasElement {
+    let c = this.glowCache.get(color);
+    if (c) return c;
+    const S = 48;
+    c = document.createElement("canvas");
+    c.width = c.height = S;
+    const g = c.getContext("2d")!;
+    const grad = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    grad.addColorStop(0, color);
+    grad.addColorStop(0.4, color);
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    // Fade the mid/outer to transparent by drawing the color then a transparent edge.
+    g.fillStyle = grad;
+    g.globalAlpha = 1;
+    g.beginPath();
+    g.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2);
+    g.fill();
+    this.glowCache.set(color, c);
+    return c;
   }
 
   /** A puff of dust on tackles / cuts (scatters along the ground). */
@@ -61,27 +91,53 @@ export class ParticleSystem {
     }
   }
 
-  /** Continuous flame rising at a player's feet — call each frame (ON FIRE). */
-  fire(x: number, y: number, count = 2): void {
+  /**
+   * A licking flame column rising off a player — call each frame (ON FIRE). Layers a
+   * white-hot core, orange/red flame tongues that taper as they rise, and the odd curl of
+   * dark smoke, all flickering, for a believable fire rather than a spray of dots.
+   * `scale` (0..1+) drives how broad/tall the fire is.
+   */
+  fire(x: number, y: number, count = 2, scale = 1): void {
     for (let i = 0; i < count; i++) {
-      const life = rand(0.25, 0.5);
-      this.spawn({
-        x: x + rand(-6, 6), y: y + rand(-6, 6), h: rand(0, 8),
-        vx: rand(-8, 8), vy: rand(-8, 8), vh: rand(80, 150),
-        life, maxLife: life, size: rand(4, 9),
-        color: randInt(0, 2) === 0 ? "#ffd23a" : randInt(0, 1) === 0 ? "#ff7b1e" : "#ff3b1e",
-        drag: 1, gravity: -40,
-      });
+      const r = Math.random();
+      if (r < 0.16) {
+        // Smoke: dark, slow, grows and softly fades as it drifts up off the top of the flame.
+        const life = rand(0.5, 0.95);
+        this.spawn({
+          x: x + rand(-6, 6) * scale, y: y + rand(-6, 6) * scale, h: rand(16, 28) * scale,
+          vx: rand(-7, 7), vy: rand(-7, 7), vh: rand(36, 64),
+          life, maxLife: life, size: rand(8, 12) * scale, color: "#5a5048",
+          drag: 1.2, gravity: -10, shrink: 2.6, soft: true,
+        });
+      } else {
+        // Flame tongue: hot white/yellow core or an orange/red body; rises fast and tapers.
+        const hot = r < 0.52;
+        const life = rand(0.28, 0.55);
+        this.spawn({
+          x: x + rand(-7, 7) * scale, y: y + rand(-4, 4) * scale, h: rand(0, 8),
+          vx: rand(-11, 11), vy: rand(-11, 11), vh: rand(130, 220) * (0.7 + 0.5 * scale),
+          life, maxLife: life,
+          size: (hot ? rand(7, 11) : rand(12, 18)) * scale,
+          color: hot
+            ? (Math.random() < 0.5 ? "#fff4c2" : "#ffd23a")
+            : (Math.random() < 0.5 ? "#ff7b1e" : "#ff3210"),
+          drag: 1.4, gravity: -55, glow: true, shrink: 0.32,
+        });
+      }
     }
   }
 
-  /** A soft glowing trail mote (turbo speed lines). */
-  trail(x: number, y: number, color = "#3bd2ff"): void {
-    const life = rand(0.2, 0.45);
+  /** A hot ember/flame trail streaming off a sprinting player (TURBO). */
+  trail(x: number, y: number): void {
+    const hot = Math.random() < 0.4;
+    const life = rand(0.22, 0.46);
     this.spawn({
-      x: x + rand(-3, 3), y: y + rand(-3, 3), h: rand(8, 22),
-      vx: rand(-10, 10), vy: rand(-10, 10), vh: rand(10, 40),
-      life, maxLife: life, size: rand(5, 9), color, drag: 2, gravity: -25,
+      x: x + rand(-4, 4), y: y + rand(-4, 4), h: rand(6, 20),
+      vx: rand(-14, 14), vy: rand(-14, 14), vh: rand(40, 95),
+      life, maxLife: life,
+      size: hot ? rand(3, 5) : rand(5, 9),
+      color: hot ? "#fff4c2" : (Math.random() < 0.5 ? "#ff9b2e" : "#ff5a1e"),
+      drag: 2, gravity: -34, glow: true, shrink: 0.3,
     });
   }
 
@@ -124,16 +180,42 @@ export class ParticleSystem {
     }
   }
 
-  /** Draw all particles, projecting each to the screen. */
+  /** Draw all particles, projecting each to the screen. Solid bits (dust/confetti) draw with
+   *  normal blending; glow particles (flames/embers) draw additively on top as soft sprites. */
   render(r: Renderer, project: Projector): void {
     const ctx = r.ctx;
+    // Pass 1: solid particles with normal alpha blending. Soft ones (smoke) draw as round
+    // puffs; hard ones (dust, confetti) stay as little squares.
     for (const p of this.pool) {
+      if (p.glow) continue;
       const s = project(p.x, p.y, p.h);
       if (!s.visible) continue;
-      ctx.globalAlpha = Math.max(0, Math.min(1, p.life / p.maxLife));
+      const t = p.life / p.maxLife;
+      const sz = p.size * (p.shrink != null ? p.shrink + (1 - p.shrink) * t : 1);
       ctx.fillStyle = p.color;
-      ctx.fillRect(s.x - p.size / 2, s.y - p.size / 2, p.size, p.size);
+      if (p.soft) {
+        ctx.globalAlpha = Math.sin(Math.PI * (1 - t)) * 0.4; // gentle haze, fades in and out
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, sz, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.globalAlpha = Math.max(0, Math.min(1, t));
+        ctx.fillRect(s.x - sz / 2, s.y - sz / 2, sz, sz);
+      }
     }
+    // Pass 2: additive glow (flames / embers) layered on top so overlaps brighten to white-hot.
+    ctx.globalCompositeOperation = "lighter";
+    for (const p of this.pool) {
+      if (!p.glow) continue;
+      const s = project(p.x, p.y, p.h);
+      if (!s.visible) continue;
+      const t = p.life / p.maxLife;
+      const sz = p.size * (p.shrink != null ? p.shrink + (1 - p.shrink) * t : 1);
+      ctx.globalAlpha = p.soft ? Math.sin(Math.PI * (1 - t)) : Math.max(0, Math.min(1, t));
+      const spr = this.glowSprite(p.color);
+      ctx.drawImage(spr, s.x - sz, s.y - sz, sz * 2, sz * 2);
+    }
+    ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
   }
 

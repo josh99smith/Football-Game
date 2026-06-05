@@ -1333,8 +1333,13 @@ export class LivePlayState implements GameState {
   private spawnTurboTrail(): void {
     const c = this.controlled;
     if (!c || c.isDown || !c.turbo) return;
-    if (Math.hypot(c.vel.x, c.vel.y) < 50) return;
-    this.app.particles.trail(c.pos.x, c.pos.y);
+    const sp = Math.hypot(c.vel.x, c.vel.y);
+    if (sp < 50) return;
+    // Stream embers off the trailing foot (just behind the run direction).
+    const bx = c.pos.x - (c.vel.x / sp) * 9;
+    const by = c.pos.y - (c.vel.y / sp) * 9;
+    this.app.particles.trail(bx, by);
+    this.app.particles.trail(bx, by);
   }
 
   private spawnFireFx(): void {
@@ -1342,7 +1347,8 @@ export class LivePlayState implements GameState {
     for (const p of this.all) {
       if (p.isDown) continue;
       if (m.team(p.team).onFire && (p.hasBall || p.controlled)) {
-        this.app.particles.fire(p.pos.x, p.pos.y + p.radius * 0.4, 2);
+        // A fuller flame on the hot ball-carrier: a broad base + a taller lick up the body.
+        this.app.particles.fire(p.pos.x, p.pos.y + p.radius * 0.4, 3, 1.15);
       }
     }
   }
