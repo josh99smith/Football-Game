@@ -19,38 +19,62 @@ export interface PlayPick {
  * card layout, rendering (with route/scheme diagrams) and tap hit-testing — but no game state,
  * so a caller can lay it over anything.
  */
+const PER_PAGE = 4; // plays shown at once; the rest live on further pages
+
 export class PlayCallOverlay {
   private cards: { rect: Rect; off?: OffensePlay; def?: DefensePlay }[] = [];
   private humanOffense = true;
+  private allPlays: (OffensePlay | DefensePlay)[] = [];
+  private page = 0;
+  private pages = 1;
+  private prevRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  private nextRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  private dotsY = 0;
+  private r!: Renderer;
 
   /** (Re)compute card rectangles for the current screen size and side. */
   layout(r: Renderer, humanOffense: boolean): void {
+    this.r = r;
     this.humanOffense = humanOffense;
-    const plays = humanOffense ? OFFENSE_PLAYS : DEFENSE_PLAYS;
-    const n = plays.length;
-    // Grid: up to 4 across, wrapping into rows so a deeper playbook still fits the lower screen.
-    const cols = Math.min(n, 4);
-    const rows = Math.ceil(n / cols);
-    const gap = 12;
-    const cardW = Math.min(170, (r.width - 36 - gap * (cols - 1)) / cols);
-    // Keep the whole grid in the lower ~46% of the screen so the field stays visible above it.
-    const cardH = Math.min(140, (r.height * 0.46 - gap * (rows - 1)) / rows);
-    const totalW = cols * cardW + (cols - 1) * gap;
-    const totalH = rows * cardH + (rows - 1) * gap;
-    const startX = (r.width - totalW) / 2;
-    const startY = r.height - totalH - 22; // anchored near the bottom edge
-
-    this.cards = plays.map((p, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const rect: Rect = { x: startX + col * (cardW + gap), y: startY + row * (cardH + gap), w: cardW, h: cardH };
-      return humanOffense ? { rect, off: p as OffensePlay } : { rect, def: p as DefensePlay };
-    });
+    this.allPlays = (humanOffense ? OFFENSE_PLAYS : DEFENSE_PLAYS).slice();
+    this.pages = Math.max(1, Math.ceil(this.allPlays.length / PER_PAGE));
+    this.page = 0;
+    this.computePageCards();
   }
 
-  /** If a card was tapped, return the chosen play; otherwise null. */
+  /** Lay out the (up to 4) cards for the current page, in one row, plus the page-nav regions. */
+  private computePageCards(): void {
+    const r = this.r;
+    const start = this.page * PER_PAGE;
+    const items = this.allPlays.slice(start, start + PER_PAGE);
+    const cols = Math.max(1, items.length);
+    const gap = 12;
+    const cardW = Math.min(168, (r.width - 36 - gap * (cols - 1)) / cols);
+    const cardH = Math.min(168, r.height * 0.34);
+    const totalW = cols * cardW + (cols - 1) * gap;
+    const startX = (r.width - totalW) / 2;
+    const navH = this.pages > 1 ? 46 : 14;
+    const startY = r.height - cardH - navH - 18;
+
+    this.cards = items.map((p, i) => {
+      const rect: Rect = { x: startX + i * (cardW + gap), y: startY, w: cardW, h: cardH };
+      return this.humanOffense ? { rect, off: p as OffensePlay } : { rect, def: p as DefensePlay };
+    });
+
+    const navY = startY + cardH + 8;
+    this.dotsY = navY + 18;
+    const bw = 92;
+    this.prevRect = { x: startX, y: navY, w: bw, h: 34 };
+    this.nextRect = { x: startX + totalW - bw, y: navY, w: bw, h: 34 };
+  }
+
+  /** If a card was tapped, return the chosen play; page-nav taps flip the page and return null. */
   pick(taps: { x: number; y: number }[]): PlayPick | null {
     if (taps.length === 0) return null;
+    if (this.pages > 1) {
+      if (tappedIn(this.prevRect, taps)) { this.page = (this.page - 1 + this.pages) % this.pages; this.computePageCards(); return null; }
+      if (tappedIn(this.nextRect, taps)) { this.page = (this.page + 1) % this.pages; this.computePageCards(); return null; }
+    }
     for (const card of this.cards) {
       if (tappedIn(card.rect, taps)) return { off: card.off, def: card.def };
     }
@@ -104,6 +128,24 @@ export class PlayCallOverlay {
         color: COLORS.blood,
         weight: "normal",
       });
+    }
+
+    // Page navigation (only when the playbook spills past one page).
+    if (this.pages > 1) {
+      drawPanel(r, this.prevRect, COLORS.concrete);
+      drawPanel(r, this.nextRect, COLORS.concrete);
+      r.text("‹ PREV", this.prevRect.x + this.prevRect.w / 2, this.prevRect.y + this.prevRect.h / 2, {
+        size: 14, align: "center", baseline: "middle", color: COLORS.bone, font: FONT.ui,
+      });
+      r.text("NEXT ›", this.nextRect.x + this.nextRect.w / 2, this.nextRect.y + this.nextRect.h / 2, {
+        size: 14, align: "center", baseline: "middle", color: COLORS.bone, font: FONT.ui,
+      });
+      // Page dots between the buttons.
+      const dotGap = 16;
+      const dx0 = r.width / 2 - ((this.pages - 1) * dotGap) / 2;
+      for (let i = 0; i < this.pages; i++) {
+        r.circle(dx0 + i * dotGap, this.dotsY, i === this.page ? 4 : 2.5, i === this.page ? COLORS.hazard : COLORS.steel);
+      }
     }
     ctx.restore();
   }
