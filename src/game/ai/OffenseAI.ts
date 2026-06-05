@@ -2,8 +2,11 @@ import type { Player } from "../entities/Player";
 import { addSteer, seek, separation } from "./Steering";
 import type { PlayContext } from "./DefenseAI";
 import { dist, type Vec2 } from "../../engine/math/Vec2";
+import { FIELD_WIDTH, FIELD_LENGTH } from "../Field";
 
 const ROUTE_REACH = 18; // px proximity to advance to next waypoint
+const SIDE_MARGIN = 60; // px from a sideline where receivers steer back inbounds
+const BACK_MARGIN = 44; // px from the back of the end zone where routes get cut short
 
 /** Per-frame: set `desired` for every non-human-controlled offensive player. */
 export function updateOffense(ctx: PlayContext, controlled: Player | null): void {
@@ -16,10 +19,11 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
 
   for (const o of offense) {
     if (o === controlled || o.isDown) continue;
-    // A live loose ball (fumble): everyone dives on it.
+    // A live loose ball (fumble): everyone dives on it (but stays inbounds).
     if (ctx.ball.state === "loose") {
       o.desired = seek(o.pos, ctx.ball.pos);
       o.turbo = true;
+      keepReceiverInbounds(o, ctx);
       continue;
     }
     if (o === carrier) continue; // the ball carrier is driven by player/CPU controller
@@ -89,6 +93,26 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
 
     const sep = separation(o, offense, 24);
     o.desired = addSteer(steer, sep, 0.35);
+    keepReceiverInbounds(o, ctx);
+  }
+}
+
+/**
+ * Keep a route-runner / receiver inbounds and eligible: steer off the sidelines, and — crucially
+ * near the goal line — cut the route short instead of running out the back of the end zone, so a
+ * deep route in the red zone settles in the end zone (eligible) rather than sailing out of bounds.
+ */
+function keepReceiverInbounds(o: Player, ctx: PlayContext): void {
+  const edgeY = Math.min(o.pos.y, FIELD_WIDTH - o.pos.y);
+  if (edgeY < SIDE_MARGIN) {
+    const inward = o.pos.y < FIELD_WIDTH / 2 ? 1 : -1;
+    o.desired.y += inward * (1 - edgeY / SIDE_MARGIN) * 1.5;
+  }
+  // Back of the attacking end zone: don't run out the back — pull the route back in.
+  const backX = ctx.dir > 0 ? FIELD_LENGTH : 0;
+  const edgeX = Math.abs(backX - o.pos.x);
+  if (edgeX < BACK_MARGIN) {
+    o.desired.x -= ctx.dir * (1 - edgeX / BACK_MARGIN) * 1.8;
   }
 }
 
