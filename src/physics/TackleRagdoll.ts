@@ -92,6 +92,7 @@ export class TackleRagdoll {
   private segs: Seg[] = [];
   private bones = new Map<string, THREE.Bone>();
   private prevSubsteps = 2;
+  private age = 0; // seconds since spawn — limits fade out as this grows
 
   constructor(physics: PhysicsWorld) {
     this.physics = physics;
@@ -128,6 +129,7 @@ export class TackleRagdoll {
     const world = this.physics.world;
     const R = this.physics.rapier;
     const byName = new Map<string, Seg>();
+    this.age = 0;
     // Joints solve far more stably with more substeps — the key fix for "goes crazy".
     this.prevSubsteps = this.physics.substeps;
     this.physics.substeps = 8;
@@ -151,8 +153,8 @@ export class TackleRagdoll {
         .setTranslation(_c.x, _c.y, _c.z)
         .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })
         .setLinvel(v.x, v.y, v.z)
-        .setAngularDamping(4.0)
-        .setLinearDamping(0.2)
+        .setAngularDamping(6.0)
+        .setLinearDamping(0.4)
         .setCanSleep(true);
       const body = world.createRigidBody(bodyDesc);
       const half = Math.max(0.02, len / 2 - def.r);
@@ -213,10 +215,22 @@ export class TackleRagdoll {
    */
   applyLimits(dt: number): void {
     if (!this.active) return;
-    const kSwing = 30, kTwist = 30, kDamp = 1.6;
+    // The limits matter only DURING the fall (to stop the mesh candy-wrappering while the
+    // body whips around fast). Once it's down, a limb resting on the ground at a beyond-limit
+    // angle would fight the ground forever and buzz — so we fade the limits out over the first
+    // ~1.5s and then leave the body fully limp to settle.
+    this.age += dt;
+    const fade = this.age < 1.0 ? 1 : this.age < 1.6 ? (1.6 - this.age) / 0.6 : 0;
+    if (fade <= 0) return;
+    // Soft + overdamped: a gentle spring past the limit + strong relative-velocity damping.
+    const kSwing = 7 * fade, kTwist = 7 * fade, kDamp = 4.5, dead = 0.06, maxT = 12;
     for (const seg of this.segs) {
       const parent = seg.parentSeg;
       if (!parent || seg.sw === undefined) continue;
+      const wc = seg.body.angvel(), wp = parent.body.angvel();
+      const relx = wc.x - wp.x, rely = wc.y - wp.y, relz = wc.z - wp.z;
+      const calm = relx * relx + rely * rely + relz * relz < 0.04; // ~0.2 rad/s
+
       const pr = parent.body.rotation(); _lpQ.set(pr.x, pr.y, pr.z, pr.w);
       const cr = seg.body.rotation(); _lcQ.set(cr.x, cr.y, cr.z, cr.w);
       // qRel = parentQ^-1 * childQ ; qDev = qRelRest^-1 * qRel  (deviation, in rest-child frame)
@@ -232,26 +246,35 @@ export class TackleRagdoll {
       if (_lswing.w < 0) { _lswing.x = -_lswing.x; _lswing.y = -_lswing.y; _lswing.z = -_lswing.z; _lswing.w = -_lswing.w; }
       const swingAngle = 2 * Math.acos(Math.min(1, _lswing.w));
 
+      const overSwing = swingAngle > seg.sw + dead;
+      const tl = seg.tw ?? 0.4;
+      const overTwist = twistAngle > tl + dead || twistAngle < -tl - dead;
+      // Calm AND inside the limits -> leave it alone so it can settle and sleep.
+      if (calm && !overSwing && !overTwist) continue;
+
       _ltorque.set(0, 0, 0);
-      if (swingAngle > seg.sw) {
+      if (overSwing) {
         const len = Math.hypot(_lswing.x, _lswing.y, _lswing.z) || 1;
         const k = (-kSwing * (swingAngle - seg.sw)) / len;
-        _ltorque.set(_lswing.x * k, _lswing.y * k, _lswing.z * k); // push swing back toward rest
+        _ltorque.set(_lswing.x * k, _lswing.y * k, _lswing.z * k); // push swing back toward the limit
       }
-      const tl = seg.tw ?? 0.4;
       if (twistAngle > tl) _ltorque.y += -kTwist * (twistAngle - tl);
       else if (twistAngle < -tl) _ltorque.y += -kTwist * (twistAngle + tl);
-      // rotate the (rest-child-frame) correction into world
+      // rotate the (rest-child-frame) spring correction into world
       _lrest.copy(_lpQ).multiply(seg.qRelRest);
       _ltorque.applyQuaternion(_lrest);
-      // damping on the relative angular velocity (world frame)
-      const wc = seg.body.angvel(), wp = parent.body.angvel();
-      _ltorque.x += -kDamp * (wc.x - wp.x);
-      _ltorque.y += -kDamp * (wc.y - wp.y);
-      _ltorque.z += -kDamp * (wc.z - wp.z);
-
+      // strong damping on the relative angular velocity (clamped) — kills the ringing
+      const rlen = Math.hypot(relx, rely, relz);
+      const rs = rlen > 8 ? 8 / rlen : 1; // cap the velocity we damp against
+      _ltorque.x -= kDamp * relx * rs;
+      _ltorque.y -= kDamp * rely * rs;
+      _ltorque.z -= kDamp * relz * rs;
+      // Clamp the TOTAL torque and bail on anything non-finite (no Rapier NaN panics). Applied
+      // only to the child — torquing shared parents too made them accumulate and blow up.
+      const tlen = _ltorque.length();
+      if (!Number.isFinite(tlen)) continue;
+      if (tlen > maxT) _ltorque.multiplyScalar(maxT / tlen);
       seg.body.applyTorqueImpulse({ x: _ltorque.x * dt, y: _ltorque.y * dt, z: _ltorque.z * dt }, true);
-      parent.body.applyTorqueImpulse({ x: -_ltorque.x * dt, y: -_ltorque.y * dt, z: -_ltorque.z * dt }, true);
     }
   }
 
@@ -289,6 +312,16 @@ export class TackleRagdoll {
     let y = Infinity;
     for (const seg of this.segs) y = Math.min(y, seg.body.translation().y);
     return y;
+  }
+
+  /** Sum of linear+angular speed across all bodies — ~0 when settled, high if it's buzzing. */
+  residualMotion(): number {
+    let m = 0;
+    for (const seg of this.segs) {
+      const v = seg.body.linvel(), w = seg.body.angvel();
+      m += Math.hypot(v.x, v.y, v.z) + Math.hypot(w.x, w.y, w.z);
+    }
+    return m;
   }
 
   /** Roughly at rest? (all bodies nearly stopped) */
