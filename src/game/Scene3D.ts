@@ -1622,6 +1622,44 @@ export class Scene3D {
     this.composer.render();
   }
 
+  // --- special-teams place-kick view ----------------------------------------------------
+  /** World X of the uprights the given attack direction is kicking toward. */
+  goalPostWorldX(dir: number): number {
+    return dir > 0 ? FIELD_LEN_U - 0.4 : 0.4;
+  }
+
+  /** Set up a place-kick: hide players, sit the ball on the spot, frame it against the posts. */
+  prepareKick(ballX: number, ballY: number, dir: number): void {
+    for (const a of this.players) a.hide();
+    this.ballGroup.visible = true;
+    this.ballPrimed = false;
+    this.renderKickFrame(ballX, ballY, 0, dir);
+  }
+
+  /** Position the ball mid-flight (field-px x/y, height z in px) and chase it with the camera. */
+  renderKickFrame(ballX: number, ballY: number, zPx: number, dir: number): void {
+    const bx = ballX * U;
+    const by = Math.max(0.05, zPx * U);
+    const bz = ballY * U;
+    this.ballGroup.position.set(bx, by + 0.1, bz);
+    const shadow = this.ballGroup.getObjectByName("shadow");
+    if (shadow) shadow.position.y = -by + 0.02 - 0.1;
+    this.ballRoll += 0.45;
+    this.ballMesh.rotation.set(0, dir > 0 ? Math.PI / 2 : -Math.PI / 2, this.ballRoll);
+
+    const cz = FIELD_WID_U / 2;
+    const postX = this.goalPostWorldX(dir);
+    // Low and behind the spot, easing up as the ball climbs so it stays framed against the posts.
+    this.camera.position.set(bx - dir * 9, 6.2 + by * 0.22, bz + (cz - bz) * 0.12);
+    this.camera.lookAt((postX + bx) / 2, Math.max(2.4, by * 0.55), cz);
+
+    const now = performance.now();
+    const rdt = this.atmoLast ? Math.min(0.05, (now - this.atmoLast) / 1000) : 0.016;
+    this.atmoLast = now;
+    this.tickAtmosphere(rdt);
+    this.composer.render();
+  }
+
   project(worldX: number, worldY: number, heightPx: number): { x: number; y: number; visible: boolean } {
     _tmpVec.set(worldX * U, heightPx * U, worldY * U);
     _tmpVec.project(this.camera);
