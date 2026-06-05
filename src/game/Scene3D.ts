@@ -1,5 +1,9 @@
 import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import type { Player } from "./entities/Player";
 import type { Ball } from "./entities/Ball";
 import type { CharacterAsset } from "./CharacterModel";
@@ -797,6 +801,9 @@ export class Scene3D {
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
   private readonly sun: THREE.DirectionalLight;
+  /** Post-processing: bloom over the 3D scene (lights, fire, markers glow). */
+  private composer!: EffectComposer;
+  private bloom!: UnrealBloomPass;
 
   private players: Avatar[] = [];
   /** Shared physics world for ragdoll tackles (loaded async; null until ready). */
@@ -834,22 +841,24 @@ export class Scene3D {
   constructor(canvas: HTMLCanvasElement, field: Field) {
     this.canvas = canvas;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-    this.renderer.setClearColor(0x0a1622, 1);
+    this.renderer.setClearColor(0x05080f, 1);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.0;
 
     this.scene.background = this.makeSky();
-    this.scene.fog = new THREE.Fog(0x223a55, 80, 200);
+    this.scene.fog = new THREE.Fog(0x070d1c, 60, 175);
 
     this.camera = new THREE.PerspectiveCamera(56, 1, 0.1, 600);
 
-    // Lighting: hemisphere fill + a sun that follows the action and casts shadows.
-    this.scene.add(new THREE.HemisphereLight(0xcfe3ff, 0x2c5a32, 0.9));
-    this.sun = new THREE.DirectionalLight(0xfff4e0, 1.15);
+    // Floodlit-night lighting: a dim cool ambient, a strong warm key floodlight that casts
+    // shadows, and a cool fill from the far side so players are modelled from two directions
+    // (no flat single-shadow look).
+    this.scene.add(new THREE.HemisphereLight(0x6f86b6, 0x16241a, 0.5));
+    this.sun = new THREE.DirectionalLight(0xfff0d2, 1.5);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(1024, 1024);
+    this.sun.shadow.mapSize.set(2048, 2048);
     this.sun.shadow.camera.near = 1;
     this.sun.shadow.camera.far = 90;
     const s = 30;
@@ -857,11 +866,16 @@ export class Scene3D {
     this.sun.shadow.camera.right = s;
     this.sun.shadow.camera.top = s;
     this.sun.shadow.camera.bottom = -s;
-    this.sun.shadow.bias = -0.0008;
+    this.sun.shadow.bias = -0.0006;
+    this.sun.shadow.normalBias = 0.02;
     this.scene.add(this.sun, this.sun.target);
+    const fill = new THREE.DirectionalLight(0x8fb6ff, 0.5);
+    fill.position.set(20, 26, -16);
+    this.scene.add(fill);
 
     this.buildField(field);
     this.buildStadium();
+    this.buildFloodlights();
 
     for (let i = 0; i < MAX_PLAYERS; i++) {
       const pm = new BoxAvatar();
@@ -891,6 +905,14 @@ export class Scene3D {
     this.losMarker = this.buildMarker(0x4aa0ff); // bright blue line of scrimmage
     this.firstDownMarker = this.buildMarker(0xffe24a); // bright yellow first-down line
     this.scene.add(this.losMarker, this.firstDownMarker);
+
+    // Post-processing: render the scene, add a bloom pass (so floodlights, the on-fire glow,
+    // the yard-line markers and big-hit FX bleed light), then tone-map + sRGB to the screen.
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.62, 0.7, 0.62);
+    this.composer.addPass(this.bloom);
+    this.composer.addPass(new OutputPass());
 
     // Spin up the physics world for ragdoll tackles (async WASM). It's ready well before the
     // first snap; until then, tackles fall back to the canned animation.
@@ -931,14 +953,18 @@ export class Scene3D {
   }
 
   private makeSky(): THREE.Texture {
+    // A moody floodlit-night sky: near-black overhead, deep navy, with a faint sodium-orange
+    // city/stadium glow bleeding up from the horizon — gritty, on-theme.
     const c = document.createElement("canvas");
     c.width = 4;
     c.height = 256;
     const ctx = c.getContext("2d")!;
     const grad = ctx.createLinearGradient(0, 0, 0, 256);
-    grad.addColorStop(0, "#0a1730");
-    grad.addColorStop(0.55, "#1d3a5f");
-    grad.addColorStop(1, "#3b6a8c");
+    grad.addColorStop(0, "#04060d");
+    grad.addColorStop(0.5, "#0a1124");
+    grad.addColorStop(0.82, "#16223e");
+    grad.addColorStop(0.93, "#3a3320");
+    grad.addColorStop(1, "#5a3a18");
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 4, 256);
     const tex = new THREE.CanvasTexture(c);
@@ -1005,6 +1031,30 @@ export class Scene3D {
     this.scene.add(this.jumbotron(FIELD_LEN_U + m + 5, FIELD_WID_U / 2));
   }
 
+  /**
+   * Real floodlight beams from the four corner towers. The towers themselves (emissive banks) are
+   * built in buildStadium; this adds the actual pooled illumination so the turf reads as lit from
+   * four directions at night. Cheap: no shadow maps (the warm key sun owns the cast shadow) — these
+   * just paint warm overlapping pools and give specular pop on jerseys/helmets.
+   */
+  private buildFloodlights(): void {
+    const m = 4;
+    const corners: [number, number][] = [
+      [-m - 3, -m - 3],
+      [FIELD_LEN_U + m + 3, -m - 3],
+      [-m - 3, FIELD_WID_U + m + 3],
+      [FIELD_LEN_U + m + 3, FIELD_WID_U + m + 3],
+    ];
+    const cx = FIELD_LEN_U / 2;
+    const cz = FIELD_WID_U / 2;
+    for (const [x, z] of corners) {
+      const spot = new THREE.SpotLight(0xfff1cf, 240, 0, Math.PI / 3.4, 0.55, 1.4);
+      spot.position.set(x, 22, z);
+      spot.target.position.set(cx, 0, cz);
+      this.scene.add(spot, spot.target);
+    }
+  }
+
   /** One stand: ad board at field level + two raked seating tiers + a roof line. */
   private buildStand(x: number, z: number, ry: number, len: number, crowd: THREE.Texture, ad: THREE.Texture): THREE.Group {
     const g = new THREE.Group();
@@ -1049,7 +1099,7 @@ export class Scene3D {
     g.add(pole);
     const bank = new THREE.Mesh(
       new THREE.BoxGeometry(5, 2.4, 0.6),
-      new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff0c0, emissiveIntensity: 1.2 }),
+      new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff0c0, emissiveIntensity: 2.6 }),
     );
     bank.position.set(0, 21, 0);
     // Aim the bank toward the field center.
@@ -1217,10 +1267,14 @@ export class Scene3D {
   resize(width: number, height: number, dpr: number): void {
     this.width = width;
     this.height = height;
-    this.renderer.setPixelRatio(Math.min(dpr, 2));
+    const pr = Math.min(dpr, 2);
+    this.renderer.setPixelRatio(pr);
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.composer.setPixelRatio(pr);
+    this.composer.setSize(width, height);
+    this.bloom.setSize(width, height);
   }
 
   setVisible(v: boolean): void {
@@ -1412,7 +1466,7 @@ export class Scene3D {
     this.camera.position.set(_tmpPos.x + this.shakeX * U * 0.5, _tmpPos.y + this.shakeY * U * 0.5, _tmpPos.z);
     this.camera.lookAt(_tmpLook);
 
-    this.renderer.render(this.scene, this.camera);
+    this.composer.render();
   }
 
   project(worldX: number, worldY: number, heightPx: number): { x: number; y: number; visible: boolean } {
