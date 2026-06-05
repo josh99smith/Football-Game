@@ -47,6 +47,7 @@ const _err = new THREE.Vector3();
 const _com = new THREE.Vector3();
 const _prevCom = new THREE.Vector3();
 const _X = new THREE.Vector3(1, 0, 0);
+const _Y = new THREE.Vector3(0, 1, 0);
 const _fk = new THREE.Vector3();
 const _hipQ = new THREE.Quaternion();
 const _pelvisPos = new THREE.Vector3();
@@ -168,6 +169,10 @@ export class LocomotionController {
   pushoff = 0; // (off) a root impulse here catapults at resonant cadences; the ankle rolls instead
   stepHeight = 0.16; // swing-foot lift to clear the ground (m)
   anklePush = 0.22; // terminal-stance plantarflexion (rad ~13°) — toe-off foot roll + mild push
+  loadDip = 0.12; // loading-response stance-knee flex (rad) just after heel-strike
+  comBob = 0.025; // vertical COM oscillation amplitude (m) — rises at midstance
+  pelvisYaw = 0.09; // transverse pelvis rotation amplitude (rad ~5°) — the walking twist
+  thoraxYaw = 0.11; // counter-rotation of the thorax (rad ~6°), opposite the pelvis
   stepAhead = 0.22; // baseline foot plant AHEAD of the COM (m) so the COM stays behind the
   // support and the body stays upright instead of falling forward over trailing feet
   captureGain = 0.12; // capture-point feedback: plant further out when the COM is moving fast
@@ -317,7 +322,10 @@ export class LocomotionController {
    * natural toe-off. The locked foot pivots freely, so the ankle drive levers the body up/fwd. */
   private driveStance(leg: Leg, sp: number): void {
     _targetL.copy(leg.anchor).add(_v.set(0, 0.01, 0)).sub(_pelvisPos).applyQuaternion(_pelvisQInv);
-    const knee = legIK(HIP_LOCAL[leg.side], _targetL, _hipQ) + this.stanceBend;
+    // Loading-response dip: a brief extra knee flex just after heel-strike (shock absorption),
+    // fading by midstance — adds the natural little sink onto the leading leg.
+    const dip = this.loadDip * Math.exp(-(((sp - 0.12) / 0.16) ** 2));
+    const knee = legIK(HIP_LOCAL[leg.side], _targetL, _hipQ) + this.stanceBend + dip;
     fkAnkle(HIP_LOCAL[leg.side], _hipQ, knee, _fk);
     this.ikErr = _fk.sub(_targetL).length();
     // Push-off: plantarflex over the back third of stance, ramped to full at toe-off.
@@ -371,10 +379,14 @@ export class LocomotionController {
     if (!this.active || this.assist <= 0) return;
     const a = this.assist;
 
-    // Upright PD torque on pelvis & chest — hold the trunk vertical. (The believable, small
-    // forward lean now lives in the reference at the spine joint, not in a 45° root lurch.)
-    _qTarget.identity();
+    // Upright PD torque on pelvis & chest — hold the trunk vertical, plus a transverse twist:
+    // the pelvis rotates toward the swing side and the thorax counter-rotates the other way
+    // (the natural walking twist that the arm swing pairs with). sTw oscillates once per cycle.
+    const walking = this.mode === "walk" && this.desiredSpeed > 0.001;
+    const sTw = walking ? Math.sin(this.phase * Math.PI * 2) : 0;
     for (const name of ["pelvis", "chest"]) {
+      const yaw = name === "pelvis" ? this.pelvisYaw * sTw : -this.thoraxYaw * sTw;
+      _qTarget.setFromAxisAngle(_Y, yaw);
       const b = this.rag.body(name);
       const r = b.rotation();
       _q.set(r.x, r.y, r.z, r.w);
@@ -400,7 +412,6 @@ export class LocomotionController {
     }
     if (n === 0) { sx = _com.x; sz = _com.z; n = 1; }
     sx /= n; sz /= n;
-    const walking = this.mode === "walk" && this.desiredSpeed > 0.001;
     // Lateral (x): always keep the COM centred over the support feet.
     const fx = (this.comKp * (sx - _com.x) - this.comKd * this.comVel.x) * this.totalMass;
     // Travel (z): standing -> centre over support; walking -> velocity servo toward the
@@ -415,10 +426,12 @@ export class LocomotionController {
     pelvis.applyImpulse({ x: clampAbs(fx * a * dt, this.maxAssistForce), y: 0, z: fzc * 0.4 }, true);
     this.rag.body("chest").applyImpulse({ x: 0, y: 0, z: fzc * 0.6 }, true);
 
-    // Vertical: hold pelvis height (push up only). Crouch slightly while walking.
+    // Vertical: hold pelvis height (push up only), with a gait bob — the body rises toward
+    // each midstance and dips through double-support (twice per cycle), the natural up-down.
     const pt = pelvis.translation();
     const pv = pelvis.linvel();
-    const hTarget = walking ? this.walkHeight : this.targetHeight;
+    const bob = walking ? this.comBob * (0.5 - 0.5 * Math.cos(4 * Math.PI * this.phase)) : 0;
+    const hTarget = (walking ? this.walkHeight : this.targetHeight) + bob;
     let fy = (this.heightKp * (hTarget - pt.y) - this.heightKd * pv.y) * this.totalMass;
     if (fy < 0) fy = 0;
     pelvis.applyImpulse({ x: 0, y: clampAbs(fy * a * dt, this.maxAssistForce), z: 0 }, true);

@@ -108,20 +108,37 @@ async function main(): Promise<void> {
     value: (v: boolean) => { sideView = v; },
   });
 
+  // One fixed simulation step (the single source of truth for advancing physics).
+  function simStep(): void {
+    loco.tick(STEP); // gait + leg targets + foot-locks (once per physics frame)
+    physics.step((dt) => {
+      loco.applyAssist(dt); // balance wrench, re-applied per substep
+      ragdoll.update(dt); // PD muscle re-applied per substep
+    });
+  }
+  // Deterministic stepping for faithful capture/eval: advance exactly N fixed steps
+  // regardless of wall-clock (real-time RAF feeds variable dt that destabilises physics
+  // during slow screenshot loops — that is a capture artifact, not the gait).
+  let paused = false;
+  const mo = (window as unknown as { __motion: Record<string, unknown> }).__motion;
+  mo.setPaused = (v: boolean) => { paused = v; };
+  mo.stepFixed = (n: number) => { for (let i = 0; i < (n || 1); i++) simStep(); renderFrame(); };
+
   function frame(now: number): void {
     requestAnimationFrame(frame);
     acc += Math.min(0.25, (now - last) / 1000);
     last = now;
+    if (paused) { acc = 0; renderFrame(); return; }
     let steps = 0;
     while (acc >= STEP) {
-      loco.tick(STEP); // gait FSM + leg targets + foot-locks (once per physics frame)
-      physics.step((dt) => {
-        loco.applyAssist(dt); // balance wrench, re-applied per substep
-        ragdoll.update(dt); // PD muscle re-applied per substep
-      });
+      simStep();
       acc -= STEP;
       if (++steps >= 5) { acc = 0; break; }
     }
+    renderFrame();
+  }
+
+  function renderFrame(): void {
     ragdoll.getBoneTransforms(xforms);
     for (let i = 0; i < meshes.length; i++) {
       meshes[i].position.copy(xforms[i].position);
