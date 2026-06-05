@@ -736,6 +736,11 @@ class FbxAvatar implements Avatar {
     // Procedural fall pose (applies whether or not locomotion is muted).
     this.lean.rotation.x = -this.fallT * (Math.PI / 2.1);
 
+    // Contact shadow spreads + softens as the body goes down (a falling player's shadow pools out).
+    const blobScale = 1 + this.fallT * 0.5;
+    this.blob.scale.set(blobScale, blobScale, 1);
+    (this.blob.material as THREE.MeshBasicMaterial).opacity = 0.75 - this.fallT * 0.3;
+
     // Compute TARGET weights, then lerp toward them so every transition crossfades.
     let tIdle = 0;
     let tWalk = 0;
