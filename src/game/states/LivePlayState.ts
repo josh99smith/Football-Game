@@ -140,6 +140,9 @@ export class LivePlayState implements GameState {
   private struggleHumanCarrier = false;
   private struggleCd = 0;    // cooldown so battles don't chain
   private struggleFlash = 0; // mash feedback pulse
+  private struggleMid: Vec2 = { x: 0, y: 0 }; // locked center of the battle
+  private struggleAng = 0;   // axis between the two
+  private struggleHalf = 0;  // half the (tight) separation so the bodies actually touch
   /** Instant replay: records the play, then plays it back with scrub + zoom + ball-cam. */
   private readonly replay = new ReplaySystem();
   private replayT = 0;          // current replay time (s)
@@ -1026,7 +1029,9 @@ export class LivePlayState implements GameState {
         const dx = b.pos.x - a.pos.x;
         const dy = b.pos.y - a.pos.y;
         const d = Math.hypot(dx, dy);
-        const min = a.radius + b.radius;
+        // Pack a touch tighter than the full radii so bodies actually make contact (the collision
+        // radius is larger than the visible model), instead of hovering with a gap.
+        const min = (a.radius + b.radius) * 0.84;
         if (d > 0 && d < min) {
           const overlap = min - d;
           if (overlap < 0.4) continue; // slop: ignore micro-overlaps to avoid buzzing
@@ -1065,7 +1070,7 @@ export class LivePlayState implements GameState {
 
     for (const d of this.defense) {
       if (d.isDown) continue;
-      const reach = d.diveTimer > 0 ? d.radius + carrier.radius + 10 : (d.radius + carrier.radius) * 0.95;
+      const reach = d.diveTimer > 0 ? (d.radius + carrier.radius) * 0.92 : (d.radius + carrier.radius) * 0.78;
       if (dist(d.pos, carrier.pos) > reach) continue;
 
       // Juke: the carrier shrugs the first tackler and the defender whiffs.
@@ -1119,12 +1124,30 @@ export class LivePlayState implements GameState {
     tackler.bigHitArmed = false; // it's a battle now, not a committed hit (no later whiff)
     tackler.diveTimer = 0;
     const ang = Math.atan2(carrier.pos.y - tackler.pos.y, carrier.pos.x - tackler.pos.x) || 0;
+    // Lock them chest-to-chest so they're actually IN CONTACT (the old gap was the collision
+    // radius being far larger than the visible body).
+    this.struggleMid = { x: (carrier.pos.x + tackler.pos.x) / 2, y: (carrier.pos.y + tackler.pos.y) / 2 };
+    this.struggleAng = ang;
+    this.struggleHalf = (carrier.radius + tackler.radius) * 0.3;
+    this.placeStrugglers(0);
     this.faceStruggler(tackler, ang);
     this.faceStruggler(carrier, ang + Math.PI);
     this.app.scene3d.hitZoom(STRUGGLE_TIME + 0.4); // punch the camera in on the battle
     this.app.audio.hit(0.4);
     this.app.shake.add(0.2);
     this.app.input.consumeTaps();
+  }
+
+  /** Place the two combatants chest-to-chest at the locked spot; `push` (-1..1) shoves them. */
+  private placeStrugglers(push: number): void {
+    const c = this.struggleCarrier;
+    const t = this.struggleTackler;
+    if (!c || !t) return;
+    const off = this.struggleHalf * (1 + push);
+    const cx = Math.cos(this.struggleAng) * off;
+    const cy = Math.sin(this.struggleAng) * off;
+    c.pos = { x: this.struggleMid.x + cx, y: this.struggleMid.y + cy };
+    t.pos = { x: this.struggleMid.x - cx, y: this.struggleMid.y - cy };
   }
 
   private faceStruggler(p: Player, ang: number): void {
@@ -1155,10 +1178,8 @@ export class LivePlayState implements GameState {
     this.struggleVal += this.struggleHumanCarrier ? humanPush - cpuPush : cpuPush - humanPush;
     this.struggleVal = Math.max(0, Math.min(1, this.struggleVal));
 
-    // Jostle + lean so the two read as actually wrestling.
-    const j = 1.4;
-    c.pos.x += (Math.random() - 0.5) * j; c.pos.y += (Math.random() - 0.5) * j;
-    t.pos.x += (Math.random() - 0.5) * j; t.pos.y += (Math.random() - 0.5) * j;
+    // Wrestle: a bounded shove (oscillates around the locked spot — never drifts apart) + lean.
+    this.placeStrugglers(Math.sin(this.playTime * 26) * 0.18);
     c.leanTarget = -0.5; t.leanTarget = 0.5;
     if (Math.random() < 0.25) this.app.particles.burst((c.pos.x + t.pos.x) / 2, (c.pos.y + t.pos.y) / 2, "#d9c7a0", 2, 50);
 

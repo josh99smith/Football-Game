@@ -25,6 +25,18 @@ const RAG_GETUP_DUR = 1.1;       // seconds to rise to standing
 const _rgp = new THREE.Vector3();
 const _rhip = new THREE.Vector3();
 const _handPos = new THREE.Vector3();
+// Scratch for the procedural QB throw (aim the arm bones each frame).
+const _thA = new THREE.Vector3();
+const _thB = new THREE.Vector3();
+const _thDir = new THREE.Vector3();
+const _thFwd = new THREE.Vector3();
+const _thUp = new THREE.Vector3(0, 1, 0);
+const _thRight = new THREE.Vector3();
+const _thWind = new THREE.Vector3();
+const _thRel = new THREE.Vector3();
+const _thQ1 = new THREE.Quaternion();
+const _thQ2 = new THREE.Quaternion();
+const _thQ3 = new THREE.Quaternion();
 function ragEase(x: number): number { return x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2; }
 // Get-up stagger: legs/hips gather first, spine/head follow, arms swing in last.
 function ragGetupDelay(name: string): number {
@@ -287,6 +299,7 @@ function wrapAngle(a: number): number {
   return a;
 }
 /** Convert a standard heading (atan2(y,x)) to the model's yaw convention. */
+const THROW_DUR = 0.5; // seconds of the procedural QB throw motion
 function toModelYaw(h: number): number {
   return Math.atan2(Math.cos(h), Math.sin(h));
 }
@@ -337,6 +350,9 @@ class FbxAvatar implements Avatar {
 
   // --- physics ragdoll tackle (replaces the canned tackle clip when a hit lands) ---
   private readonly inner: THREE.Object3D;
+  /** Procedural QB throw: time remaining + the heading locked at release. */
+  private throwT = 0;
+  private throwHeading = 0;
   /** Bind-pose local transforms, the target the get-up blends back to. */
   private readonly restPose = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
   private ragdoll: TackleRagdoll | null = null;
@@ -477,6 +493,48 @@ class FbxAvatar implements Avatar {
     return found;
   }
 
+  /**
+   * Procedural throwing motion, applied on top of the mixer pose. Aims the right upper-arm and
+   * forearm bones through an over-the-top arc: wind up (arm cocked up/back), whip forward, follow
+   * through — blending in/out so it crossfades with locomotion. `p` is 0..1 through the throw.
+   */
+  private applyThrow(p: number): void {
+    const arm = this.bone("RightArm");
+    const fore = this.bone("RightForeArm");
+    const hand = this.bone("RightHand");
+    if (!arm || !fore) return;
+    const h = this.throwHeading;
+    _thFwd.set(Math.cos(h), 0, Math.sin(h));          // character's world forward
+    _thRight.copy(_thFwd).cross(_thUp).normalize();    // their right side
+    // Wind-up: arm up and slightly back/out. Release: arm forward and down (whip).
+    _thWind.copy(_thUp).multiplyScalar(0.95).addScaledVector(_thFwd, -0.15).addScaledVector(_thRight, 0.25).normalize();
+    _thRel.copy(_thFwd).multiplyScalar(0.95).addScaledVector(_thUp, -0.2).addScaledVector(_thRight, 0.05).normalize();
+    const t = smoothstep(0.22, 0.62, p); // wind -> release
+    _thDir.copy(_thWind).lerp(_thRel, t).normalize();
+    const weight = Math.max(0, Math.min(1, Math.min(p / 0.12, (1 - p) / 0.18)));
+    this.aimBone(arm, fore, _thDir, weight);
+    // The forearm leads slightly forward of the upper arm on release (the whip).
+    _thDir.lerp(_thRel, 0.35 * t).normalize();
+    this.aimBone(fore, hand ?? fore, _thDir, weight * 0.9);
+  }
+
+  /** Rotate `bone` so its down-the-bone direction (toward `child`) points at `targetDir` (world),
+   *  blended by `weight`. Leaves the result as the bone's local quaternion. */
+  private aimBone(bone: THREE.Bone, child: THREE.Object3D, targetDir: THREE.Vector3, weight: number): void {
+    bone.getWorldPosition(_thA);
+    child.getWorldPosition(_thB);
+    _thB.sub(_thA);
+    if (_thB.lengthSq() < 1e-8) return;
+    _thB.normalize();
+    _thQ1.setFromUnitVectors(_thB, targetDir);   // align current bone dir -> target
+    bone.getWorldQuaternion(_thQ2);
+    _thQ3.copy(_thQ1).multiply(_thQ2);           // desired world quat
+    _thQ2.slerp(_thQ3, weight);                   // blend
+    (bone.parent as THREE.Object3D).getWorldQuaternion(_thQ1);
+    bone.quaternion.copy(_thQ1.invert().multiply(_thQ2));
+    bone.updateWorldMatrix(false, true);          // refresh so the next aim reads fresh child pos
+  }
+
   private startGetup(): void {
     this.getupFrom.clear();
     for (const [bone] of this.restPose) this.getupFrom.set(bone, { p: bone.position.clone(), q: bone.quaternion.clone() });
@@ -585,7 +643,7 @@ class FbxAvatar implements Avatar {
     // Fire one-shot overlays on game events: throw, catch, spin-move juke, the
     // carrier's getting-tackled reaction, the defender's tackle + ball-swat attempts,
     // and a celebration. (Spin supersedes the old change-direction juke clip.)
-    if (p.animEvent === "pass") this.triggerOneShot(this.passAction, 0.75, 5, 0);
+    if (p.animEvent === "pass") { this.throwT = THROW_DUR; this.throwHeading = p.loco.heading; }
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
     else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0);
@@ -694,6 +752,13 @@ class FbxAvatar implements Avatar {
     blendW(this.strafeAction, tStrafe * loco, dt);
 
     this.mixer.update(dt);
+
+    // Procedural over-the-top throw: drive the right arm through a wind-up -> release arc on top
+    // of whatever the mixer posed (the source "pass" clip buries its throw in a 7.6s sequence).
+    if (this.throwT > 0) {
+      this.throwT -= dt;
+      this.applyThrow(clamp(1 - this.throwT / THROW_DUR, 0, 1));
+    }
 
     // Tint the uniform/helmet to the team color (multiplies the model's texture);
     // glow on fire. Works for the model's Phong or Standard materials.
