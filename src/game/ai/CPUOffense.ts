@@ -2,6 +2,9 @@ import type { Player } from "../entities/Player";
 import type { PlayContext } from "./DefenseAI";
 import { addSteer } from "./Steering";
 import { type Vec2 } from "../../engine/math/Vec2";
+import { FIELD_WIDTH } from "../Field";
+
+const SIDELINE_MARGIN = 70; // px from a sideline where carriers get pushed back infield
 
 /**
  * Drives the CPU when it has possession: the quarterback's drop/scan/throw/scramble
@@ -44,8 +47,33 @@ export class CPUOffense {
     const pressure = nearestDefender(qb, ctx);
     const pressured = pressure && distance(qb.pos, pressure.pos) < 42;
 
-    if (this.scrambling || (pressured && this.timer > 0.4)) {
+    if (this.scrambling || (pressured && this.timer > 0.6)) {
       this.scrambling = true;
+      const behindLine = ctx.dir > 0 ? qb.pos.x < ctx.losX : qb.pos.x > ctx.losX;
+      // A scrambling QB still keeps his eyes downfield: rather than rolling out until he runs
+      // out of bounds, throw to an open man, or throw it away when cornered near a sideline /
+      // about to be sacked. Otherwise scramble for yards (steerCarrier keeps him off the line).
+      if (behindLine && !this.decided) {
+        const target = bestReceiver(ctx);
+        const trapped =
+          (pressure && distance(qb.pos, pressure.pos) < 26) ||
+          qb.pos.y < SIDELINE_MARGIN ||
+          qb.pos.y > FIELD_WIDTH - SIDELINE_MARGIN;
+        if (target && nearestDefDist(target, ctx) > 64) {
+          this.decided = true;
+          const aim = leadPoint(target);
+          const d = distance(qb.pos, aim);
+          throwFn(qb, aim, target, Math.max(0.2, Math.min(0.9, 1 - d / 360)));
+          return;
+        }
+        if (trapped) {
+          // Throw it away downfield past the sideline — an incompletion beats a sack/OOB loss.
+          this.decided = true;
+          const awayY = qb.pos.y < FIELD_WIDTH / 2 ? -40 : FIELD_WIDTH + 40;
+          throwFn(qb, { x: ctx.losX + ctx.dir * 60, y: awayY }, null, 0.6);
+          return;
+        }
+      }
       steerCarrier(qb, ctx);
       return;
     }
@@ -96,9 +124,18 @@ export function steerCarrier(carrier: Player, ctx: PlayContext): void {
       ay += (dy / dd) * w * 1.3; // emphasize lateral jukes
     }
   }
+  // Stay off the sidelines: the closer to a boundary, the harder we steer back infield, so a
+  // carrier (especially a scrambling QB) gains yards upfield instead of running out of bounds.
+  if (carrier.pos.y < SIDELINE_MARGIN) {
+    ay += (1 - carrier.pos.y / SIDELINE_MARGIN) * 1.6;
+  } else if (carrier.pos.y > FIELD_WIDTH - SIDELINE_MARGIN) {
+    ay -= (1 - (FIELD_WIDTH - carrier.pos.y) / SIDELINE_MARGIN) * 1.6;
+  }
+
   steer = addSteer(steer, { x: ax, y: ay });
-  // Keep some forward intent even while evading.
-  steer.x += ctx.dir * 0.6;
+  // Keep strong forward intent even while evading, so a scramble presses upfield for yards
+  // rather than drifting laterally toward the boundary.
+  steer.x += ctx.dir * 0.9;
   carrier.desired = steer;
   carrier.turbo = near > 34;
 }
