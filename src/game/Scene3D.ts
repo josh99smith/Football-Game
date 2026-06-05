@@ -738,8 +738,11 @@ export class Scene3D {
   private physics: PhysicsWorld | null = null;
   private readonly ballGroup = new THREE.Group();
   private readonly ballMesh: THREE.Mesh;
-  private readonly losMarker: THREE.Mesh;
-  private readonly firstDownMarker: THREE.Mesh;
+  private readonly losMarker: THREE.Object3D;
+  private readonly firstDownMarker: THREE.Object3D;
+  /** Pulsing glow-wall meshes for the LOS / first-down lines (animated each frame). */
+  private readonly markerGlows: THREE.Mesh[] = [];
+  private markerT = 0;
 
   private width = 1;
   private height = 1;
@@ -820,8 +823,8 @@ export class Scene3D {
     this.ballGroup.visible = false;
     this.scene.add(this.ballGroup);
 
-    this.losMarker = this.buildMarker(0x3a6bff);
-    this.firstDownMarker = this.buildMarker(0xffd23a);
+    this.losMarker = this.buildMarker(0x4aa0ff); // bright blue line of scrimmage
+    this.firstDownMarker = this.buildMarker(0xffe24a); // bright yellow first-down line
     this.scene.add(this.losMarker, this.firstDownMarker);
 
     // Spin up the physics world for ragdoll tackles (async WASM). It's ready well before the
@@ -1102,14 +1105,48 @@ export class Scene3D {
     return tex;
   }
 
-  private buildMarker(color: number): THREE.Mesh {
-    const geo = new THREE.PlaneGeometry(0.2, FIELD_WID_U);
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
-    const m = new THREE.Mesh(geo, mat);
-    m.rotation.x = -Math.PI / 2;
-    m.position.y = 0.05;
-    m.position.z = FIELD_WID_U / 2;
-    return m;
+  /**
+   * A broadcast-style yard line: a bright stripe painted on the turf, a translucent glow "wall"
+   * rising from it (so it reads from a low camera and through traffic), and a lit pylon at each
+   * sideline. Positioned by setting the returned group's `.position.x`.
+   */
+  private buildMarker(color: number): THREE.Object3D {
+    const g = new THREE.Group();
+    const cz = FIELD_WID_U / 2;
+
+    // Painted ground stripe.
+    const stripe = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.5, FIELD_WID_U),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
+    );
+    stripe.rotation.x = -Math.PI / 2;
+    stripe.position.set(0, 0.06, cz);
+    g.add(stripe);
+
+    // Vertical glow wall (additive) — the part that really makes the line pop.
+    const glow = new THREE.Mesh(
+      new THREE.PlaneGeometry(FIELD_WID_U, 0.85),
+      new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 0.26, side: THREE.DoubleSide,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      }),
+    );
+    glow.rotation.y = Math.PI / 2;
+    glow.position.set(0, 0.42, cz);
+    glow.userData.baseOpacity = 0.26;
+    this.markerGlows.push(glow);
+    g.add(glow);
+
+    // Lit pylons at the sidelines.
+    for (const z of [0.25, FIELD_WID_U - 0.25]) {
+      const pylon = new THREE.Mesh(
+        new THREE.BoxGeometry(0.3, 0.95, 0.3),
+        new THREE.MeshBasicMaterial({ color }),
+      );
+      pylon.position.set(0, 0.48, z);
+      g.add(pylon);
+    }
+    return g;
   }
 
   resize(width: number, height: number, dpr: number): void {
@@ -1232,6 +1269,12 @@ export class Scene3D {
 
     this.losMarker.position.x = opts.losX * U;
     this.firstDownMarker.position.x = opts.firstDownX * U;
+    // Gentle pulse on the glow walls so the lines read as "live" broadcast markers.
+    this.markerT += opts.dt;
+    const pulse = 0.7 + 0.3 * Math.sin(this.markerT * 3.5);
+    for (const g of this.markerGlows) {
+      (g.material as THREE.MeshBasicMaterial).opacity = (g.userData.baseOpacity as number) * pulse;
+    }
 
     // Smooth camera follow (per-tick); the final placement is interpolated in render().
     const tp = _tmpPos;
