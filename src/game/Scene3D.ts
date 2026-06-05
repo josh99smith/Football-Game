@@ -274,6 +274,9 @@ const BACK_PLANT_K = 0.0194; // backpedal clip ~3.2 yd/s
 const STRAFE_PLANT_K = 0.0163; // strafe clip ~3.8 yd/s
 const IDLE_OUT = 0.06; // speed01 below this is idle
 const MOVE_FULL = 0.18; // speed01 above this is fully in locomotion (idle faded out)
+/** Fraction into the stance clip held for a neutral/idle player: a relaxed UPRIGHT stand
+ *  (the clip ends in a deep 3-point crouch, which looks wrong for players just milling). */
+const IDLE_POSE = 0.13;
 const WALK_TO_RUN_LO = 0.3; // below this, forward motion is the walk cycle
 const WALK_TO_RUN_HI = 0.6; // above this, forward motion is the run cycle
 
@@ -391,12 +394,12 @@ class FbxAvatar implements Avatar {
       a?.setLoop(THREE.LoopOnce, 1);
       if (a) a.clampWhenFinished = true;
     }
-    // The stance settles into a 3-point and HOLDS — play it once and clamp the final
-    // (hand-down) pose so players don't loop back up to standing and re-bend.
+    // Neutral/idle players hold a relaxed UPRIGHT stand, not the deep 3-point crouch the clip
+    // ends on — freeze the clip early (IDLE_POSE) where the body is standing.
     if (this.idleAction) {
-      this.idleAction.setLoop(THREE.LoopOnce, 1);
-      this.idleAction.clampWhenFinished = true;
       this.idleAction.play();
+      this.idleAction.paused = true;
+      this.idleAction.time = IDLE_POSE * (this.idleAction.getClip().duration || 1);
       this.idleAction.setEffectiveWeight(0);
     }
     (this.idleAction ?? this.runAction)?.setEffectiveWeight(1);
@@ -548,9 +551,12 @@ class FbxAvatar implements Avatar {
     for (const a of [this.idleAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
       a?.setEffectiveWeight(0);
     }
-    // Restart the stance so it bends down once this play, then clamps/holds the pose.
-    this.idleAction?.reset();
-    this.idleAction?.setEffectiveWeight(0);
+    // Hold the upright neutral stand again for the new play.
+    if (this.idleAction) {
+      this.idleAction.paused = true;
+      this.idleAction.time = IDLE_POSE * (this.idleAction.getClip().duration || 1);
+      this.idleAction.setEffectiveWeight(0);
+    }
     this.interp.reset();
   }
 
