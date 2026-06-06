@@ -1392,6 +1392,29 @@ export class LivePlayState implements GameState {
         if (m.down === 1 && !o.firstDown) this.igniteCheck(defense, 0.2); // forced a stop / punt situation
         break;
     }
+    this.commentate(o);
+  }
+
+  /** Punchy, street-flavored call-outs on notable plays (broadcast feedback). */
+  private commentate(o: PlayOutcome): void {
+    const pick = (arr: string[]) => arr[(Math.random() * arr.length) | 0];
+    let line: string | null = null;
+    let color = "#ffd23a";
+    switch (o.type) {
+      case "sack": line = pick(["SACKED!", "BROUGHT HIM DOWN!", "GET OUTTA HERE!"]); color = "#ff6a3a"; break;
+      case "interception": line = pick(["PICKED OFF!", "BALL'S OURS!", "READ IT EASY!"]); color = "#ff5a3a"; break;
+      case "fumbleLost": line = pick(["COUGHED IT UP!", "STRIPPED!", "TAKEAWAY!"]); color = "#ff5a3a"; break;
+      case "turnoverOnDowns": line = pick(["STONEWALLED!", "STUFFED ON DOWNS!", "DENIED!"]); color = "#ff6a3a"; break;
+      case "tackle":
+      case "outOfBounds":
+        if (o.yards >= 22) line = pick(["TAKIN' OFF!", "BIG GAINER!", "TO THE RACES!"]);
+        else if (o.firstDown) { line = pick(["MOVIN' THE CHAINS!", "FIRST DOWN!", "KEEP IT ROLLIN'!"]); color = "#3ad17a"; }
+        break;
+    }
+    if (line) {
+      const s = this.ballSpot();
+      this.app.floating.add(line, s.x, s.y - 30, { size: 22, color, life: 1.3 });
+    }
   }
 
   /** Add fire to a team; announce + celebrate the moment it ignites. */
