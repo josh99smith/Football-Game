@@ -66,21 +66,50 @@ function prep(clip: THREE.AnimationClip): THREE.AnimationClip {
   return c;
 }
 
+/** Retry a flaky async load a few times with backoff (FBX fetches can blip on first paint). */
+async function withRetry<T>(fn: () => Promise<T>, tries = 4, label = ""): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (i < tries - 1) await new Promise((r) => setTimeout(r, 250 * (i + 1)));
+    }
+  }
+  throw new Error(`failed to load ${label} after ${tries} tries: ${String(lastErr)}`);
+}
+
+/**
+ * Load a single animation clip — BEST EFFORT. A failed clip resolves to `null` (that one
+ * animation is simply disabled) so it can never take down the whole skinned model. Only the base
+ * rig is critical.
+ */
 async function loadClip(loader: FBXLoader, url: string): Promise<THREE.AnimationClip | null> {
-  const fbx = await loader.loadAsync(url);
-  return fbx.animations[0] ? prep(fbx.animations[0]) : null;
+  try {
+    const fbx = await withRetry(() => loader.loadAsync(url), 3, url);
+    return fbx.animations[0] ? prep(fbx.animations[0]) : null;
+  } catch (e) {
+    console.warn(`[character] animation clip failed (disabled, model still loads): ${url}`, e);
+    return null;
+  }
 }
 
 /**
  * Loads the rigged player model (whose own clip is the idle stance) plus the jog,
  * pass, catch, and defender animation clips. All clips bind to the model's skeleton
  * by bone name; root motion is stripped so everything plays in place.
+ *
+ * Resilience: the base rig is the ONLY critical asset (it's retried hard); every animation clip
+ * is loaded best-effort and never rejects, so a single flaky fetch can't drop the whole game back
+ * to box avatars. The skinned model shows as long as the rig itself can be fetched.
  */
 export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset> {
   const loader = new FBXLoader();
-  const [model, run, runBack, strafe, pass, catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate] =
+  // The rigged model is critical — retry hard. (Clips below are best-effort and resolve null.)
+  const model = await withRetry(() => loader.loadAsync(urls.model), 5, urls.model);
+  const [run, runBack, strafe, pass, catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate] =
     await Promise.all([
-      loader.loadAsync(urls.model),
       loadClip(loader, urls.run),
       loadClip(loader, urls.runBack),
       loadClip(loader, urls.strafe),

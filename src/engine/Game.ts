@@ -68,9 +68,9 @@ export class GameApp {
     this.field = new Field();
     this.scene3d = new Scene3D(canvas3d, this.field);
     this.scene3d.setVisible(false);
-    // Load the skinned character in the background; players use box avatars until ready.
+    // Load the skinned character in the background; players use box avatars only until it's ready.
     const base = import.meta.env.BASE_URL;
-    loadCharacter({
+    const urls = {
       model: `${base}rig_stance.fbx`,
       run: `${base}standard_run.fbx`,
       runBack: `${base}run_backward.fbx`,
@@ -84,9 +84,18 @@ export class GameApp {
       defTackle: `${base}def_tackle.fbx`,
       defSwat: `${base}def_swat.fbx`,
       celebrate: `${base}celebrate.fbx`,
-    })
-      .then((asset) => this.scene3d.setCharacter(asset))
-      .catch((err) => console.warn("character model failed to load; using box avatars", err));
+    };
+    // Keep trying until the skinned model loads — a transient asset blip must never leave the game
+    // stuck on box avatars. (loadCharacter already retries internally; this is the last-resort loop.)
+    const loadModel = (attempt = 0): void => {
+      loadCharacter(urls)
+        .then((asset) => this.scene3d.setCharacter(asset))
+        .catch((err) => {
+          console.error(`character model load failed (attempt ${attempt + 1}); retrying…`, err);
+          if (attempt < 8) setTimeout(() => loadModel(attempt + 1), 1500 * (attempt + 1));
+        });
+    };
+    loadModel();
     this.particles = new ParticleSystem();
     this.floating = new FloatingText();
     this.shake = new ScreenShake();
