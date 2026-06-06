@@ -71,6 +71,11 @@ export class SpecialTeamsState implements GameState {
   private distance = 0;
   private prevBallX = 0;
   private readonly speed: number;
+  /** The human only kicks for their own team; the CPU kicks its own (auto-times the meter). */
+  private readonly humanKicking: boolean;
+  private cpuTimer = 0;
+  private readonly cpuPowerTarget: number;
+  private readonly cpuAimTarget: number;
 
   constructor(app: GameApp, opts: KickOpts) {
     this.app = app;
@@ -83,6 +88,11 @@ export class SpecialTeamsState implements GameState {
     this.holdX = opts.spotX - this.dir * back * PX_PER_YARD;
     const diff = m.difficulty;
     this.speed = diff === "rookie" ? 1.15 : diff === "allpro" ? 1.85 : 1.5;
+    this.humanKicking = opts.kicking === m.humanTeam;
+    // CPU kicker: enough leg for the distance, and a small aim error (more on long FGs).
+    this.cpuPowerTarget = opts.kind === "pat" ? 0.62 : opts.kind === "punt" ? 0.82
+      : Math.max(0.5, Math.min(1, (this.distance - 30) / 38 + 0.28));
+    this.cpuAimTarget = (Math.random() * 2 - 1) * Math.min(0.26, this.distance * 0.005);
   }
 
   enter(): void {
@@ -133,7 +143,8 @@ export class SpecialTeamsState implements GameState {
     const tapped = this.app.input.consumeTaps().length > 0 || this.app.input.actionPressed;
 
     if (this.phase === "snap") {
-      this.runMeter(dt, tapped);
+      if (this.humanKicking) this.runMeter(dt, tapped);
+      else this.cpuKick(dt);
       this.runRush(dt);
       this.ball.update(dt); // sits with the holder
       this.syncScene(dt);
@@ -167,6 +178,22 @@ export class SpecialTeamsState implements GameState {
     if (this.meter >= 1) { this.meter = 1; this.meterDir = -1; }
     else if (this.meter <= 0) { this.meter = 0; this.meterDir = 1; }
     if (tapped) { this.aim = (this.meter - 0.5) * 2; this.aimLocked = true; this.launch(); }
+  }
+
+  /** The CPU works its own meter: a brief set, fill the power to target, glide the aim, then kick
+   *  (always well before the rush gets home, so the CPU rarely gets blocked). */
+  private cpuKick(dt: number): void {
+    this.cpuTimer += dt;
+    if (this.cpuTimer < 0.5) return; // set on the ball a beat
+    if (this.power === 0) {
+      this.meter = Math.min(this.cpuPowerTarget, this.meter + this.speed * dt);
+      if (this.meter >= this.cpuPowerTarget - 0.01) { this.power = Math.max(0.001, this.cpuPowerTarget); this.app.audio.uiTap(); this.meter = 0.5; }
+      return;
+    }
+    const aimPos = this.cpuAimTarget / 2 + 0.5;
+    const step = this.speed * dt;
+    this.meter += Math.sign(aimPos - this.meter) * Math.min(Math.abs(aimPos - this.meter), step);
+    if (Math.abs(this.meter - aimPos) < 0.02) { this.aim = this.cpuAimTarget; this.aimLocked = true; this.launch(); }
   }
 
   /** Crash the rush toward the kicker; the wall steps up to meet them. Too slow ⇒ blocked. */
@@ -362,7 +389,8 @@ export class SpecialTeamsState implements GameState {
     if (!powerPhase) { const mxp = bx + this.meter * bw; ctx.fillStyle = COLORS.bone; ctx.fillRect(mxp - 3, ay - 4, 6, bh + 8); }
     r.text("AIM", bx, ay - 14, { size: 13, align: "left", color: COLORS.ash, font: FONT.ui });
 
-    const prompt = powerPhase ? "TAP TO SET POWER" : "TAP TO KICK";
+    const name = this.app.match.team(this.opts.kicking).config.name.toUpperCase();
+    const prompt = !this.humanKicking ? `${name} KICKING…` : powerPhase ? "TAP TO SET POWER" : "TAP TO KICK";
     const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 140);
     r.text(prompt, cx, ay + bh + 30, { size: 20, align: "center", color: COLORS.hazard, font: FONT.display, alpha: pulse });
   }
