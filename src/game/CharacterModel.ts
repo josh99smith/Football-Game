@@ -81,13 +81,42 @@ async function withRetry<T>(fn: () => Promise<T>, tries = 4, label = ""): Promis
 }
 
 /**
+ * Candidate URLs to try for an asset. The build uses relative paths (`base: "./"`), which 404 if
+ * the page is served at a URL without a trailing slash — so fall back to root-absolute and
+ * origin-absolute forms. This makes the model resolve no matter how the site is hosted.
+ */
+function pathCandidates(url: string): string[] {
+  const name = url.split("/").pop() || url;
+  const out = new Set<string>([url, `${name}`, `./${name}`, `/${name}`]);
+  if (typeof location !== "undefined" && location.origin && location.origin !== "null") {
+    out.add(`${location.origin}/${name}`);
+    // …and relative to the current directory (handles a sub-path deploy served with a slash).
+    out.add(new URL(name, location.href).toString());
+  }
+  return [...out];
+}
+
+/** Load an FBX, trying each path form (with retries) until one works. */
+async function loadFbx(loader: FBXLoader, url: string): Promise<THREE.Group> {
+  let lastErr: unknown;
+  for (const candidate of pathCandidates(url)) {
+    try {
+      return await withRetry(() => loader.loadAsync(candidate), 3, candidate);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(`could not load ${url} (tried ${pathCandidates(url).length} paths): ${String(lastErr)}`);
+}
+
+/**
  * Load a single animation clip — BEST EFFORT. A failed clip resolves to `null` (that one
  * animation is simply disabled) so it can never take down the whole skinned model. Only the base
  * rig is critical.
  */
 async function loadClip(loader: FBXLoader, url: string): Promise<THREE.AnimationClip | null> {
   try {
-    const fbx = await withRetry(() => loader.loadAsync(url), 3, url);
+    const fbx = await loadFbx(loader, url);
     return fbx.animations[0] ? prep(fbx.animations[0]) : null;
   } catch (e) {
     console.warn(`[character] animation clip failed (disabled, model still loads): ${url}`, e);
@@ -106,8 +135,8 @@ async function loadClip(loader: FBXLoader, url: string): Promise<THREE.Animation
  */
 export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset> {
   const loader = new FBXLoader();
-  // The rigged model is critical — retry hard. (Clips below are best-effort and resolve null.)
-  const model = await withRetry(() => loader.loadAsync(urls.model), 5, urls.model);
+  // The rigged model is critical — try every path form, retry hard. (Clips are best-effort.)
+  const model = await loadFbx(loader, urls.model);
   const [run, runBack, strafe, pass, catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate] =
     await Promise.all([
       loadClip(loader, urls.run),
