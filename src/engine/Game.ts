@@ -14,6 +14,30 @@ import { loadCharacter } from "../game/CharacterModel";
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
+import { GIT_SHA } from "../game/buildInfo";
+
+/**
+ * Tiny always-on-screen diagnostic (top-left) showing the build SHA + character-model load result.
+ * Lets us tell, on any device (no dev console needed), whether a stale build or a real model-load
+ * failure is to blame for box avatars. Auto-hides a few seconds after a successful load.
+ */
+function setModelDiag(text: string, error: boolean, ok = false): void {
+  if (typeof document === "undefined") return;
+  let el = document.getElementById("model-diag");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "model-diag";
+    el.style.cssText =
+      "position:fixed;left:6px;top:4px;z-index:9999;font:11px/1.3 monospace;" +
+      "padding:3px 6px;border-radius:4px;pointer-events:none;max-width:90vw;white-space:pre-wrap;";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.style.background = error ? "rgba(150,20,20,0.92)" : "rgba(0,0,0,0.55)";
+  el.style.color = error ? "#fff" : "#9fb";
+  el.style.display = "block";
+  if (ok) setTimeout(() => { if (el) el.style.display = "none"; }, 4000);
+}
 
 export interface SessionConfig {
   homeTeamIndex: number;
@@ -88,10 +112,15 @@ export class GameApp {
     // Keep trying until the skinned model loads — a transient asset blip must never leave the game
     // stuck on box avatars. (loadCharacter already retries internally; this is the last-resort loop.)
     const loadModel = (attempt = 0): void => {
+      setModelDiag(`build ${GIT_SHA} · loading model…${attempt ? ` (retry ${attempt})` : ""}`, false);
       loadCharacter(urls)
-        .then((asset) => this.scene3d.setCharacter(asset))
+        .then((asset) => {
+          this.scene3d.setCharacter(asset);
+          setModelDiag(`build ${GIT_SHA} · model ✓`, false, true);
+        })
         .catch((err) => {
           console.error(`character model load failed (attempt ${attempt + 1}); retrying…`, err);
+          setModelDiag(`build ${GIT_SHA} · MODEL FAILED: ${String(err).slice(0, 140)}`, true);
           if (attempt < 8) setTimeout(() => loadModel(attempt + 1), 1500 * (attempt + 1));
         });
     };
