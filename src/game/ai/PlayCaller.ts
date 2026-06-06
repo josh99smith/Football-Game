@@ -26,16 +26,19 @@ export function cpuOffensePlay(m: Match): OffensePlay {
 
   if (late && behind) return offById(chance(0.5) ? "streaks" : "hailmary");
   if (dist <= 4) return offById(chance(0.55) ? "hbdive" : "toss");
-  if (m.down >= 3 && dist >= 12) return offById(chance(0.5) ? "streaks" : "outs");
+  if (m.down >= 3 && dist >= 12) return offById(chance(0.4) ? "streaks" : chance(0.5) ? "flood" : "outs");
 
-  // First/second down: mix runs, quick game, crossers and the occasional shot.
+  // First/second down: mix runs (incl. the draw), quick game, crossers, floods and shots.
   const r = Math.random();
-  if (r < 0.22) return offById("hbdive");
-  if (r < 0.36) return offById("toss");
-  if (r < 0.54) return offById("slants");
-  if (r < 0.70) return offById("mesh");
-  if (r < 0.84) return offById("outs");
-  if (r < 0.93) return offById("papost");
+  if (r < 0.18) return offById("hbdive");
+  if (r < 0.30) return offById("toss");
+  if (r < 0.38) return offById("draw");
+  if (r < 0.52) return offById("slants");
+  if (r < 0.64) return offById("mesh");
+  if (r < 0.74) return offById("outs");
+  if (r < 0.83) return offById("flood");
+  if (r < 0.90) return offById("wheel");
+  if (r < 0.96) return offById("papost");
   return offById("streaks");
 }
 

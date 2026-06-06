@@ -205,6 +205,68 @@ export const OFFENSE_PLAYS: OffensePlay[] = [
       ...BASE_OL,
     ],
   },
+  {
+    id: "flood",
+    name: "FLOOD",
+    blurb: "Three levels, one side. Stretch the zone.",
+    isRun: false,
+    slots: [
+      { role: "QB", number: 7, start: { fwd: -4, lat: 0 }, job: "qb" },
+      { role: "HB", number: 28, start: { fwd: -6, lat: 2 }, job: "route", route: [
+        { fwd: 3, lat: 14 }, { fwd: 4, lat: 20 },
+      ] },
+      { role: "WR", number: 11, start: { fwd: 0, lat: 17 }, job: "route", route: [
+        { fwd: 22, lat: 17 }, { fwd: 24, lat: 20 },
+      ] },
+      { role: "WR", number: 84, start: { fwd: 0, lat: 8 }, job: "route", route: [
+        { fwd: 12, lat: 16 }, { fwd: 12, lat: 22 },
+      ] },
+      { role: "WR", number: 19, start: { fwd: 0, lat: -16 }, job: "route", route: [
+        { fwd: 16, lat: -10 }, { fwd: 30, lat: -2 },
+      ] },
+      ...BASE_OL,
+    ],
+  },
+  {
+    id: "wheel",
+    name: "WHEEL",
+    blurb: "Back wheels up the sideline off a drag.",
+    isRun: false,
+    slots: [
+      { role: "QB", number: 7, start: { fwd: -4, lat: 0 }, job: "qb" },
+      { role: "HB", number: 28, start: { fwd: -6, lat: -4 }, job: "route", route: [
+        { fwd: 1, lat: -12 }, { fwd: 16, lat: -18 },
+      ] },
+      { role: "WR", number: 11, start: { fwd: 0, lat: -17 }, job: "route", route: [
+        { fwd: 5, lat: -8 }, { fwd: 6, lat: 8 },
+      ] },
+      { role: "WR", number: 84, start: { fwd: 0, lat: 17 }, job: "route", route: [
+        { fwd: 12, lat: 17 }, { fwd: 26, lat: 14 },
+      ] },
+      { role: "WR", number: 19, start: { fwd: 0, lat: 7 }, job: "route", route: [
+        { fwd: 10, lat: 3 }, { fwd: 9, lat: 6 },
+      ] },
+      ...BASE_OL,
+    ],
+  },
+  {
+    id: "draw",
+    name: "DRAW",
+    blurb: "Sell the pass, hand it up the gut.",
+    isRun: true,
+    slots: [
+      { role: "QB", number: 7, start: { fwd: -4, lat: 0 }, job: "qb" },
+      { role: "HB", number: 28, start: { fwd: -7, lat: 0 }, job: "run" },
+      { role: "WR", number: 11, start: { fwd: 0, lat: -17 }, job: "route", route: [
+        { fwd: 12, lat: -17 },
+      ] },
+      { role: "WR", number: 84, start: { fwd: 0, lat: 17 }, job: "route", route: [
+        { fwd: 12, lat: 17 },
+      ] },
+      { role: "WR", number: 19, start: { fwd: 0, lat: 8 }, job: "block" },
+      ...BASE_OL,
+    ],
+  },
 ];
 
 export const DEFENSE_PLAYS: DefensePlay[] = [
