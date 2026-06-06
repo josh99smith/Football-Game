@@ -5,7 +5,7 @@ import { drawButton, tappedIn, type Rect } from "../../ui/widgets";
 import { drawCrest, drawHardcoreBadge } from "../../ui/Emblems";
 import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveSettings, loadSettings } from "../storage";
-import { KickoffState } from "./KickoffState";
+import { MatchupIntroState } from "./MatchupIntroState";
 import { PracticeState } from "./PracticeState";
 import { versionLabel, buildDate } from "../buildInfo";
 
@@ -142,7 +142,7 @@ export class MenuState implements GameState {
   private startGame(): void {
     this.app.audio.uiConfirm();
     this.app.newMatch();
-    this.app.setState(new KickoffState(this.app, "HOME"));
+    this.app.setState(new MatchupIntroState(this.app));
   }
 
   render(): void {
