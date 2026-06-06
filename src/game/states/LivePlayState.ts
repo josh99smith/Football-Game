@@ -135,8 +135,6 @@ export class LivePlayState implements GameState {
   private ragdollFocus: Player | null = null;
   /** Ball spot the play ended at (anchors the regroup huddle). */
   private endSpot: Vec2 = { x: 0, y: 0 };
-  /** The offense huddle center — the camera subject between downs. */
-  private huddleCenter: Vec2 | null = null;
   /** Where the play finished (ball spot) — the camera subject during the post-play beat. */
   private deadFocus: Vec2 | null = null;
   /** Cooldown between CPU big hits so the defense doesn't spam hit-sticks. */
@@ -336,7 +334,6 @@ export class LivePlayState implements GameState {
     this.deadTimer = 0;
     this.deadElapsed = 0;
     this.regroupTargets = null;
-    this.huddleCenter = null;
     this.deadFocus = null;
     this.ragdollIdx = [];
     this.holdForRagdoll = false;
@@ -527,21 +524,18 @@ export class LivePlayState implements GameState {
     const m = this.app.match;
     this.trackRagdolls(); // glue ragdolling players to their physics hips before we frame them
     const busy = this.holdForRagdoll && this.app.scene3d.ragdollsBusy();
+    // The camera ALWAYS follows the ball (held → carrier, in the air / loose → the ball itself).
+    // The only exceptions are short cinematic beats that still frame the ball: the 1-on-1 battle,
+    // the big-hit ragdoll close-up (clean tackle only — a fumble tracks the loose ball), and a
+    // hold on the spot the play ended between downs.
+    const ballFocus = this.ball.carrier ? this.ball.carrier.pos : this.ball.pos;
     const focus = this.phase === "struggle" && this.struggleCarrier && this.struggleTackler
       ? { x: (this.struggleCarrier.pos.x + this.struggleTackler.pos.x) / 2, y: (this.struggleCarrier.pos.y + this.struggleTackler.pos.y) / 2 }
-      : busy && this.ragdollFocus
-      ? this.ragdollFocus.pos // stay on the body being driven into the ground
-      : this.phase === "playcall" && this.huddleCenter
-        ? this.huddleCenter // ease onto the offense huddle while the call is up
-        : this.phase === "dead" && this.deadFocus
-          ? this.deadFocus // hold on where the play finished (incompletion / down spot)
-          : this.ball.carrier
-            ? this.ball.carrier.pos
-            : this.ball.state === "inAir"
-              ? this.ball.pos
-              : this.qb
-                ? this.qb.pos
-                : { x: this.startLosX, y: this.app.field.maxY / 2 };
+      : busy && this.ragdollFocus && !this.looseBall
+        ? this.ragdollFocus.pos // big-hit cinematic on the tackled ball-carrier
+        : (this.phase === "dead" || this.phase === "playcall") && this.deadFocus
+          ? this.deadFocus // hold where the play finished while the next call comes up
+          : ballFocus;
 
     // Record the play for instant replay BEFORE sync — the avatar consumes (clears) animEvent, so
     // we must snapshot the one-shot (throw/catch/spin/tackle) first.
@@ -1830,7 +1824,6 @@ export class LivePlayState implements GameState {
     const cy = f.maxY / 2;
     const clampX = (x: number) => Math.max(LEFT_GOAL_X + 16, Math.min(RIGHT_GOAL_X - 16, x));
     const huddleX = clampX(this.endSpot.x - this.dir * PX_PER_YARD * 7);
-    this.huddleCenter = { x: huddleX, y: cy }; // camera subject between downs
     this.offense.forEach((o, i) => {
       const ang = (i / this.offense.length) * Math.PI * 2;
       targets.set(o, { x: huddleX + Math.cos(ang) * PX_PER_YARD * 2, y: cy + Math.sin(ang) * PX_PER_YARD * 2 });
