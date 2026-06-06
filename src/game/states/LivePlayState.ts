@@ -137,6 +137,9 @@ export class LivePlayState implements GameState {
   private endSpot: Vec2 = { x: 0, y: 0 };
   /** Where the play finished (ball spot) — the camera subject during the post-play beat. */
   private deadFocus: Vec2 | null = null;
+  /** Quarter / halftime break banner (text + seconds remaining). */
+  private quarterBannerText = "";
+  private quarterBannerT = 0;
   /** Cooldown between CPU big hits so the defense doesn't spam hit-sticks. */
   private cpuBigHitCd = 0;
   /** 1-on-1 tackle battle (mash to break / make the tackle). */
@@ -408,6 +411,7 @@ export class LivePlayState implements GameState {
     // Burn the ON FIRE meters down over time (good plays refuel them in gradePlay).
     m.home.update(dt);
     m.away.update(dt);
+    if (this.quarterBannerT > 0) this.quarterBannerT -= dt;
 
     if (this.phase === "presnap") {
       this.updatePreSnap(dt);
@@ -1470,9 +1474,26 @@ export class LivePlayState implements GameState {
     const m = this.app.match;
     if (m.clockExpired && !m.isOver) {
       const ev = m.advanceQuarter();
-      const label = ev === "half" ? "HALFTIME" : ev === "game" ? "FINAL" : `END OF Q${m.quarter - 1}`;
-      this.app.floating.add(label, this.app.field.maxX / 2, this.app.field.maxY / 2, { size: 30, color: COLORS.hazard, life: 2 });
+      this.quarterBannerText = ev === "half" ? "HALFTIME" : ev === "game" ? "FINAL" : `END OF Q${m.quarter - 1}`;
+      this.quarterBannerT = 2.8;
+      this.app.audio.whistle();
+      if (ev === "half") this.app.audio.organCharge();
     }
+  }
+
+  /** Draw the quarter / halftime break banner (with the running score) when one is active. */
+  private renderQuarterBanner(r: Renderer): void {
+    if (this.quarterBannerT <= 0) return;
+    const m = this.app.match;
+    const a = Math.min(1, this.quarterBannerT) * Math.min(1, (2.8 - this.quarterBannerT) * 4 + 0.001);
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, a));
+    const w = Math.min(380, r.width - 60), h = 96, x = (r.width - w) / 2, y = r.height * 0.3;
+    drawPanel(r, { x, y, w, h });
+    r.text(this.quarterBannerText, r.width / 2, y + 36, { size: 30, align: "center", color: COLORS.hazard, font: FONT.display });
+    r.text(`${m.home.config.abbr} ${m.home.score}   —   ${m.away.score} ${m.away.config.abbr}`, r.width / 2, y + 70, { size: 22, align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display });
+    ctx.restore();
   }
 
   private ballSpot(): Vec2 {
@@ -1947,6 +1968,8 @@ export class LivePlayState implements GameState {
       app.input.setLayout(this.controls.computeLayout(r));
       this.controls.render(r, app.input, this.controlLabels());
     }
+
+    this.renderQuarterBanner(r);
   }
 
   /** Tecmo-style tug-of-war UI: a meter the human fills by mashing, with a TAP prompt + timer. */
