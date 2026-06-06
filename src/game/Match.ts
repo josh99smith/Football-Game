@@ -53,6 +53,21 @@ export interface OutcomeResult {
   kickReceiver?: TeamId;
 }
 
+/** Box-score tally kept per team for the end-of-game summary. */
+export interface TeamStats {
+  totalYards: number;
+  firstDowns: number;
+  sacks: number;       // sacks made by this team's defense
+  takeaways: number;   // interceptions + fumble recoveries by this team
+  touchdowns: number;
+  fieldGoals: number;
+  longest: number;     // longest gain (yards)
+}
+
+function emptyStats(): TeamStats {
+  return { totalYards: 0, firstDowns: 0, sacks: 0, takeaways: 0, touchdowns: 0, fieldGoals: 0, longest: 0 };
+}
+
 /** Holds all game-flow / rules state for a single match. */
 export class Match {
   readonly home: Team;
@@ -71,6 +86,21 @@ export class Match {
   distanceYards = FIRST_DOWN_YARDS;
   losX = 0;
   firstDownX = 0;
+
+  /** Per-team box score. */
+  readonly stats: Record<TeamId, TeamStats> = { HOME: emptyStats(), AWAY: emptyStats() };
+
+  /** Record an offensive gain (a completed play that ended with the offense keeping the ball). */
+  recordGain(team: TeamId, yards: number, firstDown: boolean): void {
+    const s = this.stats[team];
+    s.totalYards += yards;
+    if (firstDown) s.firstDowns++;
+    if (yards > s.longest) s.longest = yards;
+  }
+  recordSack(defense: TeamId): void { this.stats[defense].sacks++; }
+  recordTakeaway(team: TeamId): void { this.stats[team].takeaways++; }
+  recordTouchdown(team: TeamId): void { this.stats[team].touchdowns++; }
+  recordFieldGoal(team: TeamId): void { this.stats[team].fieldGoals++; }
 
   constructor(
     homeCfg: TeamConfig,

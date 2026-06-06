@@ -260,7 +260,10 @@ export class SpecialTeamsState implements GameState {
     if (this.resolved) return;
     this.resolved = true;
     this.good = through && !this.blocked;
-    if (this.good) this.app.match.addPoints(this.opts.kicking, this.opts.kind === "fg" ? FIELD_GOAL_POINTS : PAT_POINTS);
+    if (this.good) {
+      this.app.match.addPoints(this.opts.kicking, this.opts.kind === "fg" ? FIELD_GOAL_POINTS : PAT_POINTS);
+      if (this.opts.kind === "fg") this.app.match.recordFieldGoal(this.opts.kicking);
+    }
     this.toResult();
   }
 

@@ -1357,13 +1357,15 @@ export class LivePlayState implements GameState {
     const yards = o.yards;
     switch (o.type) {
       case "touchdown":
-        this.igniteCheck(offense, 0.6);
+        this.igniteCheck(offense, 0.6); m.recordGain(offense, yards, true); m.recordTouchdown(offense);
         break;
       case "sack":
-        this.igniteCheck(defense, 0.45); offT.breakStreak();
+        this.igniteCheck(defense, 0.45); offT.breakStreak(); m.recordSack(defense); m.recordGain(offense, yards, false);
         break;
       case "interception":
       case "fumbleLost":
+        this.igniteCheck(defense, 0.7); offT.breakStreak(); m.recordTakeaway(defense);
+        break;
       case "safety":
         this.igniteCheck(defense, 0.7); offT.breakStreak();
         break;
@@ -1372,6 +1374,7 @@ export class LivePlayState implements GameState {
         break;
       case "tackle":
       case "outOfBounds":
+        m.recordGain(offense, yards, o.firstDown);
         if (o.firstDown) this.igniteCheck(offense, yards >= 18 ? 0.5 : 0.34);
         else if (yards <= 1) this.igniteCheck(defense, 0.25); // a stuff
         break;
