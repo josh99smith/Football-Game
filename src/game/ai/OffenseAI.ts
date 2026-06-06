@@ -12,10 +12,14 @@ const BACK_MARGIN = 44; // px from the back of the end zone where routes get cut
 export function updateOffense(ctx: PlayContext, controlled: Player | null): void {
   const { offense, carrier } = ctx;
   const carrierRunning = !!carrier && carrier.role !== "QB";
+  // A scrambling QB who has crossed the line of scrimmage has committed to running — the play is now
+  // a run, so receivers give up their routes and block for him (just like a handoff).
+  const qbScramble = !!carrier && carrier.role === "QB" && pastLine(carrier, ctx);
+  const blockForCarrier = carrierRunning || qbScramble;
 
   // Coordinate blocking: assign each blocker to the most dangerous unclaimed rusher
   // (closest to whoever we're protecting), so free blitzers actually get picked up.
-  assignBlocks(ctx, carrierRunning);
+  assignBlocks(ctx, blockForCarrier);
 
   for (const o of offense) {
     if (o === controlled || o.isDown) continue;
@@ -28,8 +32,8 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
     }
     if (o === carrier) continue; // the ball carrier is driven by player/CPU controller
 
-    // Once a teammate is running with the ball, everyone blocks downfield.
-    const job = carrierRunning && o.job !== "qb" ? "block" : o.job;
+    // Once a teammate (or a scrambling QB past the line) is running with the ball, everyone blocks.
+    const job = blockForCarrier && o.job !== "qb" ? "block" : o.job;
     let steer: Vec2 = { x: 0, y: 0 };
 
     switch (job) {
@@ -75,11 +79,6 @@ export function updateOffense(ctx: PlayContext, controlled: Player | null): void
             steer = { x: ctx.dir * 0.7, y: 0 };
             o.turbo = false;
           }
-        }
-        // Scramble drill: if the QB has taken off, mirror toward his side to stay a live outlet.
-        if (ctx.carrier && ctx.carrier.role === "QB" && pastLine(ctx.carrier, ctx)) {
-          steer = addSteer(steer, { x: 0, y: Math.sign(ctx.carrier.pos.y - o.pos.y) || 1 }, 0.5);
-          o.turbo = true;
         }
         break;
       }
