@@ -66,6 +66,14 @@ function prep(clip: THREE.AnimationClip): THREE.AnimationClip {
   return c;
 }
 
+/** Reject if a promise doesn't settle in time — a hung mobile fetch must not stall forever. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timed out: ${label}`)), ms)),
+  ]);
+}
+
 /** Retry a flaky async load a few times with backoff (FBX fetches can blip on first paint). */
 async function withRetry<T>(fn: () => Promise<T>, tries = 4, label = ""): Promise<T> {
   let lastErr: unknown;
@@ -101,7 +109,7 @@ async function loadFbx(loader: FBXLoader, url: string): Promise<THREE.Group> {
   let lastErr: unknown;
   for (const candidate of pathCandidates(url)) {
     try {
-      return await withRetry(() => loader.loadAsync(candidate), 3, candidate);
+      return await withRetry(() => withTimeout(loader.loadAsync(candidate), 20000, candidate), 3, candidate);
     } catch (e) {
       lastErr = e;
     }
@@ -124,19 +132,36 @@ async function loadClip(loader: FBXLoader, url: string): Promise<THREE.Animation
   }
 }
 
+/** Build a CharacterAsset from a loaded rig + (possibly partial) clip set. */
+function buildAsset(model: THREE.Group, clips: CharacterClips): CharacterAsset {
+  const box = new THREE.Box3().setFromObject(model);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const height = size.y || 1;
+  return { template: model, clips, scale: 1.95 / height, groundOffset: -box.min.y };
+}
+
+function emptyClips(idle: THREE.AnimationClip | null): CharacterClips {
+  return { idle, run: null, runBack: null, strafe: null, pass: null, catch: null, juke: null,
+    walk: null, tackle: null, spin: null, defTackle: null, defSwat: null, celebrate: null };
+}
+
 /**
- * Loads the rigged player model (whose own clip is the idle stance) plus the jog,
- * pass, catch, and defender animation clips. All clips bind to the model's skeleton
- * by bone name; root motion is stripped so everything plays in place.
- *
- * Resilience: the base rig is the ONLY critical asset (it's retried hard); every animation clip
- * is loaded best-effort and never rejects, so a single flaky fetch can't drop the whole game back
- * to box avatars. The skinned model shows as long as the rig itself can be fetched.
+ * Load ONLY the rigged model (the critical asset) and return an asset with just its idle stance.
+ * This lets the game swap box avatars for the skinned model the instant the (~1 MB) rig arrives,
+ * instead of waiting on all ~13 MB of animation clips — so a slow/stalled clip fetch on mobile can
+ * never leave the player staring at blocks.
  */
-export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset> {
+export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
   const loader = new FBXLoader();
-  // The rigged model is critical — try every path form, retry hard. (Clips are best-effort.)
-  const model = await loadFbx(loader, urls.model);
+  const model = await loadFbx(loader, modelUrl);
+  const idle = model.animations[0] ? prep(model.animations[0]) : null;
+  return buildAsset(model, emptyClips(idle));
+}
+
+/** Load all animation clips (best-effort; each resolves null on failure) onto an existing rig. */
+export async function loadAnimationClips(rig: CharacterAsset, urls: CharacterUrls): Promise<CharacterAsset> {
+  const loader = new FBXLoader();
   const [run, runBack, strafe, pass, catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate] =
     await Promise.all([
       loadClip(loader, urls.run),
@@ -152,18 +177,17 @@ export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset
       loadClip(loader, urls.defSwat),
       loadClip(loader, urls.celebrate),
     ]);
+  return buildAsset(rig.template, {
+    idle: rig.clips.idle, run, runBack, strafe, pass, catch: catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate,
+  });
+}
 
-  const idle = model.animations[0] ? prep(model.animations[0]) : null;
-
-  const box = new THREE.Box3().setFromObject(model);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  const height = size.y || 1;
-
-  return {
-    template: model,
-    clips: { idle, run, runBack, strafe, pass, catch: catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate },
-    scale: 1.95 / height,
-    groundOffset: -box.min.y,
-  };
+/**
+ * Full character load: rig + all clips. The rig is critical (retried + timed out + path-fallback);
+ * every clip is best-effort and never rejects, so a single flaky fetch can't drop to box avatars.
+ * (Game.ts loads in two stages — rig first, then clips — so the model appears immediately.)
+ */
+export async function loadCharacter(urls: CharacterUrls): Promise<CharacterAsset> {
+  const rig = await loadBaseRig(urls.model);
+  return loadAnimationClips(rig, urls);
 }

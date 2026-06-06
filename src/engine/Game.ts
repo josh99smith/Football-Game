@@ -10,7 +10,7 @@ import { TimeScale } from "./fx/TimeScale";
 import type { GameState } from "./GameState";
 import { Field } from "../game/Field";
 import { Scene3D } from "../game/Scene3D";
-import { loadCharacter } from "../game/CharacterModel";
+import { loadBaseRig, loadAnimationClips, type CharacterAsset } from "../game/CharacterModel";
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
@@ -109,22 +109,32 @@ export class GameApp {
       defSwat: `${base}def_swat.fbx`,
       celebrate: `${base}celebrate.fbx`,
     };
-    // Keep trying until the skinned model loads — a transient asset blip must never leave the game
-    // stuck on box avatars. (loadCharacter already retries internally; this is the last-resort loop.)
-    const loadModel = (attempt = 0): void => {
-      setModelDiag(`build ${GIT_SHA} · loading model…${attempt ? ` (retry ${attempt})` : ""}`, false);
-      loadCharacter(urls)
-        .then((asset) => {
-          this.scene3d.setCharacter(asset);
-          setModelDiag(`build ${GIT_SHA} · model ✓`, false, true);
-        })
+    // Two-stage load so the skinned model appears ASAP: (1) the ~1MB rig swaps box avatars for the
+    // model immediately (idle only); (2) the animation clips stream in and upgrade it. A slow or
+    // stalled clip fetch on mobile can therefore never leave the player stuck on blocks.
+    const loadAnims = (rig: CharacterAsset, attempt = 0): void => {
+      loadAnimationClips(rig, urls)
+        .then((full) => { this.scene3d.setCharacter(full); setModelDiag(`build ${GIT_SHA} · model ✓`, false, true); })
         .catch((err) => {
-          console.error(`character model load failed (attempt ${attempt + 1}); retrying…`, err);
-          setModelDiag(`build ${GIT_SHA} · MODEL FAILED: ${String(err).slice(0, 140)}`, true);
-          if (attempt < 8) setTimeout(() => loadModel(attempt + 1), 1500 * (attempt + 1));
+          console.warn(`animation clips load issue (model is up, animations retrying)`, err);
+          if (attempt < 6) setTimeout(() => loadAnims(rig, attempt + 1), 2000 * (attempt + 1));
         });
     };
-    loadModel();
+    const loadRig = (attempt = 0): void => {
+      setModelDiag(`build ${GIT_SHA} · loading model…${attempt ? ` (retry ${attempt})` : ""}`, false);
+      loadBaseRig(urls.model)
+        .then((rig) => {
+          this.scene3d.setCharacter(rig); // model is visible NOW (idle); clips follow
+          setModelDiag(`build ${GIT_SHA} · model ✓ (animating…)`, false, true);
+          loadAnims(rig);
+        })
+        .catch((err) => {
+          console.error(`base rig load failed (attempt ${attempt + 1}); retrying…`, err);
+          setModelDiag(`build ${GIT_SHA} · MODEL FAILED: ${String(err).slice(0, 140)}`, true);
+          if (attempt < 10) setTimeout(() => loadRig(attempt + 1), 1500 * (attempt + 1));
+        });
+    };
+    loadRig();
     this.particles = new ParticleSystem();
     this.floating = new FloatingText();
     this.shake = new ScreenShake();
