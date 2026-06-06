@@ -24,18 +24,23 @@ export const TEAMS: TeamConfig[] = [
   { id: "HOME", name: "Orange Crush", abbr: "OC", icon: "star", colors: { jersey: "#ff7b1e", trim: "#3b1c06" } },
 ];
 
+/** How long ON FIRE lasts on a full meter with no further good plays. */
+const FIRE_BURN_SECONDS = 24;
+
 /**
- * Live per-game team state: score, timeouts, and the Blitz-style ON FIRE meter.
- * On fire is earned by consecutive big defensive/offensive feats and boosts the
- * whole team until the opponent scores.
+ * Live per-game team state: score and the Blitz-style ON FIRE meter.
+ *
+ * Fire is BUILT UP from consecutive good plays (first downs, explosive gains, sacks, takeaways,
+ * stops). `fireMeter` (0..1) fills with each good play and snuffs back down on a bad one; when it
+ * tops out the WHOLE team catches fire — faster, near-unlimited turbo — until it burns out (good
+ * plays refuel it) or the opponent scores.
  */
 export class Team {
   readonly config: TeamConfig;
   score = 0;
   onFire = false;
-  fireTimer = 0;
-  /** Streak counters that can trigger ON FIRE (e.g. consecutive sacks/conversions). */
-  streak = 0;
+  /** 0..1 — the build-up gauge toward ON FIRE, and (while lit) the burn-down that good plays refuel. */
+  fireMeter = 0;
 
   constructor(config: TeamConfig) {
     this.config = config;
@@ -45,25 +50,37 @@ export class Team {
     return this.config.colors;
   }
 
-  igniteIfReady(): boolean {
-    if (this.streak >= 2 && !this.onFire) {
+  /** Reward a good play. While building it fills the meter (igniting at full); while lit it refuels
+   *  the burn. Returns true only on the play that ignites the team. */
+  addFire(amount: number): boolean {
+    if (this.onFire) {
+      this.fireMeter = Math.min(1, this.fireMeter + amount * 1.3); // good plays keep the fire stoked
+      return false;
+    }
+    this.fireMeter = Math.min(1, this.fireMeter + amount);
+    if (this.fireMeter >= 1) {
       this.onFire = true;
-      this.fireTimer = 30; // safety expiry; normally cleared when opponent scores
+      this.fireMeter = 1;
       return true;
     }
     return false;
   }
 
+  /** A bad play (sack / turnover / 3-and-out) breaks the streak — the build resets. An already-lit
+   *  fire keeps burning (only the opponent scoring or time puts it out). */
+  breakStreak(): void {
+    if (!this.onFire) this.fireMeter = 0;
+  }
+
   extinguish(): void {
     this.onFire = false;
-    this.fireTimer = 0;
-    this.streak = 0;
+    this.fireMeter = 0;
   }
 
   update(dt: number): void {
     if (this.onFire) {
-      this.fireTimer -= dt;
-      if (this.fireTimer <= 0) this.extinguish();
+      this.fireMeter -= dt / FIRE_BURN_SECONDS;
+      if (this.fireMeter <= 0) this.extinguish();
     }
   }
 }

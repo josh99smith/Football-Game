@@ -408,6 +408,9 @@ export class LivePlayState implements GameState {
 
   update(dt: number): void {
     const m = this.app.match;
+    // Burn the ON FIRE meters down over time (good plays refuel them in gradePlay).
+    m.home.update(dt);
+    m.away.update(dt);
 
     if (this.phase === "presnap") {
       this.updatePreSnap(dt);
@@ -706,14 +709,19 @@ export class LivePlayState implements GameState {
     // y=down) maps to the field rotated 90° and flipped by `dir`: stick-up = downfield, always.
     c.desired = this.stickToField();
 
-    // Turbo meter management.
+    // Turbo meter management. ON FIRE gives the whole team near-unlimited turbo (drains slow,
+    // recovers fast) — the payoff for stringing good plays together; otherwise it's a finite burst
+    // that recharges when you let off.
+    const onFire = this.app.match.team(c.team).onFire;
+    const drain = onFire ? 0.12 : 0.46;
+    const recharge = onFire ? 0.55 : 0.34;
     const wantTurbo = input.turbo && (input.move.x !== 0 || input.move.y !== 0);
     if (wantTurbo && this.turbo > 0.02) {
       c.turbo = true;
-      this.turbo = Math.max(0, this.turbo - 0.5 * (1 / 60));
+      this.turbo = Math.max(0, this.turbo - drain * dt);
     } else {
       c.turbo = false;
-      this.turbo = Math.min(1, this.turbo + 0.25 * (1 / 60));
+      this.turbo = Math.min(1, this.turbo + recharge * dt);
     }
 
     if (this.humanIsOffense) {
@@ -1338,13 +1346,56 @@ export class LivePlayState implements GameState {
     return "tackle";
   }
 
+  /** A big defensive hit stokes the defense's fire a little (on top of the play-outcome grade). */
   private bumpFireStreakOnDefense(): void {
-    const defTeam = this.app.match.team(this.app.match.opponent(this.offenseTeamId));
-    defTeam.streak++;
-    if (defTeam.igniteIfReady()) {
+    this.igniteCheck(this.app.match.opponent(this.offenseTeamId), 0.12);
+  }
+
+  /**
+   * Grade the finished play and feed the ON FIRE meters: good plays build the responsible team's
+   * fire, bad plays break the streak. Strung together, good plays light the whole team up.
+   */
+  private gradePlay(o: PlayOutcome): void {
+    const m = this.app.match;
+    const offense = this.offenseTeamId;
+    const defense = m.opponent(offense);
+    const offT = m.team(offense);
+    const yards = o.yards;
+    switch (o.type) {
+      case "touchdown":
+        this.igniteCheck(offense, 0.6);
+        break;
+      case "sack":
+        this.igniteCheck(defense, 0.45); offT.breakStreak();
+        break;
+      case "interception":
+      case "fumbleLost":
+      case "safety":
+        this.igniteCheck(defense, 0.7); offT.breakStreak();
+        break;
+      case "turnoverOnDowns":
+        this.igniteCheck(defense, 0.4); offT.breakStreak();
+        break;
+      case "tackle":
+      case "outOfBounds":
+        if (o.firstDown) this.igniteCheck(offense, yards >= 18 ? 0.5 : 0.34);
+        else if (yards <= 1) this.igniteCheck(defense, 0.25); // a stuff
+        break;
+      case "incomplete":
+        if (m.down === 1 && !o.firstDown) this.igniteCheck(defense, 0.2); // forced a stop / punt situation
+        break;
+    }
+  }
+
+  /** Add fire to a team; announce + celebrate the moment it ignites. */
+  private igniteCheck(teamId: "HOME" | "AWAY", amount: number): void {
+    const team = this.app.match.team(teamId);
+    if (team.addFire(amount)) {
       this.app.audio.fire();
+      this.app.shake.add(0.3);
       const s = this.ballSpot();
-      this.app.floating.add("ON FIRE!", s.x, s.y, { size: 30, color: "#ff8a1e", life: 1.4 });
+      this.app.floating.add(`${team.config.name.toUpperCase()} — ON FIRE!`, s.x, s.y - 24, { size: 28, color: "#ff8a1e", life: 1.8 });
+      this.celebrateTeam(teamId);
     }
   }
 
@@ -1518,6 +1569,7 @@ export class LivePlayState implements GameState {
     // screen anymore; a single tap goes straight to the next play.
     this.playResult = m.applyOutcome(outcome);
     this.resultDetail = this.buildResultDetail();
+    this.gradePlay(outcome);
 
     this.quarterBeat();
 
@@ -1831,13 +1883,20 @@ export class LivePlayState implements GameState {
     this.app.particles.trail(bx, by);
   }
 
+  private fireFxTick = 0;
   private spawnFireFx(): void {
     const m = this.app.match;
+    this.fireFxTick++;
     for (const p of this.all) {
-      if (p.isDown) continue;
-      if (m.team(p.team).onFire && (p.hasBall || p.controlled)) {
-        // A subtle flame aura on the hot ball-carrier (not a bonfire).
+      if (p.isDown || !m.team(p.team).onFire) continue;
+      const lead = p.hasBall || p.controlled;
+      if (lead) {
+        // A bright flame aura on the hot ball-carrier.
         this.app.particles.fire(p.pos.x, p.pos.y + p.radius * 0.4, 2, 0.7);
+      } else if (this.fireFxTick % 2 === 0) {
+        // Every on-fire teammate smolders too (staggered to stay cheap) — the WHOLE team is lit,
+        // not just the runner.
+        this.app.particles.fire(p.pos.x, p.pos.y + p.radius * 0.4, 1, 0.5);
       }
     }
   }
@@ -1871,8 +1930,10 @@ export class LivePlayState implements GameState {
     this.renderThrowMeter(r);
     app.floating.render(r, project);
 
+    const myTeam = m.team(m.humanTeam);
     this.hud.render(r, m, {
       turbo: this.turbo,
+      fire: { meter: myTeam.fireMeter, onFire: myTeam.onFire },
       possessionLabel: this.phase === "presnap" ? this.preSnapLabel() : undefined,
       playClock: this.phase === "presnap" ? this.snapTimer : undefined,
       minimal: this.phase === "live", // strip the board down during the snap

@@ -10,7 +10,7 @@ export class HUD {
   render(
     r: Renderer,
     match: Match,
-    opts: { turbo: number; possessionLabel?: string; playClock?: number; minimal?: boolean },
+    opts: { turbo: number; fire?: { meter: number; onFire: boolean }; possessionLabel?: string; playClock?: number; minimal?: boolean },
   ): void {
     const ctx = r.ctx;
     const w = r.width;
@@ -66,6 +66,7 @@ export class HUD {
     }
 
     this.turboMeter(r, opts.turbo);
+    if (opts.fire) this.fireMeter(r, opts.fire.meter, opts.fire.onFire);
   }
 
   /** A compact field showing the ball spot and first-down line for orientation. */
@@ -173,6 +174,35 @@ export class HUD {
     ctx.lineWidth = 1;
     ctx.strokeRect(x, y, w, h);
     r.text("TURBO", x, y - 14, { size: 11, color: COLORS.ash, baseline: "top", font: FONT.ui });
+  }
+
+  /** The ON FIRE build-up meter, sitting just above the turbo bar; pulses + glows when lit. */
+  private fireMeter(r: Renderer, meter: number, onFire: boolean): void {
+    const ctx = r.ctx;
+    const w = 120;
+    const h = 10;
+    const x = 16;
+    const y = r.height - 52;
+    const fill = Math.max(0, Math.min(1, meter));
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+    ctx.fillStyle = COLORS.bg1;
+    ctx.fillRect(x, y, w, h);
+    const pulse = onFire ? 0.7 + 0.3 * Math.sin(performance.now() / 110) : 1;
+    const grad = ctx.createLinearGradient(x, 0, x + w, 0);
+    grad.addColorStop(0, "#ffd23a");
+    grad.addColorStop(0.6, "#ff8a1e");
+    grad.addColorStop(1, "#ff3a1e");
+    if (onFire) { ctx.shadowColor = "#ff7b1e"; ctx.shadowBlur = 10; }
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, w * fill, h);
+    ctx.restore();
+    ctx.strokeStyle = onFire ? "#ffb04a" : "rgba(123,134,148,0.5)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    r.text(onFire ? "ON FIRE!" : "FIRE", x, y - 13, { size: 11, color: onFire ? "#ff9a3a" : COLORS.ash, baseline: "top", font: FONT.ui });
   }
 }
 

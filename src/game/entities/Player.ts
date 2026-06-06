@@ -167,7 +167,7 @@ export class Player {
   speedFor(turbo: boolean, onFire: boolean): number {
     let m = 1;
     if (turbo) m *= TURBO_MULT;
-    if (onFire) m *= 1.12;
+    if (onFire) m *= 1.15; // ON FIRE: the whole team runs hotter
     return this.baseSpeed * m;
   }
 
