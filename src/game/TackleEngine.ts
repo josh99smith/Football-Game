@@ -217,7 +217,7 @@ export class TackleEngine {
       a.scene3d.hitZoom(hitStick ? 0.9 : gang ? 0.8 : 0.7);
       a.shake.add(hitStick ? 0.85 : gang ? 0.7 : 0.55);
       a.particles.spark(hx, hy, dirX, dirY, hitStick ? 26 : gang ? 22 : 18);
-      a.audio.hit(Math.min(1, closing / 260 + (hitStick ? 0.7 : 0.4)));
+      if (hitStick || gang) a.audio.bigHit(); else a.audio.hit(Math.min(1, closing / 260 + 0.4));
       const word = gang ? "GANG TACKLE!" : hitStick ? "BIG HIT!" : hitWord();
       a.floating.add(word, hx, hy - 16, { size: hitStick ? 34 : gang ? 30 : 28, color: hitStick ? "#ff5a3a" : gang ? "#ff9a3a" : "#ffd23a" });
       a.audio.crowdCheer();

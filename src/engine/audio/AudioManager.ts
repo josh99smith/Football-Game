@@ -90,7 +90,16 @@ export class AudioManager {
   }
 
   snap(): void {
-    this.blip("square", 180, 0.07, 0.25, 120);
+    // The hike: a sharp center-snap thwack, then a QB "hut!" bark a beat later.
+    this.blip("square", 180, 0.06, 0.25, 120);
+    this.noise(0.04, 0.18, 500); // ball-into-hands slap
+    window.setTimeout(() => { this.blip("sawtooth", 170, 0.09, 0.2, 110); this.noise(0.05, 0.14, 700); }, 40);
+  }
+
+  /** Pre-snap QB cadence bark ("hut… hut!"). */
+  cadence(): void {
+    this.blip("sawtooth", 165, 0.08, 0.16, 120);
+    this.noise(0.05, 0.12, 700);
   }
 
   hit(power: number): void {
@@ -98,6 +107,19 @@ export class AudioManager {
     this.blip("sine", 95 - power * 35, 0.16, 0.34 + power * 0.34, 45);
     this.noise(0.1 + power * 0.12, 0.3 + power * 0.45, 160);
     this.blip("square", 210, 0.04, 0.1 + power * 0.12, 110);
+  }
+
+  /** A bone-rattling big hit: deep boom + sharp crack + sub thud (for hit-sticks / gang tackles). */
+  bigHit(): void {
+    this.blip("sine", 66, 0.24, 0.62, 34);
+    this.noise(0.16, 0.6, 130);
+    this.blip("square", 150, 0.05, 0.2, 70);
+  }
+
+  /** Booting a kick (FG / punt / kickoff): a foot whoosh + a solid leg thump. */
+  kick(power = 0.7): void {
+    this.blip("sine", 120 - power * 30, 0.14, 0.32 + power * 0.2, 48);
+    this.noise(0.08, 0.22, 320);
   }
 
   /** Stadium air horn for touchdowns. */
@@ -197,16 +219,24 @@ export class AudioManager {
     this.crowd = { src, gain };
   }
 
-  /** Briefly swell the crowd into a roar (after a big play). */
-  crowdCheer(): void {
+  /** Briefly swell the crowd into a roar (after a big play). `intensity` 1 = cheer, 2 = TD roar. */
+  crowdCheer(intensity = 1): void {
     if (!this.crowd || !this.ctx) return;
     const t = this.now();
     const c = this.crowd.gain.gain;
+    const peak = Math.min(0.55, 0.34 + intensity * 0.12);
+    const hold = 1.2 + intensity * 0.8;
     c.cancelScheduledValues(t);
     c.setValueAtTime(c.value, t);
-    c.linearRampToValueAtTime(0.36, t + 0.12);
-    c.linearRampToValueAtTime(0.14, t + 1.4);
-    this.noise(0.5, 0.16, 420); // airy roar on top of the bed
+    c.linearRampToValueAtTime(peak, t + 0.12);
+    c.linearRampToValueAtTime(0.14, t + hold);
+    this.noise(0.4 + intensity * 0.4, 0.16 + intensity * 0.08, 420); // airy roar on top of the bed
+  }
+
+  /** Two short tweets — the whistle blowing a play dead (distinct from the single ready-whistle). */
+  whistleDead(): void {
+    this.blip("triangle", 2300, 0.12, 0.22, 2500);
+    window.setTimeout(() => this.blip("triangle", 2300, 0.14, 0.22, 2500), 150);
   }
 
   /** Home-crowd disappointment: a descending "ohhh" + a dip in the bed. */

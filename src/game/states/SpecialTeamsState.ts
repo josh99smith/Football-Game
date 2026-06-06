@@ -223,7 +223,7 @@ export class SpecialTeamsState implements GameState {
   private launch(): void {
     this.phase = "flight";
     this.holder.hasBall = false; // the ball's away — drop the carry indicator
-    this.app.audio.hit(0.5);
+    this.app.audio.kick(this.blocked ? 0.3 : 0.6 + this.power * 0.4);
     const hSpeed = this.blocked ? 200 : 360 + this.power * 900;
     const vz = this.blocked ? 120 : 300 + this.power * 120;
     const vy = this.aimLocked ? this.aim * 130 : (Math.random() * 80 - 40);

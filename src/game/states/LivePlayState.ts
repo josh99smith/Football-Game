@@ -1455,7 +1455,7 @@ export class LivePlayState implements GameState {
   private scoreTouchdown(carrier: Player): void {
     this.app.audio.airHorn();
     if (carrier.team === this.app.match.humanTeam) {
-      this.app.audio.crowdCheer();
+      this.app.audio.crowdCheer(2); // full TD roar
       this.app.audio.organCharge();
     } else {
       this.app.audio.crowdGroan();
@@ -1533,6 +1533,8 @@ export class LivePlayState implements GameState {
   private endPlay(type: OutcomeType, spot: Vec2): void {
     if (this.phase === "dead") return;
     this.phase = "dead";
+    // Ref's whistle blows the play dead on a down-by-contact (TDs get the air horn instead).
+    if (type === "tackle" || type === "sack") this.app.audio.whistleDead();
     if (this.controlled) this.controlled.controlled = false;
     this.passTarget = null;
     this.looseBall = false;
