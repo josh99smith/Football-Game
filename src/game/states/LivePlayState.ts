@@ -38,6 +38,8 @@ export interface KickReturnSetup {
 // hard-stall if the hike is never pressed.
 const PRESNAP_TIME = 20;
 const MAX_PLAY_TIME = 16;
+/** How far onto the defense's side of the LOS a pre-snap defender must stay (px) — no offsides. */
+const PRESNAP_LOS_MARGIN = 2;
 /** Hard cap on the post-play beat so it can't hang if the player never taps. */
 const POSTPLAY_MAX = 9;
 /** Minimum post-play beat before a tap can skip to the play call (guarantees a post-play). */
@@ -616,11 +618,27 @@ export class LivePlayState implements GameState {
   /** Walk everyone from the huddle to their spots; the player decides when to hike. */
   private updatePreSnap(dt: number): void {
     let allSet = true;
+    const human = !this.humanIsOffense ? this.controlled : null; // the defender the user is moving
     for (const p of this.all) {
+      const isDef = p.team !== this.offenseTeamId;
+      // Pre-snap, the user can shuffle their controlled defender around (disguise / shift) — but
+      // not across the line of scrimmage (no jumping offsides), and not out of bounds. It doesn't
+      // gate the snap, so the offense can still hike whenever it's set.
+      if (p === human) {
+        p.desired = this.stickToField();
+        p.lookDir = null;
+        p.step(dt, p.baseSpeed * 0.8, 2);
+        p.pos.y = this.app.field.clampY(p.pos.y);
+        const overLine = (p.pos.x - this.startLosX) * this.dir; // >0 on the defense's side
+        if (overLine < PRESNAP_LOS_MARGIN) {
+          p.pos.x = this.startLosX + this.dir * PRESNAP_LOS_MARGIN;
+          p.vel.x = 0;
+        }
+        continue;
+      }
       const dx = p.home.x - p.pos.x;
       const dy = p.home.y - p.pos.y;
       const d = Math.hypot(dx, dy);
-      const isDef = p.team !== this.offenseTeamId;
       if (d > 6) {
         p.desired = { x: dx / d, y: dy / d };
         p.lookDir = null; // face the way they're walking
