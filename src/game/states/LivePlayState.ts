@@ -2080,6 +2080,9 @@ export class LivePlayState implements GameState {
   /** On-field result banner during the post-play beat (replaces the old banner screen). */
   private renderResultBanner(r: Renderer, showTapPrompt = true): void {
     if (!this.pendingOutcome) return;
+    const res = this.playResult;
+    // A score gets a dramatic celebration beat (glow + the updated scoreboard), not the plain bar.
+    if (res?.scored && res.scoringTeam) { this.renderScoreCelebration(r, showTapPrompt); return; }
     const w = Math.min(440, r.width - 48);
     const h = 92;
     const x = (r.width - w) / 2;
@@ -2107,6 +2110,42 @@ export class LivePlayState implements GameState {
       alpha: a,
       font: FONT.display,
     });
+  }
+
+  /** Big score celebration beat: glowing headline + the team and the updated scoreboard. */
+  private renderScoreCelebration(r: Renderer, showTapPrompt: boolean): void {
+    const m = this.app.match;
+    const team = m.team(this.playResult!.scoringTeam!);
+    const ctx = r.ctx;
+    const t = this.deadElapsed;
+    const pulse = 0.85 + 0.15 * Math.sin(t * 6);
+    const w = Math.min(460, r.width - 32);
+    const h = 132;
+    const x = (r.width - w) / 2;
+    const y = 48;
+    ctx.save();
+    // Glowing plate in the scoring team's color.
+    ctx.shadowColor = team.colors.jersey;
+    ctx.shadowBlur = 24 * pulse;
+    drawPanel(r, { x, y, w, h }, COLORS.bg1);
+    ctx.restore();
+
+    ctx.save();
+    ctx.letterSpacing = "2px";
+    const head = this.pendingOutcome!.headline.toUpperCase();
+    // Pop the headline in over the first beat.
+    const grow = Math.min(1, t * 5);
+    r.text(head, r.width / 2, y + 42, { size: 28 + 16 * grow, align: "center", color: team.colors.jersey, baseline: "middle", font: FONT.display, alpha: pulse });
+    ctx.restore();
+    r.text(team.config.name.toUpperCase(), r.width / 2, y + 76, { size: 15, align: "center", color: COLORS.bone, baseline: "middle", weight: "normal", font: FONT.ui });
+    // Updated scoreboard line.
+    r.text(`${m.home.config.abbr} ${m.home.score}   —   ${m.away.score} ${m.away.config.abbr}`, r.width / 2, y + 106, {
+      size: 26, align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display,
+    });
+
+    if (!showTapPrompt) return;
+    const a = 0.5 + 0.5 * Math.sin(this.deadElapsed * 4);
+    r.text("TAP TO CONTINUE", r.width / 2, r.height - 24, { size: 15, align: "center", color: COLORS.bone, baseline: "middle", alpha: a, font: FONT.display });
   }
 
   /** Pre-snap HUD prompt: break-the-huddle while walking, hike prompt once set. */
