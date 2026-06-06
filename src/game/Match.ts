@@ -87,6 +87,9 @@ export class Match {
   losX = 0;
   firstDownX = 0;
 
+  /** Set while a two-point conversion attempt is the active "play" (a goal-line down from the 2). */
+  twoPointActive = false;
+
   /** Per-team box score. */
   readonly stats: Record<TeamId, TeamStats> = { HOME: emptyStats(), AWAY: emptyStats() };
 

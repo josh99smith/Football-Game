@@ -17,12 +17,13 @@ import { drawPanel, drawButton, tappedIn, type Rect } from "../../ui/widgets";
 import { ReplaySystem } from "../ReplaySystem";
 import { TackleEngine, type GangTackle } from "../TackleEngine";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
+import { TWO_POINT_POINTS } from "../Match";
 import type { Match, PlayOutcome, OutcomeType } from "../Match";
 import { PlayCallOverlay } from "../../ui/PlayCallOverlay";
 import { cpuOffensePlay, cpuDefensePlay } from "../ai/PlayCaller";
 import { KickoffState } from "./KickoffState";
 import { GameOverState } from "./GameOverState";
-import { SpecialTeamsState } from "./SpecialTeamsState";
+import { PatChoiceState } from "./PatChoiceState";
 import { FourthDownState } from "./FourthDownState";
 
 type Phase = "presnap" | "live" | "dead" | "playcall" | "replay" | "struggle";
@@ -176,6 +177,9 @@ export class LivePlayState implements GameState {
   private returnKind: "interception" | "fumble" | "kick" = "interception";
   /** When set, this state launches a live kickoff/punt return instead of a scrimmage down. */
   private kickReturnSetup: KickReturnSetup | null = null;
+  /** This series is a two-point conversion try (one goal-line snap, TD = 2 pts, then kickoff). */
+  private twoPoint = false;
+  private twoPointTeam: "HOME" | "AWAY" = "HOME";
   /** True once the chase camera has been hard-placed; later downs ease instead of cutting. */
   private cameraPrimed = false;
   /** A fumble is on the ground, live, waiting to be recovered. */
@@ -207,6 +211,8 @@ export class LivePlayState implements GameState {
     this.app.scene3d.setVisible(true);
     this.app.input.setLayout(this.controls.computeLayout(this.app.r));
     this.app.audio.startCrowd();
+    this.twoPoint = this.app.match.twoPointActive; // a goal-line two-point try
+    this.twoPointTeam = this.app.match.possession;
     if (import.meta.env.DEV) (window as unknown as { __live: LivePlayState }).__live = this;
     if (this.kickReturnSetup) this.armKickReturn(this.kickReturnSetup);
     else this.armPlay(this.offensePlay, this.defensePlay);
@@ -1433,7 +1439,7 @@ export class LivePlayState implements GameState {
     }
     this.app.shake.add(0.6);
     this.app.particles.confetti(carrier.pos.x, carrier.pos.y, 50);
-    this.app.floating.add("TOUCHDOWN!", carrier.pos.x, carrier.pos.y - 30, { size: 34, color: "#ffd23a", life: 1.6 });
+    this.app.floating.add(this.twoPoint ? "GOT IN!" : "TOUCHDOWN!", carrier.pos.x, carrier.pos.y - 30, { size: 34, color: "#ffd23a", life: 1.6 });
     this.app.time.slow(0.4, 0.5);
     // The whole scoring unit breaks into a celebration during the post-play beat.
     this.celebrate(this.scoringTeamPlayers(carrier));
@@ -1508,6 +1514,26 @@ export class LivePlayState implements GameState {
     this.passTarget = null;
     this.looseBall = false;
     const m = this.app.match;
+
+    // A two-point conversion try: reaching the end zone is worth 2; anything else fails. Either
+    // way the scoring team then kicks off (no normal down logic).
+    if (this.twoPoint) {
+      const team = this.twoPointTeam;
+      const good = type === "touchdown" && this.offenseTeamId === team; // a turnover-return TD doesn't count
+      if (good) m.addPoints(team, TWO_POINT_POINTS);
+      m.twoPointActive = false;
+      m.team(m.opponent(team)).extinguish();
+      this.playResult = { scored: good, changedPossession: true, kickoff: true, kickReceiver: m.opponent(team), scoringTeam: good ? team : undefined };
+      this.pendingOutcome = { type: good ? "touchdown" : "tackle", ballX: spot.x, ballY: spot.y, possessionAfter: m.opponent(team), yards: 0, firstDown: false, headline: good ? "TWO-POINT — GOOD!" : "NO GOOD" };
+      this.resultDetail = good ? `${m.team(team).config.name.toUpperCase()} +2` : "CONVERSION FAILED";
+      this.quarterBeat();
+      if (good) this.celebrateTeam(team);
+      this.clockRunning = false;
+      this.deadTimer = 2.2; this.deadElapsed = 0;
+      this.endSpot = { x: spot.x, y: spot.y }; this.regroupTargets = null; this.deadFocus = { x: spot.x, y: spot.y };
+      this.app.input.consumeTaps();
+      return;
+    }
 
     // A kickoff / punt return ending: a return TD scores; otherwise the receiving team simply
     // begins its drive at the spot (NOT a turnover — they always had the ball coming).
@@ -1869,10 +1895,9 @@ export class LivePlayState implements GameState {
       this.app.audio.stopCrowd();
       this.app.setState(new GameOverState(this.app));
     } else if (res.touchdown && res.scoringTeam) {
-      // A touchdown: run the extra-point try (its own special-teams beat), then the kickoff.
+      // A touchdown: the scoring team chooses the extra point or a two-point try, then kicks off.
       this.app.audio.stopCrowd();
-      const sp = m.attackGoalX(res.scoringTeam) - m.attackDir(res.scoringTeam) * 2 * PX_PER_YARD;
-      this.app.setState(new SpecialTeamsState(this.app, { kind: "pat", kicking: res.scoringTeam, spotX: sp }));
+      this.app.setState(new PatChoiceState(this.app, res.scoringTeam));
     } else if (res.kickoff && res.kickReceiver) {
       // A score is its own sequence (kickoff/return); cut to it.
       this.app.audio.stopCrowd();
