@@ -2229,8 +2229,10 @@ export class LivePlayState implements GameState {
 
   /** Reticles over eligible receivers (green=open) + a highlight on the target. */
   private renderPassHints(r: Renderer): void {
-    if (!this.humanIsOffense || this.passThrown || this.offensePlay.isRun) return;
-    if (!this.qb || this.ball.carrier !== this.qb) return;
+    // Only once the ball is snapped (live), the QB still holds it behind the line on a pass play,
+    // and hasn't thrown — i.e. exactly when he can legally throw. Hidden pre-snap, on runs, and the
+    // instant he scrambles across the line of scrimmage.
+    if (!this.humanIsOffense || this.phase !== "live" || !this.qb || !this.canThrow(this.qb)) return;
     const ctx = r.ctx;
     const eligible = this.offense.filter((p) => p.role !== "QB" && p.job !== "block" && !p.isDown);
     const choice = chooseTarget(this.qb, this.offense.filter((p) => p.role !== "QB"), this.defense, this.dir, this.stickToField());
