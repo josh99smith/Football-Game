@@ -36,22 +36,26 @@ interface SegDef {
 
 // Major segments of the body, parents before children (drive order depends on it).
 // sw/tw are the joint's soft range; beyond them a spring pushes back (see applyLimits).
+// sw (swing/cone) and tw (twist about the bone axis) are deliberately set to roughly ANATOMICAL
+// ranges so a downed body can't fold or candy-wrapper into impossible shapes. Hinge joints
+// (knee/elbow) get a tiny twist; the spine/neck twist a little; shoulders/hips swing freely but
+// don't spin on their long axis.
 const SEGS: SegDef[] = [
   { name: "pelvis", top: "Hips", bot: "Spine1", drives: "Hips", parent: null, r: 0.15, m: 12 },
-  { name: "torso", top: "Spine1", bot: "Neck", drives: "Spine1", parent: "pelvis", r: 0.16, m: 16, sw: 0.55, tw: 0.5 },
-  { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.11, m: 4.5, sw: 0.7, tw: 0.6 },
-  { name: "thighL", top: "LeftUpLeg", bot: "LeftLeg", drives: "LeftUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
-  { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
+  { name: "torso", top: "Spine1", bot: "Neck", drives: "Spine1", parent: "pelvis", r: 0.16, m: 16, sw: 0.5, tw: 0.32 },
+  { name: "head", top: "Neck", bot: "HeadTop_End", drives: "Neck", parent: "torso", r: 0.11, m: 4.5, sw: 0.6, tw: 0.45 },
+  { name: "thighL", top: "LeftUpLeg", bot: "LeftLeg", drives: "LeftUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.15, tw: 0.28 },
+  { name: "shinL", top: "LeftLeg", bot: "LeftFoot", drives: "LeftLeg", parent: "thighL", r: 0.06, m: 4, sw: 1.0, tw: 0.1 },
   { name: "footL", top: "LeftFoot", bot: "LeftToe_End", drives: "LeftFoot", parent: "shinL", r: 0.05, m: 1, fixed: true },
-  { name: "thighR", top: "RightUpLeg", bot: "RightLeg", drives: "RightUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.2, tw: 0.5 },
-  { name: "shinR", top: "RightLeg", bot: "RightFoot", drives: "RightLeg", parent: "thighR", r: 0.06, m: 4, sw: 1.4, tw: 0.25 },
+  { name: "thighR", top: "RightUpLeg", bot: "RightLeg", drives: "RightUpLeg", parent: "pelvis", r: 0.085, m: 7, sw: 1.15, tw: 0.28 },
+  { name: "shinR", top: "RightLeg", bot: "RightFoot", drives: "RightLeg", parent: "thighR", r: 0.06, m: 4, sw: 1.0, tw: 0.1 },
   { name: "footR", top: "RightFoot", bot: "RightToe_End", drives: "RightFoot", parent: "shinR", r: 0.05, m: 1, fixed: true },
   // Forearms end at the wrist; the hands get their own bodies (below) so they collide with
   // the ground instead of poking through it.
-  { name: "uarmL", top: "LeftArm", bot: "LeftForeArm", drives: "LeftArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.5, tw: 0.7 },
-  { name: "farmL", top: "LeftForeArm", bot: "LeftHand", drives: "LeftForeArm", parent: "uarmL", r: 0.045, m: 1.5, sw: 1.6, tw: 0.3 },
-  { name: "uarmR", top: "RightArm", bot: "RightForeArm", drives: "RightArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.5, tw: 0.7 },
-  { name: "farmR", top: "RightForeArm", bot: "RightHand", drives: "RightForeArm", parent: "uarmR", r: 0.045, m: 1.5, sw: 1.6, tw: 0.3 },
+  { name: "uarmL", top: "LeftArm", bot: "LeftForeArm", drives: "LeftArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.45, tw: 0.5 },
+  { name: "farmL", top: "LeftForeArm", bot: "LeftHand", drives: "LeftForeArm", parent: "uarmL", r: 0.045, m: 1.5, sw: 1.3, tw: 0.18 },
+  { name: "uarmR", top: "RightArm", bot: "RightForeArm", drives: "RightArm", parent: "torso", r: 0.05, m: 2.5, sw: 1.45, tw: 0.5 },
+  { name: "farmR", top: "RightForeArm", bot: "RightHand", drives: "RightForeArm", parent: "uarmR", r: 0.045, m: 1.5, sw: 1.3, tw: 0.18 },
   { name: "handL", top: "LeftHand", bot: "LeftHandMiddle3", drives: "LeftHand", parent: "farmL", r: 0.04, m: 0.5, fixed: true },
   { name: "handR", top: "RightHand", bot: "RightHandMiddle3", drives: "RightHand", parent: "farmR", r: 0.04, m: 0.5, fixed: true },
 ];
@@ -91,7 +95,7 @@ const _lrest = new THREE.Quaternion();
 const _ltorque = new THREE.Vector3();
 
 const LOWER = new Set(["thighL", "shinL", "footL", "thighR", "shinR", "footR"]);
-const MAX_SPIN = 16; // rad/s — clamp so a body can never spin up into a contorted blur
+const MAX_SPIN = 10; // rad/s — clamp so a body can never spin up into a contorted blur
 
 export class TackleRagdoll {
   active = false;
@@ -182,7 +186,7 @@ export class TackleRagdoll {
         .setTranslation(_c.x, _c.y, _c.z)
         .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })
         .setLinvel(v.x, v.y, v.z)
-        .setAngularDamping(6.0)
+        .setAngularDamping(7.5)
         .setLinearDamping(0.4)
         .setCanSleep(true);
       const body = world.createRigidBody(bodyDesc);
@@ -265,15 +269,16 @@ export class TackleRagdoll {
         if (v.y < 0) seg.body.setLinvel({ x: v.x, y: 0, z: v.z }, true);
       }
     }
-    // The limits matter only DURING the fall (to stop the mesh candy-wrappering while the
-    // body whips around fast). Once it's down, a limb resting on the ground at a beyond-limit
-    // angle would fight the ground forever and buzz — so we fade the limits out over the first
-    // ~1.5s and then leave the body fully limp to settle.
+    // Joint limits stay ON the whole time the body is a ragdoll — that's what keeps it looking
+    // like a body and not taffy once it's on the ground. TWIST (about the bone's long axis) is
+    // enforced at full strength forever: untwisting a limb only rolls it, it never fights gravity
+    // or the turf, so it can't buzz — and it's the candy-wrapper twist that reads as "contorted".
+    // SWING (the cone bend) can fight the ground when a bent joint rests on it, so it eases from
+    // full at impact down to a gentle sustained floor; the deadband + heavy damping stop ringing.
     this.age += dt;
-    const fade = this.age < 1.0 ? 1 : this.age < 1.6 ? (1.6 - this.age) / 0.6 : 0;
-    if (fade <= 0) return;
+    const swingFade = this.age < 0.8 ? 1 : Math.max(0.5, 1 - (this.age - 0.8) * 0.45);
     // Soft + overdamped: a gentle spring past the limit + strong relative-velocity damping.
-    const kSwing = 7 * fade, kTwist = 7 * fade, kDamp = 4.5, dead = 0.06, maxT = 12;
+    const kSwing = 8 * swingFade, kTwist = 9, kDamp = 5.0, dead = 0.05, maxT = 12;
     for (const seg of this.segs) {
       const parent = seg.parentSeg;
       if (!parent || seg.sw === undefined) continue;
