@@ -1576,6 +1576,18 @@ export class Scene3D {
     outLook.set(fx + dir * 10, 0.9, fz);
   }
 
+  /** Place the camera at an explicit world pose for a scripted cinematic (e.g. the pre-snap
+   * sweep). Sets the current sample and carries the previous one so render() still interpolates
+   * between ticks — call it every tick of the move for a smooth path. World units. */
+  dollyCam(px: number, py: number, pz: number, lx: number, ly: number, lz: number): void {
+    this.camPosPrev.copy(this.camPosCur);
+    this.camLookPrev.copy(this.camLookCur);
+    this.camPos.set(px, py, pz);
+    this.camLook.set(lx, ly, lz);
+    this.camPosCur.copy(this.camPos);
+    this.camLookCur.copy(this.camLook);
+  }
+
   sync(opts: {
     players: Player[];
     ball: Ball;

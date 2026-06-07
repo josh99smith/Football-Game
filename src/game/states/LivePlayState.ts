@@ -38,6 +38,8 @@ export interface KickReturnSetup {
 // hard-stall if the hike is never pressed.
 const PRESNAP_TIME = 20;
 const MAX_PLAY_TIME = 16;
+/** Duration of the pre-snap broadcast camera sweep that settles behind the offense (s). */
+const PRESNAP_CINE_DUR = 2.1;
 /** How far onto the defense's side of the LOS a pre-snap defender must stay (px) — no offsides. */
 const PRESNAP_LOS_MARGIN = 2;
 /** Hard cap on the post-play beat so it can't hang if the player never taps. */
@@ -90,6 +92,8 @@ export class LivePlayState implements GameState {
   private phase: Phase = "presnap";
   /** Safety fallback so a play never hard-stalls in pre-snap. */
   private snapTimer = PRESNAP_TIME;
+  /** Time left in the pre-snap cinematic camera sweep (counts down; 0 = hand back to follow). */
+  private presnapCineT = 0;
   /** True once everyone has broken the huddle and reached their spot. */
   private preSnapReady = false;
   /** Countdown for the CPU offense to hike once set (defense games). */
@@ -334,6 +338,8 @@ export class LivePlayState implements GameState {
       // the huddle to the new line of scrimmage instead of jumping (a smoother broadcast feel).
       if (!this.cameraPrimed) { this.app.scene3d.snapCamera(this.qb.pos.x, this.qb.pos.y, this.dir); this.cameraPrimed = true; }
     }
+    // Roll a short broadcast camera sweep that orbits the line and settles behind the offense.
+    this.presnapCineT = PRESNAP_CINE_DUR;
   }
 
   /** Reset all per-play/down bookkeeping (shared by scrimmage downs and kick returns). */
@@ -699,6 +705,31 @@ export class LivePlayState implements GameState {
     }
 
     this.syncScene(dt);
+    this.updatePresnapCine(dt);
+  }
+
+  /** A broadcast pre-snap sweep: the camera orbits in from a low side angle and settles behind the
+   * offense at the gameplay over-the-shoulder pose, easing out so the snap hands off seamlessly to
+   * the follow cam. Runs over the first ~2s of pre-snap (or until the ball is hiked). */
+  private updatePresnapCine(dt: number): void {
+    if (this.presnapCineT <= 0 || !this.qb) return;
+    this.presnapCineT -= dt;
+    const U = 1 / PX_PER_YARD;
+    const p = clamp(1 - this.presnapCineT / PRESNAP_CINE_DUR, 0, 1);
+    const e = p * p * (3 - 2 * p); // smoothstep toward the gameplay pose
+    const fx = this.qb.pos.x * U;
+    const fz = (this.app.field.maxY / 2) * U;
+    // Orbit angle around the focus: end behind the offense (the follow pose), start swung ~120°
+    // to the side; radius + height ease from a wide low establishing shot to the tight gameplay one.
+    const endAng = Math.atan2(0, -this.dir);
+    const ang = endAng - this.dir * 2.1 * (1 - e);
+    const radius = lerp(15, 7.5, e);
+    const height = lerp(2.2, 6.0, e);
+    const camX = fx + Math.cos(ang) * radius;
+    const camZ = fz + Math.sin(ang) * radius;
+    const lookX = lerp(fx, fx + this.dir * 10, e);
+    const lookY = lerp(1.5, 0.9, e);
+    this.app.scene3d.dollyCam(camX, height, camZ, lookX, lookY, fz);
   }
 
   private snap(): void {
