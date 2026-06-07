@@ -24,6 +24,26 @@ if (import.meta.env.DEV) {
   });
 }
 
+// Opt-in load diagnostic for remote debugging (e.g. on a phone): add #diag to the URL. Shows the
+// model/clip load state + last error in a corner so a "models load but won't animate" report can be
+// pinned down without guesswork. Off (and zero-cost) for normal play.
+if (/(^|[#?&])diag\b/.test(location.hash + location.search)) {
+  const el = document.createElement("div");
+  el.style.cssText =
+    "position:fixed;left:6px;bottom:6px;z-index:9999;font:11px/1.35 monospace;color:#0f0;" +
+    "background:rgba(0,0,0,.72);padding:6px 8px;border-radius:6px;pointer-events:none;white-space:pre;max-width:60vw";
+  document.body.appendChild(el);
+  const gl = canvas3d.getContext("webgl2") || canvas3d.getContext("webgl");
+  setInterval(() => {
+    const ci = app.scene3d.charInfo;
+    el.textContent =
+      `WebGL: ${gl ? "ok" : "MISSING"}\n` +
+      `rig: ${app.diag.rig}  model: ${ci.skinned ? "skinned" : "boxes"}\n` +
+      `clips: ${ci.clips}/12\n` +
+      (app.diag.lastErr ? `err: ${app.diag.lastErr}` : "err: none");
+  }, 400);
+}
+
 // Resume audio on the very first interaction (autoplay policy).
 const unlock = () => {
   app.audio.resume();

@@ -10,7 +10,7 @@ import { TimeScale } from "./fx/TimeScale";
 import type { GameState } from "./GameState";
 import { Field } from "../game/Field";
 import { Scene3D } from "../game/Scene3D";
-import { loadBaseRig, loadAnimationClips, clipsComplete, loadedClipCount, type CharacterAsset } from "../game/CharacterModel";
+import { loadBaseRig, loadAnimationClips, clipsComplete, loadedClipCount, locomotionReady, type CharacterAsset } from "../game/CharacterModel";
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
@@ -57,6 +57,9 @@ export class GameApp {
   match!: Match;
   highScores: HighScore[] = loadHighScores();
 
+  /** Asset-load state surfaced by the optional #diag overlay (remote debugging on phones). */
+  diag = { rig: "loading", lastErr: "" };
+
   private rotatePrompt: HTMLElement | null;
 
   constructor(canvas: HTMLCanvasElement, canvas3d: HTMLCanvasElement) {
@@ -98,26 +101,35 @@ export class GameApp {
         if (clipsComplete(next) || attempt >= 40) return;
         setTimeout(() => loadAnims(next, attempt + 1), Math.min(8000, 1500 * (attempt + 1)));
       };
-      loadAnimationClips(asset, urls)
+      // Apply the model the instant the locomotion clips are in (run/walk/strafe/backpedal) so a
+      // moving player animates without waiting on the heavier one-shot clips behind them.
+      let appliedLoco = locomotionReady(asset);
+      const onProgress = (partial: CharacterAsset): void => {
+        if (!appliedLoco && locomotionReady(partial)) { appliedLoco = true; this.scene3d.setCharacter(partial); }
+      };
+      loadAnimationClips(asset, urls, onProgress)
         .then((full) => {
-          // Only rebuild the avatar pool when a pass actually added a clip (avoids churn on a
-          // retry where everything still failed).
-          if (attempt === 0 || loadedClipCount(full) > before) this.scene3d.setCharacter(full);
+          // Rebuild on the final result when a pass added clips (or first pass / loco not yet shown).
+          if (attempt === 0 || !appliedLoco || loadedClipCount(full) > before) this.scene3d.setCharacter(full);
           retry(full);
         })
         .catch((err) => {
           console.warn(`animation clips load issue (model is up, retrying)`, err);
+          this.diag.lastErr = String(err).slice(0, 120);
           retry(asset);
         });
     };
     const loadRig = (attempt = 0): void => {
       loadBaseRig(urls.model)
         .then((rig) => {
+          this.diag.rig = "ok";
           this.scene3d.setCharacter(rig); // model is visible NOW (idle); clips follow
           loadAnims(rig);
         })
         .catch((err) => {
           console.error(`base rig load failed (attempt ${attempt + 1}); retrying…`, err);
+          this.diag.rig = `retry ${attempt + 1}`;
+          this.diag.lastErr = String(err).slice(0, 120);
           if (attempt < 10) setTimeout(() => loadRig(attempt + 1), 1500 * (attempt + 1));
         });
     };

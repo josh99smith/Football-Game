@@ -118,14 +118,38 @@ async function loadFbx(loader: FBXLoader, url: string): Promise<THREE.Group> {
 }
 
 /**
+ * Free a loaded FBX scene's GPU/CPU resources. Each animation FBX ships a FULL character mesh we
+ * don't keep (we only extract its AnimationClip), so on memory-constrained devices (Android Chrome)
+ * those meshes MUST be released or 12 of them pile up and the later clip parses fail — which leaves
+ * the player on idle-only and looking frozen. The AnimationClip is independent keyframe data, so
+ * disposing the source meshes afterward is safe.
+ */
+function disposeSource(obj: THREE.Object3D): void {
+  obj.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.geometry) mesh.geometry.dispose();
+    const mat = mesh.material;
+    const mats = Array.isArray(mat) ? mat : mat ? [mat] : [];
+    for (const m of mats) {
+      for (const v of Object.values(m as unknown as Record<string, unknown>)) {
+        if (v && (v as THREE.Texture).isTexture) (v as THREE.Texture).dispose();
+      }
+      m.dispose();
+    }
+  });
+}
+
+/**
  * Load a single animation clip — BEST EFFORT. A failed clip resolves to `null` (that one
  * animation is simply disabled) so it can never take down the whole skinned model. Only the base
- * rig is critical.
+ * rig is critical. The source FBX mesh is disposed immediately (we keep only the clip).
  */
 async function loadClip(loader: FBXLoader, url: string): Promise<THREE.AnimationClip | null> {
   try {
     const fbx = await loadFbx(loader, url);
-    return fbx.animations[0] ? prep(fbx.animations[0]) : null;
+    const clip = fbx.animations[0] ? prep(fbx.animations[0]) : null;
+    disposeSource(fbx); // free the throwaway character mesh before the next clip loads
+    return clip;
   } catch (e) {
     console.warn(`[character] animation clip failed (disabled, model still loads): ${url}`, e);
     return null;
@@ -159,9 +183,13 @@ export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
   return buildAsset(model, emptyClips(idle));
 }
 
-/** The clip slots that come from the separate animation FBXs (everything except `idle`). */
+/**
+ * The clip slots that come from the separate animation FBXs (everything except `idle`), ordered so
+ * the locomotion clips load FIRST — a moving player animates as soon as possible, and the heavier
+ * one-shots stream in after.
+ */
 const CLIP_KEYS: Array<Exclude<keyof CharacterClips, "idle">> = [
-  "run", "runBack", "strafe", "pass", "catch", "juke", "walk", "tackle", "spin", "defTackle", "defSwat", "celebrate",
+  "run", "walk", "runBack", "strafe", "spin", "juke", "catch", "pass", "tackle", "defTackle", "defSwat", "celebrate",
 ];
 const CLIP_URL_KEY: Record<Exclude<keyof CharacterClips, "idle">, keyof CharacterUrls> = {
   run: "run", runBack: "runBack", strafe: "strafe", pass: "pass", catch: "catch", juke: "juke",
@@ -178,20 +206,34 @@ export function loadedClipCount(asset: CharacterAsset): number {
   return CLIP_KEYS.reduce((n, k) => n + (asset.clips[k] != null ? 1 : 0), 0);
 }
 
+/** True once the locomotion clips are in — enough to apply so moving players animate immediately. */
+export function locomotionReady(asset: CharacterAsset): boolean {
+  const c = asset.clips;
+  return c.run != null && c.walk != null && c.runBack != null && c.strafe != null;
+}
+
 /**
  * Load the animation clips MISSING from `current` (best-effort per clip) and merge them in. Clips
  * already present are NOT re-fetched, so this is safe to call repeatedly to fill gaps — the key to
  * bulletproof animations: a clip that blipped on a flaky connection gets retried on the next call
  * (driven by Game.ts) instead of being silently disabled forever. Returns a NEW merged asset.
  */
-export async function loadAnimationClips(current: CharacterAsset, urls: CharacterUrls): Promise<CharacterAsset> {
+export async function loadAnimationClips(
+  current: CharacterAsset,
+  urls: CharacterUrls,
+  onProgress?: (partial: CharacterAsset) => void,
+): Promise<CharacterAsset> {
   const loader = new FBXLoader();
   const clips: CharacterClips = { ...current.clips };
-  await Promise.all(
-    CLIP_KEYS.filter((k) => clips[k] == null).map(async (k) => {
-      clips[k] = await loadClip(loader, urls[CLIP_URL_KEY[k]]);
-    }),
-  );
+  // Load SEQUENTIALLY (not Promise.all): each animation FBX carries a full character mesh, so
+  // fetching all 12 at once spikes memory and the parses fail on phones — exactly the "models load
+  // but never animate" symptom. One at a time keeps peak memory at a single FBX. `onProgress` lets
+  // the caller apply the locomotion clips the moment they arrive instead of waiting for all 12.
+  for (const k of CLIP_KEYS) {
+    if (clips[k] != null) continue;
+    clips[k] = await loadClip(loader, urls[CLIP_URL_KEY[k]]);
+    onProgress?.(buildAsset(current.template, { ...clips }));
+  }
   return buildAsset(current.template, clips);
 }
 

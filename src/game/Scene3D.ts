@@ -75,6 +75,8 @@ interface Avatar {
   advanceRagdoll(dt: number): void;
   /** Hips position in field (pixel) space while ragdolling, for camera/spot tracking. */
   ragdollHipsPx(): { x: number; y: number } | null;
+  /** Free per-instance GPU resources when this avatar is replaced (skinned avatars only). */
+  dispose?(): void;
 }
 
 /**
@@ -566,6 +568,27 @@ class FbxAvatar implements Avatar {
     inner.traverse((o) => {
       if ((o as THREE.Bone).isBone) this.restPose.set(o as THREE.Bone, { p: o.position.clone(), q: o.quaternion.clone() });
     });
+  }
+
+  /**
+   * Free this avatar's per-instance GPU resources. Called when the character is rebuilt (the rig →
+   * locomotion → full-clip upgrade swaps the whole avatar pool a couple of times). Skinned geometry
+   * and the cached jersey textures are SHARED (skeleton clone / texture cache), so we only release
+   * the per-avatar cloned materials + mixer bindings — otherwise repeated rebuilds leak GPU memory,
+   * which is exactly what tips a phone over into failed loads.
+   */
+  dispose(): void {
+    if (this.ragdoll?.active) this.ragdoll.dispose();
+    this.mixer.stopAllAction();
+    this.mixer.uncacheRoot(this.inner);
+    for (const m of this.jerseyMats) m.dispose();
+    for (const m of this.helmetMats) m.dispose();
+    for (const m of this.skinMats) m.dispose();
+    (this.ring.material as THREE.Material).dispose();
+    (this.chevron.material as THREE.Material).dispose();
+    (this.nub.material as THREE.Material).dispose();
+    (this.blob.material as THREE.Material).dispose();
+    this.blob.geometry.dispose();
   }
 
   // --- physics ragdoll lifecycle ----------------------------------------------------------
@@ -1520,8 +1543,17 @@ export class Scene3D {
   }
 
   /** Swap the box-avatar pool for skinned FBX characters once the model has loaded. */
+  /** Snapshot of the loaded character, surfaced by the #diag overlay for remote debugging. */
+  charInfo: { skinned: boolean; clips: number } = { skinned: false, clips: 0 };
+
   setCharacter(asset: CharacterAsset): void {
-    for (const a of this.players) this.scene.remove(a.group);
+    const c = asset.clips;
+    this.charInfo = {
+      skinned: true,
+      clips: [c.run, c.walk, c.runBack, c.strafe, c.spin, c.juke, c.catch, c.pass, c.tackle, c.defTackle, c.defSwat, c.celebrate]
+        .filter((x) => x != null).length,
+    };
+    for (const a of this.players) { this.scene.remove(a.group); a.dispose?.(); }
     this.players = [];
     for (let i = 0; i < MAX_PLAYERS; i++) {
       const a = new FbxAvatar(asset);
