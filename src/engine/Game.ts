@@ -10,7 +10,7 @@ import { TimeScale } from "./fx/TimeScale";
 import type { GameState } from "./GameState";
 import { Field } from "../game/Field";
 import { Scene3D } from "../game/Scene3D";
-import { loadBaseRig, loadAnimationClips, type CharacterAsset } from "../game/CharacterModel";
+import { loadBaseRig, loadAnimationClips, clipsComplete, loadedClipCount, type CharacterAsset } from "../game/CharacterModel";
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
@@ -88,12 +88,26 @@ export class GameApp {
     // Two-stage load so the skinned model appears ASAP: (1) the ~1MB rig swaps box avatars for the
     // model immediately (idle only); (2) the animation clips stream in and upgrade it. A slow or
     // stalled clip fetch on mobile can therefore never leave the player stuck on blocks.
-    const loadAnims = (rig: CharacterAsset, attempt = 0): void => {
-      loadAnimationClips(rig, urls)
-        .then((full) => { this.scene3d.setCharacter(full); })
+    // Stream the animation clips onto the rig, and KEEP retrying any that fail until the whole set
+    // is in. loadAnimationClips only re-fetches the clips still missing from `asset`, so a clip
+    // that blipped on a flaky mobile connection streams in on a later pass instead of being
+    // silently disabled forever — animations can be a beat late, but never absent.
+    const loadAnims = (asset: CharacterAsset, attempt = 0): void => {
+      const before = loadedClipCount(asset);
+      const retry = (next: CharacterAsset): void => {
+        if (clipsComplete(next) || attempt >= 40) return;
+        setTimeout(() => loadAnims(next, attempt + 1), Math.min(8000, 1500 * (attempt + 1)));
+      };
+      loadAnimationClips(asset, urls)
+        .then((full) => {
+          // Only rebuild the avatar pool when a pass actually added a clip (avoids churn on a
+          // retry where everything still failed).
+          if (attempt === 0 || loadedClipCount(full) > before) this.scene3d.setCharacter(full);
+          retry(full);
+        })
         .catch((err) => {
-          console.warn(`animation clips load issue (model is up, animations retrying)`, err);
-          if (attempt < 6) setTimeout(() => loadAnims(rig, attempt + 1), 2000 * (attempt + 1));
+          console.warn(`animation clips load issue (model is up, retrying)`, err);
+          retry(asset);
         });
     };
     const loadRig = (attempt = 0): void => {

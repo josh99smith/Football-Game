@@ -159,27 +159,40 @@ export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
   return buildAsset(model, emptyClips(idle));
 }
 
-/** Load all animation clips (best-effort; each resolves null on failure) onto an existing rig. */
-export async function loadAnimationClips(rig: CharacterAsset, urls: CharacterUrls): Promise<CharacterAsset> {
+/** The clip slots that come from the separate animation FBXs (everything except `idle`). */
+const CLIP_KEYS: Array<Exclude<keyof CharacterClips, "idle">> = [
+  "run", "runBack", "strafe", "pass", "catch", "juke", "walk", "tackle", "spin", "defTackle", "defSwat", "celebrate",
+];
+const CLIP_URL_KEY: Record<Exclude<keyof CharacterClips, "idle">, keyof CharacterUrls> = {
+  run: "run", runBack: "runBack", strafe: "strafe", pass: "pass", catch: "catch", juke: "juke",
+  walk: "walk", tackle: "tackle", spin: "spin", defTackle: "defTackle", defSwat: "defSwat", celebrate: "celebrate",
+};
+
+/** True once every animation clip (not just idle) is loaded — i.e. nothing left to retry. */
+export function clipsComplete(asset: CharacterAsset): boolean {
+  return CLIP_KEYS.every((k) => asset.clips[k] != null);
+}
+
+/** How many of the animation clips are loaded (for spotting when a retry actually added one). */
+export function loadedClipCount(asset: CharacterAsset): number {
+  return CLIP_KEYS.reduce((n, k) => n + (asset.clips[k] != null ? 1 : 0), 0);
+}
+
+/**
+ * Load the animation clips MISSING from `current` (best-effort per clip) and merge them in. Clips
+ * already present are NOT re-fetched, so this is safe to call repeatedly to fill gaps — the key to
+ * bulletproof animations: a clip that blipped on a flaky connection gets retried on the next call
+ * (driven by Game.ts) instead of being silently disabled forever. Returns a NEW merged asset.
+ */
+export async function loadAnimationClips(current: CharacterAsset, urls: CharacterUrls): Promise<CharacterAsset> {
   const loader = new FBXLoader();
-  const [run, runBack, strafe, pass, catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate] =
-    await Promise.all([
-      loadClip(loader, urls.run),
-      loadClip(loader, urls.runBack),
-      loadClip(loader, urls.strafe),
-      loadClip(loader, urls.pass),
-      loadClip(loader, urls.catch),
-      loadClip(loader, urls.juke),
-      loadClip(loader, urls.walk),
-      loadClip(loader, urls.tackle),
-      loadClip(loader, urls.spin),
-      loadClip(loader, urls.defTackle),
-      loadClip(loader, urls.defSwat),
-      loadClip(loader, urls.celebrate),
-    ]);
-  return buildAsset(rig.template, {
-    idle: rig.clips.idle, run, runBack, strafe, pass, catch: catchClip, juke, walk, tackle, spin, defTackle, defSwat, celebrate,
-  });
+  const clips: CharacterClips = { ...current.clips };
+  await Promise.all(
+    CLIP_KEYS.filter((k) => clips[k] == null).map(async (k) => {
+      clips[k] = await loadClip(loader, urls[CLIP_URL_KEY[k]]);
+    }),
+  );
+  return buildAsset(current.template, clips);
 }
 
 /**
