@@ -570,11 +570,12 @@ export class LivePlayState implements GameState {
     });
   }
 
-  private colorFor(p: Player): { jersey: number; trim: number; onFire: boolean; defense: boolean } {
+  private colorFor(p: Player): { jersey: number; trim: number; accent: number; onFire: boolean; defense: boolean } {
     const team = this.app.match.team(p.team);
     return {
       jersey: hexNum(team.colors.jersey),
       trim: hexNum(team.colors.trim),
+      accent: hexNum(team.colors.accent),
       onFire: team.onFire,
       defense: p.team !== this.offenseTeamId,
     };

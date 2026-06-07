@@ -305,9 +305,9 @@ export class SpecialTeamsState implements GameState {
     });
   }
 
-  private colorFor(p: Player): { jersey: number; trim: number; onFire: boolean; defense: boolean } {
+  private colorFor(p: Player): { jersey: number; trim: number; accent: number; onFire: boolean; defense: boolean } {
     const team = this.app.match.team(p.team);
-    return { jersey: hexNum(team.colors.jersey), trim: hexNum(team.colors.trim), onFire: false, defense: p.team !== this.opts.kicking };
+    return { jersey: hexNum(team.colors.jersey), trim: hexNum(team.colors.trim), accent: hexNum(team.colors.accent), onFire: false, defense: p.team !== this.opts.kicking };
   }
 
   // --- transitions -----------------------------------------------------------------------

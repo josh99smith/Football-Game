@@ -2,8 +2,12 @@ import type { TeamId } from "./entities/Player";
 import type { EmblemIcon } from "../ui/Emblems";
 
 export interface TeamColors {
+  /** Primary jersey base color. */
   jersey: string;
+  /** Dark helmet / pants color. */
   trim: string;
+  /** Bright contrast color for sleeve stripes, collar, and number outlines. */
+  accent: string;
 }
 
 export interface TeamConfig {
@@ -16,12 +20,12 @@ export interface TeamConfig {
 
 /** Fictional teams (no licensing). Picked on the team-select screen. */
 export const TEAMS: TeamConfig[] = [
-  { id: "HOME", name: "Neon Bolts", abbr: "NB", icon: "bolt", colors: { jersey: "#ffd23a", trim: "#1a1a2e" } },
-  { id: "HOME", name: "Crimson Rhinos", abbr: "CR", icon: "horn", colors: { jersey: "#e23b3b", trim: "#2a0a0a" } },
-  { id: "HOME", name: "Azure Sharks", abbr: "AZ", icon: "fin", colors: { jersey: "#27a3ff", trim: "#06243b" } },
-  { id: "HOME", name: "Emerald Hawks", abbr: "EH", icon: "wing", colors: { jersey: "#1fd17a", trim: "#063b22" } },
-  { id: "HOME", name: "Violet Vipers", abbr: "VV", icon: "viper", colors: { jersey: "#9b5cff", trim: "#1c0a3b" } },
-  { id: "HOME", name: "Orange Crush", abbr: "OC", icon: "star", colors: { jersey: "#ff7b1e", trim: "#3b1c06" } },
+  { id: "HOME", name: "Neon Bolts", abbr: "NB", icon: "bolt", colors: { jersey: "#ffd23a", trim: "#14162e", accent: "#1b2f7a" } },
+  { id: "HOME", name: "Crimson Rhinos", abbr: "CR", icon: "horn", colors: { jersey: "#e23b3b", trim: "#2a0a0a", accent: "#f2c14e" } },
+  { id: "HOME", name: "Azure Sharks", abbr: "AZ", icon: "fin", colors: { jersey: "#27a3ff", trim: "#06243b", accent: "#ff8a1e" } },
+  { id: "HOME", name: "Emerald Hawks", abbr: "EH", icon: "wing", colors: { jersey: "#1fd17a", trim: "#063b22", accent: "#0b2e44" } },
+  { id: "HOME", name: "Violet Vipers", abbr: "VV", icon: "viper", colors: { jersey: "#9b5cff", trim: "#1c0a3b", accent: "#ffd23a" } },
+  { id: "HOME", name: "Orange Crush", abbr: "OC", icon: "star", colors: { jersey: "#ff7b1e", trim: "#2a1402", accent: "#1a2440" } },
 ];
 
 /** How long ON FIRE lasts on a full meter with no further good plays. */

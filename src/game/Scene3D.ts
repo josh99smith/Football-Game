@@ -61,7 +61,7 @@ export interface RagdollHit {
 /** A swappable on-field player representation (box fallback or skinned FBX). */
 interface Avatar {
   readonly group: THREE.Object3D;
-  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void;
+  update(p: Player, jersey: number, trim: number, accent: number, onFire: boolean, dt: number, isDefense: boolean): void;
   /** Apply the fixed-step interpolation: place the body between the last two sim
    * positions by `alpha` (0..1) so motion is smooth on any refresh rate. */
   present(alpha: number): void;
@@ -197,7 +197,7 @@ class BoxAvatar implements Avatar {
     return joint;
   }
 
-  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, _isDefense: boolean): void {
+  update(p: Player, jersey: number, trim: number, _accent: number, onFire: boolean, dt: number, _isDefense: boolean): void {
     const g = this.group;
     g.visible = true;
     this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
@@ -344,6 +344,64 @@ function makeBlobTexture(): THREE.Texture {
   _blobTex = new THREE.CanvasTexture(c);
   return _blobTex;
 }
+// ---- Procedural team jersey skins ----
+// `body_low` carries the whole uniform on a full 0..1 UV unwrap: front torso lives at U .125-.375,
+// the back at U .625-.875 (centerlines at .25 / .75), the four shoulder/sleeve caps sit in the
+// edge columns at high V, and the pants fill the lower V band with the shoes at the very bottom.
+// We paint a jersey in that layout — base color, white shoulder yoke, accent collar V + sleeve
+// stripes, and an outlined player number front & back — then cache it per (jersey,accent,number).
+const _jerseyCache = new Map<string, THREE.CanvasTexture>();
+function hexCss(n: number): string {
+  return `#${(n & 0xffffff).toString(16).padStart(6, "0")}`;
+}
+function shade(n: number, f: number): string {
+  const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+  const m = (v: number) => Math.max(0, Math.min(255, Math.round(f < 0 ? v * (1 + f) : v + (255 - v) * f)));
+  return `#${((m(r) << 16) | (m(g) << 8) | m(b)).toString(16).padStart(6, "0")}`;
+}
+function jerseyTexture(jersey: number, accent: number, num: number): THREE.CanvasTexture {
+  const key = `${jersey.toString(16)}-${accent.toString(16)}-${num}`;
+  const cached = _jerseyCache.get(key);
+  if (cached) return cached;
+  const base = hexCss(jersey), acc = hexCss(accent), light = "#f4f4ee", pants = shade(jersey, -0.4);
+  const S = 512, c = document.createElement("canvas");
+  c.width = c.height = S;
+  const x = c.getContext("2d")!;
+  const Y = (v: number) => (1 - v) * S, U2 = (u: number) => u * S;
+  x.fillStyle = base; x.fillRect(0, 0, S, S);
+  // pants (lower V) + shoes, with an accent hip stripe at the waist
+  x.fillStyle = pants; x.fillRect(0, Y(0.46), S, S - Y(0.46));
+  x.fillStyle = "#15151a"; x.fillRect(0, Y(0.07), S, S - Y(0.07));
+  x.fillStyle = acc; x.fillRect(0, Y(0.44), S, 5);
+  // sleeve stripes (accent / white / accent) wrapping the shoulder caps in the edge columns
+  for (const [u0, u1] of [[0, 0.125], [0.375, 0.5], [0.5, 0.625], [0.875, 1.0]]) {
+    const bands: [number, string][] = [[0.90, acc], [0.865, light], [0.83, acc]];
+    for (const [v, col] of bands) { x.fillStyle = col; x.fillRect(U2(u0), Y(v), U2(u1 - u0), 9); }
+  }
+  // white shoulder yoke band + accent collar V (front & back torso)
+  for (const u0 of [0.125, 0.625]) { x.fillStyle = light; x.fillRect(U2(u0), Y(0.84), U2(0.25), 9); }
+  x.strokeStyle = acc; x.lineWidth = 7;
+  for (const cx of [0.25, 0.75]) {
+    x.beginPath(); x.moveTo(U2(cx - 0.05), Y(0.86)); x.lineTo(U2(cx), Y(0.80)); x.lineTo(U2(cx + 0.05), Y(0.86)); x.stroke();
+  }
+  // chest/back number, white filled with an accent outline
+  const label = String(num);
+  for (const cx of [0.25, 0.75]) {
+    x.save();
+    x.translate(U2(cx), Y(0.63));
+    x.textAlign = "center"; x.textBaseline = "middle";
+    x.font = "900 75px Arial Narrow, Arial, sans-serif";
+    x.lineWidth = 6; x.strokeStyle = acc; x.strokeText(label, 0, 0);
+    x.fillStyle = light; x.fillText(label, 0, 0);
+    x.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  _jerseyCache.set(key, tex);
+  return tex;
+}
+
 /** Lerp an action's weight toward a target (~0.12s to fully change) for smooth crossfades. */
 function blendW(a: THREE.AnimationAction | null, target: number, dt: number): void {
   if (!a) return;
@@ -370,8 +428,14 @@ class FbxAvatar implements Avatar {
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
-  /** The uniform/helmet materials that get tinted to the team color. */
-  private readonly uniformMats: THREE.MeshStandardMaterial[] = [];
+  /** Jersey/pants mesh material(s) — get the procedural team-jersey skin texture. */
+  private readonly jerseyMats: THREE.MeshStandardMaterial[] = [];
+  /** Helmet material(s) — get the dark trim color. */
+  private readonly helmetMats: THREE.MeshStandardMaterial[] = [];
+  /** Face/arms material(s) — held at a neutral skin tone. */
+  private readonly skinMats: THREE.MeshStandardMaterial[] = [];
+  /** Cache key of the jersey texture currently applied, so we only swap it when it changes. */
+  private jerseyKey = "";
   private readonly lean = new THREE.Group();
   private readonly ring: THREE.Mesh;
   private readonly chevron: THREE.Mesh;
@@ -408,24 +472,31 @@ class FbxAvatar implements Avatar {
     const inner = skeletonClone(asset.template);
     inner.scale.setScalar(asset.scale);
     inner.position.y = asset.groundOffset * asset.scale;
-    // Clone the model's materials per-avatar so each can be tinted independently;
-    // the uniform/helmet material takes the team color, skin/face stay natural.
+    // Clone the model's materials per-avatar so each can be tinted independently. The mesh names
+    // tell us what's what: `body_low` is the jersey+pants (a full 0..1 UV unwrap → we paint a
+    // procedural team jersey skin onto it), the helmet mesh takes the dark trim color, and the
+    // face/arms keep a natural skin tone.
     inner.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       m.castShadow = true;
+      const isJersey = /body/i.test(m.name);
+      const isHelmet = /helmet/i.test(m.name);
       const apply = (mat: THREE.Material): THREE.Material => {
         const clone = mat.clone() as THREE.MeshStandardMaterial;
-        if (/uniform|helmet|jersey|body/i.test(mat.name)) this.uniformMats.push(clone);
+        if (isJersey) this.jerseyMats.push(clone);
+        else if (isHelmet) this.helmetMats.push(clone);
+        else { clone.color.setHex(SKIN); this.skinMats.push(clone); }
         return clone;
       };
       m.material = Array.isArray(m.material) ? m.material.map(apply) : apply(m.material);
     });
-    // Fallback: if nothing matched by name, tint everything.
-    if (this.uniformMats.length === 0) {
+    // Fallback: if mesh names didn't separate cleanly, treat everything as jersey so the team
+    // color still applies (better a flat-tinted player than an untinted gray one).
+    if (this.jerseyMats.length === 0) {
       inner.traverse((o) => {
         const m = o as THREE.Mesh;
-        if (m.isMesh && !Array.isArray(m.material)) this.uniformMats.push(m.material as THREE.MeshStandardMaterial);
+        if (m.isMesh && !Array.isArray(m.material)) this.jerseyMats.push(m.material as THREE.MeshStandardMaterial);
       });
     }
 
@@ -677,8 +748,7 @@ class FbxAvatar implements Avatar {
     this.group.position.z = this.interp.z(alpha);
   }
 
-  update(p: Player, jersey: number, trim: number, onFire: boolean, dt: number, isDefense: boolean): void {
-    void trim;
+  update(p: Player, jersey: number, trim: number, accent: number, onFire: boolean, dt: number, isDefense: boolean): void {
     void isDefense;
     const g = this.group;
     g.visible = true;
@@ -816,10 +886,21 @@ class FbxAvatar implements Avatar {
       this.applyThrow(clamp(1 - this.throwT / THROW_DUR, 0, 1));
     }
 
-    // Tint the uniform/helmet to the team color (multiplies the model's texture);
-    // glow on fire. Works for the model's Phong or Standard materials.
-    for (const m of this.uniformMats) {
-      m.color.setHex(jersey);
+    // Paint the team jersey skin onto the body mesh (cached per team-colors + number), keep the
+    // helmet on the dark trim color. The jersey color lives in the texture, so the material color
+    // stays white (a non-white color would multiply/darken the printed numbers and stripes).
+    const key = `${jersey.toString(16)}-${accent.toString(16)}-${p.number}`;
+    if (key !== this.jerseyKey) {
+      this.jerseyKey = key;
+      const tex = jerseyTexture(jersey, accent, p.number);
+      for (const m of this.jerseyMats) { m.map = tex; m.needsUpdate = true; }
+    }
+    for (const m of this.jerseyMats) {
+      m.color.setHex(0xffffff);
+      m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
+    }
+    for (const m of this.helmetMats) {
+      m.color.setHex(trim);
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
     // Carried ball: keep it connected to the carrier's hand. The nub is a group child (so it
@@ -1497,7 +1578,7 @@ export class Scene3D {
   sync(opts: {
     players: Player[];
     ball: Ball;
-    colorFor: (p: Player) => { jersey: number; trim: number; onFire: boolean; defense: boolean };
+    colorFor: (p: Player) => { jersey: number; trim: number; accent: number; onFire: boolean; defense: boolean };
     focusX: number;
     focusY: number;
     dir: number;
@@ -1512,7 +1593,7 @@ export class Scene3D {
       const p = players[i];
       if (p) {
         const col = opts.colorFor(p);
-        this.players[i].update(p, col.jersey, col.trim, col.onFire, opts.dt, col.defense);
+        this.players[i].update(p, col.jersey, col.trim, col.accent, col.onFire, opts.dt, col.defense);
       } else {
         this.players[i].hide();
       }

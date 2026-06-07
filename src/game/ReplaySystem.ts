@@ -2,7 +2,7 @@ import type { Player, LocoState } from "./entities/Player";
 import type { Ball, BallState } from "./entities/Ball";
 
 /** A team color lookup used by Scene3D.sync. */
-type ColorFor = (p: Player) => { jersey: number; trim: number; onFire: boolean; defense: boolean };
+type ColorFor = (p: Player) => { jersey: number; trim: number; accent: number; onFire: boolean; defense: boolean };
 
 interface PlayerFrame {
   x: number;
@@ -15,10 +15,12 @@ interface PlayerFrame {
   anim: Player["animEvent"]; // one-shot (throw/catch/spin/tackle/...) fired on this frame, if any
   jersey: number;
   trim: number;
+  accent: number;
   onFire: boolean;
   defense: boolean;
   role: Player["role"];
   team: Player["team"];
+  number: number;
 }
 
 interface BallFrame {
@@ -85,7 +87,7 @@ export class ReplaySystem {
         x: o.pos.x, y: o.pos.y,
         loco: { gait: l.gait, speed: l.speed, speed01: l.speed01, heading: l.heading, moveRel: l.moveRel, turnRate: l.turnRate, down: l.down, contact: l.contact, stumbling: l.stumbling },
         hasBall: o.hasBall, controlled: o.controlled, isDown: o.isDown, leanTarget: o.leanTarget, anim: o.animEvent,
-        jersey: c.jersey, trim: c.trim, onFire: c.onFire, defense: c.defense, role: o.role, team: o.team,
+        jersey: c.jersey, trim: c.trim, accent: c.accent, onFire: c.onFire, defense: c.defense, role: o.role, team: o.team, number: o.number,
       });
     }
     this.frames.push({
@@ -117,7 +119,8 @@ export class ReplaySystem {
       g.leanTarget = s.leanTarget;
       g.role = s.role;
       g.team = s.team;
-      g.color = { jersey: s.jersey, trim: s.trim, onFire: s.onFire, defense: s.defense };
+      g.number = s.number;
+      g.color = { jersey: s.jersey, trim: s.trim, accent: s.accent, onFire: s.onFire, defense: s.defense };
       let anim: Player["animEvent"] = null;
       if (forward) {
         for (let j = i; j > this.lastIndex; j--) { const a = this.frames[j].p[k].anim; if (a) { anim = a; break; } }
@@ -163,7 +166,8 @@ interface GhostPlayer {
   animEvent: Player["animEvent"];
   role: Player["role"];
   team: Player["team"];
-  color: { jersey: number; trim: number; onFire: boolean; defense: boolean };
+  number: number;
+  color: { jersey: number; trim: number; accent: number; onFire: boolean; defense: boolean };
 }
 interface GhostBall {
   state: BallState;
@@ -181,7 +185,7 @@ function makeGhostPlayer(): GhostPlayer {
     pos: { x: 0, y: 0 },
     loco: { gait: "idle", speed: 0, speed01: 0, heading: 0, moveRel: 0, turnRate: 0, down: false, contact: false, stumbling: false },
     hasBall: false, controlled: false, isDown: false, leanTarget: 0, animEvent: null,
-    role: "WR", team: "HOME", color: { jersey: 0xffffff, trim: 0, onFire: false, defense: false },
+    role: "WR", team: "HOME", number: 0, color: { jersey: 0xffffff, trim: 0, accent: 0, onFire: false, defense: false },
   };
 }
 function makeGhostBall(): GhostBall {
