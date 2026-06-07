@@ -136,6 +136,8 @@ export class LivePlayState implements GameState {
   private ragdollIdx: number[] = [];
   /** Hold the post-play beat until the physics fall + get-up finishes. */
   private holdForRagdoll = false;
+  /** Whether the play ended on a highlight-reel big hit (drives the auto instant replay). */
+  private lastBigHit = false;
   /** Camera subject while a ragdoll tackle plays out (the ball carrier going down). */
   private ragdollFocus: Player | null = null;
   /** Ball spot the play ended at (anchors the regroup huddle). */
@@ -357,6 +359,7 @@ export class LivePlayState implements GameState {
     this.ragdollIdx = [];
     this.holdForRagdoll = false;
     this.ragdollFocus = null;
+    this.lastBigHit = false;
     this.cpuBigHitCd = 0;
     this.struggleCd = 0;
     this.struggleCarrier = null;
@@ -1263,6 +1266,7 @@ export class LivePlayState implements GameState {
     this.ragdollIdx = data.ragdollIdx;
     this.holdForRagdoll = data.ragdollIdx.length > 0;
     this.ragdollFocus = data.focus;
+    if (data.big) this.lastBigHit = true;
   }
 
   /** Lock the carrier + tackler into a mash battle. */
@@ -1763,10 +1767,16 @@ export class LivePlayState implements GameState {
       this.enterReplay();
       return;
     }
-    // Broadcast touch: a touchdown automatically rolls an instant replay once the on-field
-    // celebration has had a beat to land. (Other outcomes keep the manual REPLAY button.)
-    if (this.pendingOutcome?.type === "touchdown" && this.replay.available && !this.autoReplayDone
-        && this.deadElapsed > 1.6 && !busy) {
+    // Broadcast touch: the highlight plays (scores, takeaways, big hits) automatically roll an
+    // instant replay once the on-field beat has had a moment to land — scores show the celebration
+    // first, big hits let the live ragdoll register, then we cut to the slow-mo (entering the
+    // replay re-spawns the tackle from the recording, so we don't wait for it to settle live).
+    // Everything else keeps the manual REPLAY button.
+    const o = this.pendingOutcome;
+    const score = o?.type === "touchdown" || o?.type === "safety";
+    const delay = score ? 1.6 : this.lastBigHit ? 1.4 : 1.1;
+    if (this.autoReplayWorthy() && this.replay.available && !this.autoReplayDone
+        && this.deadElapsed > delay) {
       this.autoReplayDone = true;
       this.enterReplay(true);
       return;
@@ -1779,6 +1789,24 @@ export class LivePlayState implements GameState {
       return;
     }
     this.syncScene(dt);
+  }
+
+  /** Which outcomes earn a hands-off broadcast replay: scores, takeaways, and big hits. */
+  private autoReplayWorthy(): boolean {
+    const o = this.pendingOutcome;
+    if (!o) return false;
+    switch (o.type) {
+      case "touchdown":
+      case "safety":
+      case "interception":
+      case "fumbleLost":
+        return true;
+      case "tackle":
+      case "sack":
+        return this.lastBigHit; // a highlight-reel hit-stick / gang tackle
+      default:
+        return false;
+    }
   }
 
   /** Open the instant replay (from the post-play beat or the play-call overlay). `auto` is the

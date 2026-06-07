@@ -7,6 +7,19 @@ import { COLORS, FONT } from "./Theme";
 
 /** Top scoreboard: score, quarter, clock, down & distance, possession, field bar. */
 export class HUD {
+  // Score-change flourish: remember each side's score and stamp the moment it changes so the
+  // chip can pop + glow for a beat afterward.
+  private homeScorePrev = -1;
+  private awayScorePrev = -1;
+  private homeFlashAt = -1e9;
+  private awayFlashAt = -1e9;
+
+  /** 1 just after a score, easing to 0 over ~0.9s. */
+  private flashAmt(at: number): number {
+    const e = (performance.now() - at) / 900;
+    return e >= 1 || e < 0 ? 0 : 1 - e;
+  }
+
   render(
     r: Renderer,
     match: Match,
@@ -29,8 +42,11 @@ export class HUD {
 
     const home = match.home;
     const away = match.away;
-    this.teamChip(r, 10, 6, home.config, home.score, home.onFire, "left", match.possession === "HOME");
-    this.teamChip(r, w - 10, 6, away.config, away.score, away.onFire, "right", match.possession === "AWAY");
+    // Detect a score change and stamp it (skip the first frame, when prev is uninitialized).
+    if (home.score !== this.homeScorePrev) { if (this.homeScorePrev >= 0) this.homeFlashAt = performance.now(); this.homeScorePrev = home.score; }
+    if (away.score !== this.awayScorePrev) { if (this.awayScorePrev >= 0) this.awayFlashAt = performance.now(); this.awayScorePrev = away.score; }
+    this.teamChip(r, 10, 6, home.config, home.score, home.onFire, "left", match.possession === "HOME", this.flashAmt(this.homeFlashAt));
+    this.teamChip(r, w - 10, 6, away.config, away.score, away.onFire, "right", match.possession === "AWAY", this.flashAmt(this.awayFlashAt));
 
     const mins = Math.floor(match.clock / 60);
     const secs = Math.floor(match.clock % 60);
@@ -124,12 +140,24 @@ export class HUD {
     onFire: boolean,
     align: "left" | "right",
     hasBall: boolean,
+    flash = 0,
   ): void {
     const ctx = r.ctx;
     ctx.save();
     const cR = 16;
     const crestX = align === "left" ? x + cR : x - cR;
     const crestY = y + cR + 1;
+    // Score flourish: an expanding ring bursts out from the crest as the number pops.
+    if (flash > 0) {
+      ctx.save();
+      ctx.strokeStyle = team.colors.accent;
+      ctx.globalAlpha = flash;
+      ctx.lineWidth = 2 + flash * 2;
+      ctx.beginPath();
+      ctx.arc(crestX, crestY, cR + 4 + (1 - flash) * 16, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
     if (onFire) {
       ctx.strokeStyle = "#ff7b1e";
       ctx.lineWidth = 3;
@@ -141,7 +169,14 @@ export class HUD {
 
     const textX = align === "left" ? x + cR * 2 + 8 : x - cR * 2 - 8;
     const tAlign: CanvasTextAlign = align === "left" ? "left" : "right";
-    r.text(String(score), textX, y + 4, { size: 26, color: COLORS.bone, align: tAlign, baseline: "top", font: FONT.display });
+    // The number pops up in size and flashes to the team accent, then settles back to bone white.
+    const ease = flash * flash;
+    const size = 26 + 16 * ease;
+    const color = flash > 0.02 ? mixHex(COLORS.bone, team.colors.accent, ease) : COLORS.bone;
+    ctx.save();
+    if (flash > 0.02) { ctx.shadowColor = team.colors.accent; ctx.shadowBlur = 18 * ease; }
+    r.text(String(score), textX, y + 4 - 8 * ease, { size, color, align: tAlign, baseline: "top", font: FONT.display });
+    ctx.restore();
 
     if (hasBall) {
       const sw = r.measureText(String(score), 24);
@@ -208,4 +243,15 @@ export class HUD {
 
 function ordinal(n: number): string {
   return n === 1 ? "1ST" : n === 2 ? "2ND" : n === 3 ? "3RD" : `${n}TH`;
+}
+
+/** Lerp between two #rrggbb colors by t (0..1), returned as #rrggbb. */
+function mixHex(a: string, b: string, t: number): string {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const k = Math.max(0, Math.min(1, t));
+  const ch = (sh: number) => {
+    const ca = (pa >> sh) & 0xff, cb = (pb >> sh) & 0xff;
+    return Math.round(ca + (cb - ca) * k);
+  };
+  return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, "0")}`;
 }
