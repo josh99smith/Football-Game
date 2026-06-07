@@ -1,7 +1,7 @@
 import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import type { Renderer } from "../../engine/Renderer";
-import { dist, lerp, clamp, type Vec2 } from "../../engine/math/Vec2";
+import { dist, lerp, clamp, moveToward, type Vec2 } from "../../engine/math/Vec2";
 import { chance } from "../../engine/math/random";
 import { Player } from "../entities/Player";
 import { Ball } from "../entities/Ball";
@@ -165,6 +165,12 @@ export class LivePlayState implements GameState {
   private replayPlaying = true;
   private replayZoom = 0.45;    // 0 wide .. 1 tight
   private replayFrom: Phase = "dead"; // phase to return to when the replay closes
+  private replayAuto = false;   // true = an automatic broadcast replay (touchdown), not user-opened
+  private autoReplayDone = false; // only auto-roll the broadcast replay once per play
+  private replaySpeed = 1;      // playback rate (auto replays roll in slow-mo)
+  private replayHold = 0;       // post-playback hold before an auto replay closes itself
+  /** 0..1 cinematic letterbox coverage, eased in during replay for a broadcast cut. */
+  private letterbox = 0;
   // UI hit-rects (set in render, read in update — one-frame lag is fine).
   private replayBtn: Rect = { x: 0, y: 0, w: 0, h: 0 };
   private rcClose: Rect = { x: 0, y: 0, w: 0, h: 0 };
@@ -355,6 +361,7 @@ export class LivePlayState implements GameState {
     this.struggleCd = 0;
     this.struggleCarrier = null;
     this.struggleTackler = null;
+    this.autoReplayDone = false;
     this.replay.clear(); // start a fresh recording for this down
     this.cpu.reset(); // fresh QB read each down (the state persists across the drive)
     this.tackle.reset();
@@ -422,6 +429,8 @@ export class LivePlayState implements GameState {
     m.home.update(dt);
     m.away.update(dt);
     if (this.quarterBannerT > 0) this.quarterBannerT -= dt;
+    // Cinematic letterbox slides in for the instant replay and back out when it closes.
+    this.letterbox = moveToward(this.letterbox, this.phase === "replay" ? 1 : 0, dt / 0.28);
 
     if (this.phase === "presnap") {
       this.updatePreSnap(dt);
@@ -1754,6 +1763,14 @@ export class LivePlayState implements GameState {
       this.enterReplay();
       return;
     }
+    // Broadcast touch: a touchdown automatically rolls an instant replay once the on-field
+    // celebration has had a beat to land. (Other outcomes keep the manual REPLAY button.)
+    if (this.pendingOutcome?.type === "touchdown" && this.replay.available && !this.autoReplayDone
+        && this.deadElapsed > 1.6 && !busy) {
+      this.autoReplayDone = true;
+      this.enterReplay(true);
+      return;
+    }
     const tapped = taps.length > 0;
     const beatDone = this.deadTimer <= 0 && !busy;
     const skipped = tapped && this.deadElapsed >= MIN_DEAD_LINGER;
@@ -1764,21 +1781,31 @@ export class LivePlayState implements GameState {
     this.syncScene(dt);
   }
 
-  /** Open the instant replay (from the post-play beat or the play-call overlay). */
-  private enterReplay(): void {
+  /** Open the instant replay (from the post-play beat or the play-call overlay). `auto` is the
+   * hands-off broadcast replay (touchdowns): it rolls in slow-mo, tight, and closes itself. */
+  private enterReplay(auto = false): void {
     if (!this.replay.available) return;
+    this.replayAuto = auto;
+    this.replaySpeed = auto ? 0.5 : 1; // slow-mo for the broadcast cut
+    this.replayHold = 0;
     this.replayFrom = this.phase === "playcall" ? "playcall" : "dead";
     this.phase = "replay";
     this.replayT = 0;
     this.replayLastIdx = -1;
     this.replayPlaying = true;
+    if (auto) this.replayZoom = 0.7; // tight, cinematic
     this.replay.rewind();
     this.app.scene3d.resetAvatars(); // clear any ragdoll so the ghosts animate cleanly
     this.app.input.consumeTaps();
   }
 
   private exitReplay(): void {
+    // After the hands-off touchdown replay, move along promptly to the PAT instead of
+    // re-running the full post-play timer.
+    if (this.replayAuto && this.replayFrom === "dead") this.deadTimer = Math.min(this.deadTimer, 0.5);
     this.phase = this.replayFrom;
+    this.replayAuto = false;
+    this.replaySpeed = 1;
     this.app.scene3d.resetAvatars();
     this.app.input.consumeTaps();
   }
@@ -1794,29 +1821,39 @@ export class LivePlayState implements GameState {
     const dur = this.replay.duration;
 
     const taps = input.consumeTaps();
-    for (const t of taps) {
-      if (tappedIn(this.rcClose, [t])) { this.exitReplay(); return; }
-      if (tappedIn(this.rcPlay, [t])) {
-        if (this.replayT >= dur - 0.02) { this.replayT = 0; this.replay.rewind(); this.app.scene3d.resetAvatars(); }
-        this.replayPlaying = !this.replayPlaying;
-      } else if (tappedIn(this.rcZoomIn, [t])) this.replayZoom = Math.min(1, this.replayZoom + 0.25);
-      else if (tappedIn(this.rcZoomOut, [t])) this.replayZoom = Math.max(0, this.replayZoom - 0.25);
-      else if (tappedIn(this.rcSlider, [t])) { this.replayT = this.scrubTime(t.x, dur); this.replayPlaying = false; }
-    }
-    // Drag anywhere along the slider band to scrub.
-    const d = input.drag;
-    if (d && this.rcSlider.w > 0 &&
-        d.x > this.rcSlider.x - 24 && d.x < this.rcSlider.x + this.rcSlider.w + 24 &&
-        d.y > this.rcSlider.y - 36 && d.y < this.rcSlider.y + this.rcSlider.h + 36) {
-      this.replayT = this.scrubTime(d.x, dur);
-      this.replayPlaying = false;
+    if (this.replayAuto) {
+      // A hands-off broadcast replay: a single tap skips it; no transport controls.
+      if (taps.length) { this.exitReplay(); return; }
+    } else {
+      for (const t of taps) {
+        if (tappedIn(this.rcClose, [t])) { this.exitReplay(); return; }
+        if (tappedIn(this.rcPlay, [t])) {
+          if (this.replayT >= dur - 0.02) { this.replayT = 0; this.replay.rewind(); this.app.scene3d.resetAvatars(); }
+          this.replayPlaying = !this.replayPlaying;
+        } else if (tappedIn(this.rcZoomIn, [t])) this.replayZoom = Math.min(1, this.replayZoom + 0.25);
+        else if (tappedIn(this.rcZoomOut, [t])) this.replayZoom = Math.max(0, this.replayZoom - 0.25);
+        else if (tappedIn(this.rcSlider, [t])) { this.replayT = this.scrubTime(t.x, dur); this.replayPlaying = false; }
+      }
+      // Drag anywhere along the slider band to scrub.
+      const d = input.drag;
+      if (d && this.rcSlider.w > 0 &&
+          d.x > this.rcSlider.x - 24 && d.x < this.rcSlider.x + this.rcSlider.w + 24 &&
+          d.y > this.rcSlider.y - 36 && d.y < this.rcSlider.y + this.rcSlider.h + 36) {
+        this.replayT = this.scrubTime(d.x, dur);
+        this.replayPlaying = false;
+      }
     }
 
     if (this.replayPlaying) {
-      this.replayT += dt;
-      if (this.replayT >= dur) { this.replayT = dur; this.replayPlaying = false; }
+      this.replayT += dt * this.replaySpeed;
+      if (this.replayT >= dur) { this.replayT = dur; this.replayPlaying = false; this.replayHold = 0; }
     }
     this.replayT = Math.max(0, Math.min(dur, this.replayT));
+    // An auto replay closes itself after a short hold on the final frame.
+    if (this.replayAuto && !this.replayPlaying) {
+      this.replayHold += dt;
+      if (this.replayHold > 0.7) { this.exitReplay(); return; }
+    }
 
     // A scrub/rewind jump can't drive live ragdoll physics, which only moves forward. If the
     // timeline jumped backward (or skipped ahead), dispose any active ragdoll so the avatar
@@ -2014,6 +2051,9 @@ export class LivePlayState implements GameState {
 
     app.scene3d.render(alpha);
 
+    // Cinematic letterbox over the field (eases in for the replay, out when it closes).
+    this.drawLetterbox(r);
+
     // Replay takes over the screen with its own clean broadcast UI.
     if (this.phase === "replay") {
       this.renderReplay(r);
@@ -2115,6 +2155,37 @@ export class LivePlayState implements GameState {
     drawButton(r, this.replayBtn, "▶ REPLAY", { fill: COLORS.concrete, accent: COLORS.hazard, size: 15 });
   }
 
+  /** Cinematic black bars (top + bottom) with a thin accent edge, scaled by `this.letterbox`. */
+  private drawLetterbox(r: Renderer): void {
+    if (this.letterbox <= 0.001) return;
+    const ctx = r.ctx;
+    const barH = Math.round(r.height * 0.11 * this.letterbox);
+    if (barH <= 0) return;
+    ctx.save();
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, r.width, barH);
+    ctx.fillRect(0, r.height - barH, r.width, barH);
+    ctx.fillStyle = COLORS.blood;
+    ctx.globalAlpha = this.letterbox;
+    ctx.fillRect(0, barH - 2, r.width, 2);
+    ctx.fillRect(0, r.height - barH, r.width, 2);
+    ctx.restore();
+  }
+
+  /** A pulsing broadcast "● INSTANT REPLAY" tag, centered in the top letterbox bar. */
+  private renderReplayTag(r: Renderer): void {
+    const ctx = r.ctx;
+    const y = Math.round(r.height * 0.055);
+    const pulse = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(performance.now() / 240));
+    ctx.save();
+    ctx.fillStyle = `rgba(230,40,40,${pulse.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(r.width / 2 - 78, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    r.text("INSTANT REPLAY", r.width / 2 + 6, y, { size: 17, align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display });
+  }
+
   /** The instant-replay overlay: scrub slider, play/pause, zoom, close, and a time/zoom readout. */
   private renderReplay(r: Renderer): void {
     const ctx = r.ctx;
@@ -2122,12 +2193,16 @@ export class LivePlayState implements GameState {
     const H = r.height;
     const dur = this.replay.duration || 1;
 
-    // Top bar: title + REPLAY tag + close.
-    ctx.save();
-    ctx.fillStyle = "rgba(8,10,14,0.55)";
-    ctx.fillRect(0, 0, W, 46);
-    ctx.restore();
-    r.text("INSTANT REPLAY", W / 2, 16, { size: 16, align: "center", color: COLORS.hazard, baseline: "top", font: FONT.display });
+    // Broadcast tag sits in the top letterbox bar.
+    this.renderReplayTag(r);
+
+    // An automatic (touchdown) replay is hands-off: no transport, just a skip hint.
+    if (this.replayAuto) {
+      const a = 0.45 + 0.45 * Math.sin(performance.now() / 320);
+      r.text("TAP TO SKIP", W / 2, H - Math.round(H * 0.055), { size: 14, align: "center", color: COLORS.bone, baseline: "middle", alpha: a, font: FONT.display });
+      return;
+    }
+
     this.rcClose = { x: W - 56, y: 8, w: 44, h: 32 };
     drawButton(r, this.rcClose, "✕", { fill: COLORS.blood, size: 18 });
 
