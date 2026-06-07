@@ -285,7 +285,7 @@ const MODEL_FORWARD = 0;
 const TURN_RATE_RAD = 14; // rendered yaw slew (rad/s), scaled by speed
 // Foot-plant warps: timeScale = speed(px/s) * K, calibrated from each clip's measured
 // authored stride speed so the feet grip the ground (no skating) at any pace.
-const FOOT_PLANT_K = 0.0136; // run clip strides ~4.6 yd/s
+const FOOT_PLANT_K = 0.0109; // run clip strides ~4.6 yd/s (eased ~20% for a calmer stride)
 const WALK_PLANT_K = 0.0369; // walk clip strides ~1.7 yd/s
 const BACK_PLANT_K = 0.0194; // backpedal clip ~3.2 yd/s
 const STRAFE_PLANT_K = 0.0163; // strafe clip ~3.8 yd/s
@@ -849,7 +849,7 @@ class FbxAvatar implements Avatar {
       tIdle = 1 - moving01; // everyone settles into the football ready stance
       // Each cycle is warped to its own measured stride so feet grip the ground.
       this.walkAction?.setEffectiveTimeScale(clamp(lo.speed * WALK_PLANT_K, 0.7, 3.6));
-      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 3.2));
+      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 2.6));
       this.backAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
       this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * STRAFE_PLANT_K, 0.7, 3.0));
       // Bank hard into turns/cuts so a change of direction reads as a dynamic lean (plus the
