@@ -67,9 +67,9 @@ function throwParams(power: number): { speed: number; loft: number; spin: number
 const DIFFICULTY = {
   // reactBase/reactRate control how fast the pass rush + pursuit ramp up after the
   // snap — lower = more time in the pocket and bigger running lanes.
-  rookie: { pick: 0.1, cpuSpeed: 0.92, reactBase: 0.28, reactRate: 0.9 },
-  pro: { pick: 0.18, cpuSpeed: 0.97, reactBase: 0.4, reactRate: 1.2 },
-  allpro: { pick: 0.3, cpuSpeed: 1.02, reactBase: 0.52, reactRate: 1.55 },
+  rookie: { pick: 0.12, cpuSpeed: 0.94, reactBase: 0.32, reactRate: 1.0 },
+  pro: { pick: 0.24, cpuSpeed: 1.0, reactBase: 0.5, reactRate: 1.45 },
+  allpro: { pick: 0.36, cpuSpeed: 1.05, reactBase: 0.62, reactRate: 1.8 },
 };
 
 /**

@@ -14,30 +14,6 @@ import { loadBaseRig, loadAnimationClips, type CharacterAsset } from "../game/Ch
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
-import { GIT_SHA } from "../game/buildInfo";
-
-/**
- * Tiny always-on-screen diagnostic (top-left) showing the build SHA + character-model load result.
- * Lets us tell, on any device (no dev console needed), whether a stale build or a real model-load
- * failure is to blame for box avatars. Auto-hides a few seconds after a successful load.
- */
-function setModelDiag(text: string, error: boolean, ok = false): void {
-  if (typeof document === "undefined") return;
-  let el = document.getElementById("model-diag");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "model-diag";
-    el.style.cssText =
-      "position:fixed;left:6px;top:4px;z-index:9999;font:11px/1.3 monospace;" +
-      "padding:3px 6px;border-radius:4px;pointer-events:none;max-width:90vw;white-space:pre-wrap;";
-    document.body.appendChild(el);
-  }
-  el.textContent = text;
-  el.style.background = error ? "rgba(150,20,20,0.92)" : "rgba(0,0,0,0.55)";
-  el.style.color = error ? "#fff" : "#9fb";
-  el.style.display = "block";
-  if (ok) setTimeout(() => { if (el) el.style.display = "none"; }, 4000);
-}
 
 export interface SessionConfig {
   homeTeamIndex: number;
@@ -114,23 +90,20 @@ export class GameApp {
     // stalled clip fetch on mobile can therefore never leave the player stuck on blocks.
     const loadAnims = (rig: CharacterAsset, attempt = 0): void => {
       loadAnimationClips(rig, urls)
-        .then((full) => { this.scene3d.setCharacter(full); setModelDiag(`build ${GIT_SHA} · model ✓`, false, true); })
+        .then((full) => { this.scene3d.setCharacter(full); })
         .catch((err) => {
           console.warn(`animation clips load issue (model is up, animations retrying)`, err);
           if (attempt < 6) setTimeout(() => loadAnims(rig, attempt + 1), 2000 * (attempt + 1));
         });
     };
     const loadRig = (attempt = 0): void => {
-      setModelDiag(`build ${GIT_SHA} · loading model…${attempt ? ` (retry ${attempt})` : ""}`, false);
       loadBaseRig(urls.model)
         .then((rig) => {
           this.scene3d.setCharacter(rig); // model is visible NOW (idle); clips follow
-          setModelDiag(`build ${GIT_SHA} · model ✓ (animating…)`, false, true);
           loadAnims(rig);
         })
         .catch((err) => {
           console.error(`base rig load failed (attempt ${attempt + 1}); retrying…`, err);
-          setModelDiag(`build ${GIT_SHA} · MODEL FAILED: ${String(err).slice(0, 140)}`, true);
           if (attempt < 10) setTimeout(() => loadRig(attempt + 1), 1500 * (attempt + 1));
         });
     };
