@@ -759,11 +759,12 @@ class FbxAvatar implements Avatar {
     this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
     g.position.y = 0;
 
-    // Fire one-shot overlays on game events: throw, catch, spin-move juke, the
-    // carrier's getting-tackled reaction, the defender's tackle + ball-swat attempts,
-    // and a celebration. (Spin supersedes the old change-direction juke clip.)
+    // Fire one-shot overlays on game events: throw, catch, the change-of-direction juke,
+    // the spin move, the carrier's getting-tackled reaction, the defender's tackle + ball-swat
+    // attempts, and a celebration. Each ramps in/out (below) so it crossfades with locomotion.
     if (p.animEvent === "pass") { this.throwT = THROW_DUR; this.throwHeading = p.loco.heading; }
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
+    else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.55, 1.25, 0);
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
     else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0);
     else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.4, 1.1, 0);

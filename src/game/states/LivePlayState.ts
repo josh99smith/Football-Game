@@ -113,6 +113,8 @@ export class LivePlayState implements GameState {
   /** Ball-carrier ACTION hold tracking (tap = juke, hold = dive). */
   private carrierHeld = 0;
   private carrierFired = false;
+  /** Cooldown so the change-of-direction "juke" animation fires on a hard cut, not every frame. */
+  private jukeAnimCd = 0;
   private startLosX = 0;
   private passThrown = false;
   private sackPossible = true;
@@ -489,6 +491,7 @@ export class LivePlayState implements GameState {
     // Integrate movement.
     this.moveAll(dt);
     this.resolveBodies();
+    this.checkJukeAnim(dt);
 
     // Ball + passing.
     const landed = this.ball.update(dt);
@@ -797,6 +800,21 @@ export class LivePlayState implements GameState {
         const lead = { x: r.pos.x + r.vel.x * flight * 0.9, y: r.pos.y + r.vel.y * flight * 0.9 };
         this.throwPass(qb, lead, r, power);
       }
+    }
+  }
+
+  /** Play the change-of-direction "juke" animation whenever a ball carrier (human or CPU) cuts
+   * hard while running. `loco.turnRate` is the body's heading-change rate; a sharp cut spikes it,
+   * a gentle curve barely moves it. Gated by a short cooldown so the one-shot plays once per cut
+   * rather than re-triggering every frame, and skipped if a bigger move (spin/dive) already fired. */
+  private checkJukeAnim(dt: number): void {
+    if (this.jukeAnimCd > 0) this.jukeAnimCd -= dt;
+    const c = this.ball.carrier;
+    if (!c || this.jukeAnimCd > 0) return;
+    if (c.state !== "active" || c.animEvent !== null || c.jukeTimer > 0) return;
+    if (c.loco.speed01 > 0.4 && Math.abs(c.loco.turnRate) > 6.5) {
+      c.animEvent = "juke";
+      this.jukeAnimCd = 0.7;
     }
   }
 
