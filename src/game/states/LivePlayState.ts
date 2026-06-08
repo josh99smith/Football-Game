@@ -1,7 +1,7 @@
 import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import type { Renderer } from "../../engine/Renderer";
-import type { EmblemIcon } from "../../ui/Emblems";
+import { drawCrest, type EmblemIcon } from "../../ui/Emblems";
 import { dist, lerp, clamp, moveToward, type Vec2 } from "../../engine/math/Vec2";
 import { chance } from "../../engine/math/random";
 import { Player } from "../entities/Player";
@@ -1641,18 +1641,29 @@ export class LivePlayState implements GameState {
     }
   }
 
-  /** Draw the quarter / halftime break banner (with the running score) when one is active. */
+  /** Draw the quarter / halftime break card (crests + running score) when one is active. The
+   *  big breaks (HALFTIME / FINAL) get a full-screen scrim so they read as a broadcast bumper. */
   private renderQuarterBanner(r: Renderer): void {
     if (this.quarterBannerT <= 0) return;
     const m = this.app.match;
-    const a = Math.min(1, this.quarterBannerT) * Math.min(1, (2.8 - this.quarterBannerT) * 4 + 0.001);
+    const a = Math.max(0, Math.min(1, Math.min(1, this.quarterBannerT) * Math.min(1, (2.8 - this.quarterBannerT) * 4 + 0.001)));
+    const big = this.quarterBannerText === "HALFTIME" || this.quarterBannerText === "FINAL";
     const ctx = r.ctx;
     ctx.save();
-    ctx.globalAlpha = Math.max(0, Math.min(1, a));
-    const w = Math.min(380, r.width - 60), h = 96, x = (r.width - w) / 2, y = r.height * 0.3;
+    // Dim the field behind the marquee breaks.
+    if (big) { ctx.globalAlpha = a * 0.6; ctx.fillStyle = "#06080c"; ctx.fillRect(0, 0, r.width, r.height); }
+    ctx.globalAlpha = a;
+    const w = Math.min(440, r.width - 48), h = 132, x = (r.width - w) / 2, y = r.height * 0.28;
     drawPanel(r, { x, y, w, h });
-    r.text(this.quarterBannerText, r.width / 2, y + 36, { size: 30, align: "center", color: COLORS.hazard, font: FONT.display });
-    r.text(`${m.home.config.abbr} ${m.home.score}   —   ${m.away.score} ${m.away.config.abbr}`, r.width / 2, y + 70, { size: 22, align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display });
+    r.text(this.quarterBannerText, r.width / 2, y + 32, { size: 30, align: "center", color: COLORS.hazard, font: FONT.display });
+    // Crests flank the score line.
+    const cy = y + 84;
+    const crestR = Math.min(30, w * 0.1);
+    drawCrest(ctx, x + w * 0.2, cy, crestR, m.home.config);
+    drawCrest(ctx, x + w * 0.8, cy, crestR, m.away.config);
+    r.text(`${m.home.score}  —  ${m.away.score}`, r.width / 2, cy, { size: 32, align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display });
+    r.text(m.home.config.abbr, x + w * 0.2, cy + crestR + 12, { size: 12, align: "center", color: COLORS.ash, baseline: "middle", font: FONT.ui });
+    r.text(m.away.config.abbr, x + w * 0.8, cy + crestR + 12, { size: 12, align: "center", color: COLORS.ash, baseline: "middle", font: FONT.ui });
     ctx.restore();
   }
 
