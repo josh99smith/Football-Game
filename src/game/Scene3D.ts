@@ -307,6 +307,12 @@ const ACCEL_LEAN = true;            // master toggle (A/B); off ⇒ exactly the 
 const LEAN_ACCEL_GAIN = 0.00012;    // rad per px/s^2 of fore/aft accel
 const LEAN_PITCH_MAX = 0.2;         // clamp on the accel pitch contribution
 const BANK_ACCEL_GAIN = 0.00010;    // rad per px/s^2 of lateral accel (added to the turn bank)
+// --- procedural hip motion (Stage 3): a speed-scaled vertical bob + a half-frequency weight-shift
+// roll, so a running body rises/falls and rocks side-to-side over the planted foot. Subtle so it
+// doesn't fight the clip; on the model group, never bones.
+const PROC_HIP = true;
+const HIP_BOB_AMP = 0.032;          // vertical hip rise/fall (world units) at full forward sprint
+const HIP_ROLL_AMP = 0.022;         // side-to-side weight-shift roll (rad), half the bob frequency
 /** Fraction into the stance clip held for a neutral/idle player: a relaxed UPRIGHT stand
  *  (the clip ends in a deep 3-point crouch, which looks wrong for players just milling). */
 const IDLE_POSE = 0.13;
@@ -1037,7 +1043,9 @@ class FbxAvatar implements Avatar {
       // juke lean). Smoothed so it carves in rather than snapping, but quick enough to feel sharp.
       // A gentle breathing bob when idle keeps a standing player from reading as a frozen statue.
       const breathe = Math.sin(this.phase * 2.1 + this.breatheOffset) * 0.012 * (1 - moving01);
-      g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd + breathe;
+      g.position.y = (PROC_HIP
+        ? Math.abs(Math.sin(this.phase * 7)) * HIP_BOB_AMP * lo.speed01 * fwd
+        : Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd) + breathe;
       // Acceleration → weight lean: project the low-passed accel onto facing (fore/aft) and the
       // perpendicular (lateral). Decel ⇒ lean back; accel ⇒ lean in; lateral accel ⇒ extra bank.
       const ch = Math.cos(lo.heading), sh = Math.sin(lo.heading);
@@ -1049,7 +1057,9 @@ class FbxAvatar implements Avatar {
       // Forward lean while running ahead (more at speed), slight backward lean when backpedaling
       // (added on top of the fall pitch, which is ~0 while upright), plus the accel weight pitch.
       this.lean.rotation.x += ((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01 + accelPitch;
-      this.lean.rotation.z = this.bankSmooth;
+      // Half-frequency weight-shift roll (once per stride) on top of the turn/accel bank.
+      const hipRoll = PROC_HIP ? Math.sin(this.phase * 3.5) * HIP_ROLL_AMP * moving01 * fwd : 0;
+      this.lean.rotation.z = this.bankSmooth + hipRoll;
       this.lean.rotation.y = 0;
       this.phase += dt;
       this.ring.visible = p.controlled;
