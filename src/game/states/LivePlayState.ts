@@ -1,6 +1,7 @@
 import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import type { Renderer } from "../../engine/Renderer";
+import type { EmblemIcon } from "../../ui/Emblems";
 import { dist, lerp, clamp, moveToward, type Vec2 } from "../../engine/math/Vec2";
 import { chance } from "../../engine/math/random";
 import { Player } from "../entities/Player";
@@ -624,16 +625,17 @@ export class LivePlayState implements GameState {
     this.app.audio.setCrowdIntensity(level);
   }
 
-  private colorFor(p: Player): { jersey: number; trim: number; accent: number; helmet: number; onFire: boolean; defense: boolean } {
+  private colorFor(p: Player): { jersey: number; trim: number; accent: number; helmet: number; decal: EmblemIcon; onFire: boolean; defense: boolean } {
     const team = this.app.match.team(p.team);
     // Home club wears its colored kit; the road (AWAY) club wears its white set — the helmet shell
-    // stays the same either way (as in the real game).
+    // (and its decal/stripe) stays the same either way, as in the real game.
     const uni = p.team === "AWAY" ? team.config.away : team.config.colors;
     return {
       jersey: hexNum(uni.jersey),
       trim: hexNum(uni.trim),
       accent: hexNum(uni.accent),
       helmet: hexNum(team.config.helmet),
+      decal: team.config.icon,
       onFire: team.onFire,
       defense: p.team !== this.offenseTeamId,
     };

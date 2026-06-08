@@ -11,6 +11,7 @@ import { clamp, moveToward } from "../engine/math/Vec2";
 import { STEP } from "../engine/Loop";
 import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD, type FieldBrand } from "./Field";
 import type { TeamConfig } from "./Team";
+import { drawIcon, type EmblemIcon } from "../ui/Emblems";
 import { PhysicsWorld } from "../physics/PhysicsWorld";
 import { TackleRagdoll } from "../physics/TackleRagdoll";
 
@@ -62,7 +63,7 @@ export interface RagdollHit {
 /** A swappable on-field player representation (box fallback or skinned FBX). */
 interface Avatar {
   readonly group: THREE.Object3D;
-  update(p: Player, jersey: number, trim: number, accent: number, helmet: number, onFire: boolean, dt: number, isDefense: boolean): void;
+  update(p: Player, jersey: number, trim: number, accent: number, helmet: number, decal: EmblemIcon | undefined, onFire: boolean, dt: number, isDefense: boolean): void;
   /** Apply the fixed-step interpolation: place the body between the last two sim
    * positions by `alpha` (0..1) so motion is smooth on any refresh rate. */
   present(alpha: number): void;
@@ -203,7 +204,7 @@ class BoxAvatar implements Avatar {
     return joint;
   }
 
-  update(p: Player, jersey: number, _trim: number, _accent: number, helmet: number, onFire: boolean, dt: number, _isDefense: boolean): void {
+  update(p: Player, jersey: number, _trim: number, _accent: number, helmet: number, _decal: EmblemIcon | undefined, onFire: boolean, dt: number, _isDefense: boolean): void {
     const g = this.group;
     g.visible = true;
     this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
@@ -488,6 +489,45 @@ function jerseyTexture(jersey: number, accent: number, trim: number, num: number
   return tex;
 }
 
+// ---- Procedural helmet skins ----
+// The helmet mesh ("Helmet_low") unwraps into the canvas region u[0..0.67] v[0..0.45]; with the
+// default flipY texture that island lives in the lower-left (canvas y 0.55..1, x 0..0.67). We paint
+// the shell color there, a front-to-back center stripe (accent between white pinstripes), and a
+// team decal on each side, then cache per (helmet,accent,decal).
+const _helmetCache = new Map<string, THREE.CanvasTexture>();
+function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THREE.CanvasTexture {
+  const key = `${helmet.toString(16)}-${accent.toString(16)}-${decal ?? "none"}`;
+  const cached = _helmetCache.get(key);
+  if (cached) return cached;
+  const S = 256, c = document.createElement("canvas");
+  c.width = c.height = S;
+  const x = c.getContext("2d")!;
+  const shell = hexCss(helmet), acc = hexCss(accent);
+  x.fillStyle = shell; x.fillRect(0, 0, S, S);
+  // UV island bounds in canvas space (v flipped).
+  const u = (uu: number) => uu * S, vY = (vv: number) => (1 - vv) * S;
+  const yTop = vY(0.45), yBot = vY(0); // island spans these canvas rows
+  // Subtle top sheen on the shell for a glossy finish.
+  const g = x.createLinearGradient(0, yTop, 0, yBot);
+  g.addColorStop(0, "rgba(255,255,255,0.16)"); g.addColorStop(0.5, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,0.22)");
+  x.fillStyle = g; x.fillRect(0, yTop, u(0.67), yBot - yTop);
+  // Crown stripe: the dome unwraps so a constant-v band wraps the shell front-to-back over the top
+  // (verified against a UV probe). White pinstripes flank a bold accent center.
+  const by = vY(0.40), bh = S * 0.045; // high-v = crown of the helmet
+  x.fillStyle = "#f4f4ee"; x.fillRect(0, by - bh * 1.2, u(0.67), bh * 2.4);
+  x.fillStyle = acc; x.fillRect(0, by - bh * 0.55, u(0.67), bh * 1.1);
+  // Team decal on each side panel.
+  if (decal) {
+    const decalColor = lum(helmet) > 0.6 ? acc : "#f4f4ee";
+    for (const uu of [0.13, 0.55]) drawIcon(x, u(uu), vY(0.2), S * 0.06, decal, decalColor);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  _helmetCache.set(key, tex);
+  return tex;
+}
+
 /** Lerp an action's weight toward a target (~0.12s to fully change) for smooth crossfades. */
 function blendW(a: THREE.AnimationAction | null, target: number, dt: number): void {
   if (!a) return;
@@ -524,6 +564,8 @@ class FbxAvatar implements Avatar {
   private jerseyKey = "";
   /** Skin tone currently applied to the face/arms, so we only re-tint when the player changes. */
   private skinTone = -1;
+  /** Cache key of the helmet skin currently applied (shell + stripe + decal). */
+  private helmetKey = "";
   private readonly lean = new THREE.Group();
   private readonly ring: THREE.Mesh;
   private readonly chevron: THREE.Mesh;
@@ -857,7 +899,7 @@ class FbxAvatar implements Avatar {
     this.group.position.z = this.interp.z(alpha);
   }
 
-  update(p: Player, jersey: number, trim: number, accent: number, helmet: number, onFire: boolean, dt: number, isDefense: boolean): void {
+  update(p: Player, jersey: number, trim: number, accent: number, helmet: number, decal: EmblemIcon | undefined, onFire: boolean, dt: number, isDefense: boolean): void {
     void isDefense;
     const g = this.group;
     g.visible = true;
@@ -1015,8 +1057,15 @@ class FbxAvatar implements Avatar {
       this.skinTone = tone;
       for (const m of this.skinMats) m.color.setHex(tone);
     }
+    // Paint the helmet skin (shell + crown stripe + team decal); color stays white so the texture reads.
+    const hkey = `${helmet.toString(16)}-${accent.toString(16)}-${decal ?? "none"}`;
+    if (hkey !== this.helmetKey) {
+      this.helmetKey = hkey;
+      const htex = helmetTexture(helmet, accent, decal);
+      for (const m of this.helmetMats) { m.map = htex; m.needsUpdate = true; }
+    }
     for (const m of this.helmetMats) {
-      m.color.setHex(helmet);
+      m.color.setHex(0xffffff);
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
     // Carried ball: keep it connected to the carrier's hand. The nub is a group child (so it
@@ -1734,7 +1783,7 @@ export class Scene3D {
   sync(opts: {
     players: Player[];
     ball: Ball;
-    colorFor: (p: Player) => { jersey: number; trim: number; accent: number; helmet: number; onFire: boolean; defense: boolean };
+    colorFor: (p: Player) => { jersey: number; trim: number; accent: number; helmet: number; decal?: EmblemIcon; onFire: boolean; defense: boolean };
     focusX: number;
     focusY: number;
     dir: number;
@@ -1749,7 +1798,7 @@ export class Scene3D {
       const p = players[i];
       if (p) {
         const col = opts.colorFor(p);
-        this.players[i].update(p, col.jersey, col.trim, col.accent, col.helmet, col.onFire, opts.dt, col.defense);
+        this.players[i].update(p, col.jersey, col.trim, col.accent, col.helmet, col.decal, col.onFire, opts.dt, col.defense);
       } else {
         this.players[i].hide();
       }

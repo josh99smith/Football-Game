@@ -1,6 +1,7 @@
 import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
 import type { Renderer } from "../../engine/Renderer";
+import type { EmblemIcon } from "../../ui/Emblems";
 import { Player, type TeamId } from "../entities/Player";
 import { Ball } from "../entities/Ball";
 import { HUD } from "../../ui/HUD";
@@ -305,10 +306,10 @@ export class SpecialTeamsState implements GameState {
     });
   }
 
-  private colorFor(p: Player): { jersey: number; trim: number; accent: number; helmet: number; onFire: boolean; defense: boolean } {
+  private colorFor(p: Player): { jersey: number; trim: number; accent: number; helmet: number; decal: EmblemIcon; onFire: boolean; defense: boolean } {
     const team = this.app.match.team(p.team);
     const uni = p.team === "AWAY" ? team.config.away : team.config.colors;
-    return { jersey: hexNum(uni.jersey), trim: hexNum(uni.trim), accent: hexNum(uni.accent), helmet: hexNum(team.config.helmet), onFire: false, defense: p.team !== this.opts.kicking };
+    return { jersey: hexNum(uni.jersey), trim: hexNum(uni.trim), accent: hexNum(uni.accent), helmet: hexNum(team.config.helmet), decal: team.config.icon, onFire: false, defense: p.team !== this.opts.kicking };
   }
 
   // --- transitions -----------------------------------------------------------------------

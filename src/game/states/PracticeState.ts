@@ -1,5 +1,6 @@
 import type { GameApp } from "../../engine/Game";
 import type { GameState } from "../../engine/GameState";
+import type { EmblemIcon } from "../../ui/Emblems";
 import { Player } from "../entities/Player";
 import { Ball } from "../entities/Ball";
 import { TouchControls } from "../../ui/TouchControls";
@@ -31,6 +32,8 @@ export class PracticeState implements GameState {
   private awayAccent = 0xf2c14e;
   private homeHelmet = 0x14162e;
   private awayHelmet = 0x2a0a0a;
+  private homeDecal: EmblemIcon = "star";
+  private awayDecal: EmblemIcon = "star";
   private tackledTimer = 0;       // >0 while a tackle cinematic plays out, then we reset
   private dummyRunTimer = 0;      // the uncontrolled carrier stands, then runs downfield
   private exitRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
@@ -46,6 +49,8 @@ export class PracticeState implements GameState {
     this.awayAccent = hexNum(away.colors.accent);
     this.homeHelmet = hexNum(home.helmet);
     this.awayHelmet = hexNum(away.helmet);
+    this.homeDecal = home.icon;
+    this.awayDecal = away.icon;
     app.scene3d.setFieldTeams(home, away); // brand the practice turf to match the selected clubs
   }
 
@@ -262,6 +267,7 @@ export class PracticeState implements GameState {
         trim: 0x111118,
         accent: p.team === "HOME" ? this.homeAccent : this.awayAccent,
         helmet: p.team === "HOME" ? this.homeHelmet : this.awayHelmet,
+        decal: p.team === "HOME" ? this.homeDecal : this.awayDecal,
         onFire: false,
         defense: p.team === "AWAY",
       }),
