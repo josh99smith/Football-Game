@@ -94,6 +94,10 @@ export class LivePlayState implements GameState {
   private snapTimer = PRESNAP_TIME;
   /** Time left in the pre-snap cinematic camera sweep (counts down; 0 = hand back to follow). */
   private presnapCineT = 0;
+  /** Throttle for the reactive crowd-intensity update (don't reschedule the ramp every frame). */
+  private atmoT = 0;
+  /** Whether the looping on-fire crackle ambience is currently playing. */
+  private fireAmbOn = false;
   /** True once everyone has broken the huddle and reached their spot. */
   private preSnapReady = false;
   /** Countdown for the CPU offense to hike once set (defense games). */
@@ -589,6 +593,35 @@ export class LivePlayState implements GameState {
       shakeY: this.app.shake.offsetY,
       dt,
     });
+
+    this.updateAtmosphere(dt);
+  }
+
+  /**
+   * Drive the living stadium: a crowd bed that swells with the stakes (red zone, close-and-late,
+   * money downs, a team on fire) and a sustained fire-crackle ambience while anyone is ON FIRE.
+   */
+  private updateAtmosphere(dt: number): void {
+    const m = this.app.match;
+    const fire = m.home.onFire || m.away.onFire;
+
+    // Fire ambience tracks the ON FIRE state (transition-gated so it isn't restarted every tick).
+    if (fire && !this.fireAmbOn) { this.app.audio.startFire(); this.fireAmbOn = true; }
+    else if (!fire && this.fireAmbOn) { this.app.audio.stopFire(); this.fireAmbOn = false; }
+
+    // Crowd tension, refreshed a few times a second (each call reschedules a 1.1s glide).
+    this.atmoT -= dt;
+    if (this.atmoT > 0) return;
+    this.atmoT = 0.3;
+    const goalX = this.dir > 0 ? this.app.field.maxX : this.app.field.minX;
+    const toGoalYd = Math.abs(goalX - m.losX) / PX_PER_YARD;
+    let level = 0.22;
+    if (toGoalYd <= 20) level += 0.3 * (1 - toGoalYd / 20) + 0.06; // red zone, building toward the goal
+    if (m.quarter >= 4 && Math.abs(m.home.score - m.away.score) <= 8) level += 0.24; // close and late
+    if (m.down >= 3) level += 0.12; // money down
+    if (fire) level += 0.22;
+    if (this.phase === "live") level += 0.06; // the ball is in play
+    this.app.audio.setCrowdIntensity(level);
   }
 
   private colorFor(p: Player): { jersey: number; trim: number; accent: number; onFire: boolean; defense: boolean } {
