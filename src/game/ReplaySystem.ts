@@ -86,7 +86,7 @@ export class ReplaySystem {
       const l = o.loco;
       p.push({
         x: o.pos.x, y: o.pos.y,
-        loco: { gait: l.gait, speed: l.speed, speed01: l.speed01, heading: l.heading, moveRel: l.moveRel, turnRate: l.turnRate, down: l.down, contact: l.contact, stumbling: l.stumbling },
+        loco: { gait: l.gait, speed: l.speed, speed01: l.speed01, heading: l.heading, moveRel: l.moveRel, turnRate: l.turnRate, down: l.down, contact: l.contact, stumbling: l.stumbling, accelX: l.accelX, accelY: l.accelY },
         hasBall: o.hasBall, controlled: o.controlled, isDown: o.isDown, leanTarget: o.leanTarget, anim: o.animEvent,
         jersey: c.jersey, trim: c.trim, accent: c.accent, helmet: c.helmet, onFire: c.onFire, defense: c.defense, role: o.role, team: o.team, number: o.number,
       });
@@ -184,7 +184,7 @@ interface GhostBall {
 function makeGhostPlayer(): GhostPlayer {
   return {
     pos: { x: 0, y: 0 },
-    loco: { gait: "idle", speed: 0, speed01: 0, heading: 0, moveRel: 0, turnRate: 0, down: false, contact: false, stumbling: false },
+    loco: { gait: "idle", speed: 0, speed01: 0, heading: 0, moveRel: 0, turnRate: 0, down: false, contact: false, stumbling: false, accelX: 0, accelY: 0 },
     hasBall: false, controlled: false, isDown: false, leanTarget: 0, animEvent: null,
     role: "WR", team: "HOME", number: 0, color: { jersey: 0xffffff, trim: 0, accent: 0, helmet: 0, onFire: false, defense: false },
   };
