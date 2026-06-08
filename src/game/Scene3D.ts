@@ -61,7 +61,7 @@ export interface RagdollHit {
 /** A swappable on-field player representation (box fallback or skinned FBX). */
 interface Avatar {
   readonly group: THREE.Object3D;
-  update(p: Player, jersey: number, trim: number, accent: number, onFire: boolean, dt: number, isDefense: boolean): void;
+  update(p: Player, jersey: number, trim: number, accent: number, helmet: number, onFire: boolean, dt: number, isDefense: boolean): void;
   /** Apply the fixed-step interpolation: place the body between the last two sim
    * positions by `alpha` (0..1) so motion is smooth on any refresh rate. */
   present(alpha: number): void;
@@ -202,7 +202,7 @@ class BoxAvatar implements Avatar {
     return joint;
   }
 
-  update(p: Player, jersey: number, trim: number, _accent: number, onFire: boolean, dt: number, _isDefense: boolean): void {
+  update(p: Player, jersey: number, _trim: number, _accent: number, helmet: number, onFire: boolean, dt: number, _isDefense: boolean): void {
     const g = this.group;
     g.visible = true;
     this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
@@ -239,7 +239,7 @@ class BoxAvatar implements Avatar {
 
     this.torsoMat.color.setHex(jersey);
     this.padsMat.color.setHex(jersey);
-    this.helmetMat.color.setHex(trim);
+    this.helmetMat.color.setHex(helmet);
     const tone = skinToneFor(p.number);
     if (tone !== this.skinTone) { this.skinTone = tone; this.skinMat.color.setHex(tone); }
     if (onFire) {
@@ -366,6 +366,10 @@ function shade(n: number, f: number): string {
   const m = (v: number) => Math.max(0, Math.min(255, Math.round(f < 0 ? v * (1 + f) : v + (255 - v) * f)));
   return `#${((m(r) << 16) | (m(g) << 8) | m(b)).toString(16).padStart(6, "0")}`;
 }
+/** Relative luminance 0..1 of a packed RGB color (for picking readable fills on light vs dark kit). */
+function lum(n: number): number {
+  return (0.2126 * ((n >> 16) & 0xff) + 0.7152 * ((n >> 8) & 0xff) + 0.0722 * (n & 0xff)) / 255;
+}
 /** Realistic skin-tone palette (light → deep) so a roster isn't 22 clones of one complexion. */
 const SKIN_TONES = [0xf2cda0, 0xe3b48a, 0xcd935f, 0xb07a47, 0x946239, 0x70492a, 0x4f3320];
 /** Pick a stable skin tone for a player from their number (distinct numbers spread the roster). */
@@ -378,13 +382,16 @@ function jerseyStyleOf(jersey: number): number {
   return (((jersey >> 16) & 0xff) + ((jersey >> 8) & 0xff) + (jersey & 0xff)) % 4;
 }
 
-function jerseyTexture(jersey: number, accent: number, num: number): THREE.CanvasTexture {
+function jerseyTexture(jersey: number, accent: number, trim: number, num: number): THREE.CanvasTexture {
   const style = jerseyStyleOf(jersey);
-  const key = `${jersey.toString(16)}-${accent.toString(16)}-${num}-${style}`;
+  const key = `${jersey.toString(16)}-${accent.toString(16)}-${trim.toString(16)}-${num}-${style}`;
   const cached = _jerseyCache.get(key);
   if (cached) return cached;
+  const lightBase = lum(jersey) > 0.6; // a white/road jersey needs dark, team-colored decoration
   const base = hexCss(jersey), acc = hexCss(accent), light = "#f4f4ee";
-  const pants = shade(jersey, -0.4), dark = shade(jersey, -0.5);
+  const ink = lightBase ? acc : light;             // readable fill for yoke / stripe-mid / numbers
+  const numOutline = lightBase ? "#0a0a0a" : acc;  // crisp edge around team-colored numbers on white
+  const pants = hexCss(trim), dark = shade(jersey, -0.5);
   const S = 512, c = document.createElement("canvas");
   c.width = c.height = S;
   const x = c.getContext("2d")!;
@@ -421,7 +428,7 @@ function jerseyTexture(jersey: number, accent: number, num: number): THREE.Canva
       x.fillStyle = acc;
       x.fillRect(px + colW * 0.1, py, sw, colH);
       x.fillRect(px + colW * 0.8, py, sw, colH);
-      x.fillStyle = light;
+      x.fillStyle = ink;
       x.fillRect(px + colW * 0.1 + sw, py, sw * 0.35, colH);
       x.fillRect(px + colW * 0.8 - sw * 0.35, py, sw * 0.35, colH);
     } else if (style === 2) {
@@ -438,18 +445,18 @@ function jerseyTexture(jersey: number, accent: number, num: number): THREE.Canva
       x.beginPath(); x.rect(px, py, colW, colH); x.clip();
       x.strokeStyle = acc; x.lineWidth = colW * 0.2;
       x.beginPath(); x.moveTo(px - 12, Y(0.56)); x.lineTo(px + colW + 12, Y(0.86)); x.stroke();
-      x.strokeStyle = light; x.lineWidth = colW * 0.05;
+      x.strokeStyle = ink; x.lineWidth = colW * 0.05;
       x.beginPath(); x.moveTo(px - 12, Y(0.54)); x.lineTo(px + colW + 12, Y(0.84)); x.stroke();
       x.restore();
     } else {
-      // Classic: white shoulder yoke band + accent collar V.
-      x.fillStyle = light; x.fillRect(px, Y(0.84), colW, 9);
+      // Classic: shoulder yoke band + accent collar V.
+      x.fillStyle = ink; x.fillRect(px, Y(0.84), colW, 9);
     }
   }
 
   // sleeve stripes (accent / white / accent) + a solid accent cuff at the sleeve end
   for (const [u0, u1] of [[0, 0.125], [0.375, 0.5], [0.5, 0.625], [0.875, 1.0]]) {
-    const bands: [number, string][] = [[0.90, acc], [0.865, light], [0.83, acc]];
+    const bands: [number, string][] = [[0.90, acc], [0.865, ink], [0.83, acc]];
     for (const [v, col] of bands) { x.fillStyle = col; x.fillRect(U2(u0), Y(v), U2(u1 - u0), 9); }
     x.fillStyle = acc; x.fillRect(U2(u0), Y(0.99), U2(u1 - u0), Y(0.93) - Y(0.99)); // cuff
   }
@@ -468,9 +475,9 @@ function jerseyTexture(jersey: number, accent: number, num: number): THREE.Canva
     x.textAlign = "center"; x.textBaseline = "middle";
     x.font = "900 78px Arial Narrow, Arial, sans-serif";
     x.shadowColor = "rgba(0,0,0,0.45)"; x.shadowBlur = 6; x.shadowOffsetY = 3;
-    x.lineWidth = 7; x.strokeStyle = acc; x.strokeText(label, 0, 0);
+    x.lineWidth = 7; x.strokeStyle = numOutline; x.strokeText(label, 0, 0);
     x.shadowColor = "transparent";
-    x.fillStyle = light; x.fillText(label, 0, 0);
+    x.fillStyle = ink; x.fillText(label, 0, 0);
     x.restore();
   }
   const tex = new THREE.CanvasTexture(c);
@@ -849,7 +856,7 @@ class FbxAvatar implements Avatar {
     this.group.position.z = this.interp.z(alpha);
   }
 
-  update(p: Player, jersey: number, trim: number, accent: number, onFire: boolean, dt: number, isDefense: boolean): void {
+  update(p: Player, jersey: number, trim: number, accent: number, helmet: number, onFire: boolean, dt: number, isDefense: boolean): void {
     void isDefense;
     const g = this.group;
     g.visible = true;
@@ -991,10 +998,10 @@ class FbxAvatar implements Avatar {
     // Paint the team jersey skin onto the body mesh (cached per team-colors + number), keep the
     // helmet on the dark trim color. The jersey color lives in the texture, so the material color
     // stays white (a non-white color would multiply/darken the printed numbers and stripes).
-    const key = `${jersey.toString(16)}-${accent.toString(16)}-${p.number}`;
+    const key = `${jersey.toString(16)}-${accent.toString(16)}-${trim.toString(16)}-${p.number}`;
     if (key !== this.jerseyKey) {
       this.jerseyKey = key;
-      const tex = jerseyTexture(jersey, accent, p.number);
+      const tex = jerseyTexture(jersey, accent, trim, p.number);
       for (const m of this.jerseyMats) { m.map = tex; m.needsUpdate = true; }
     }
     for (const m of this.jerseyMats) {
@@ -1008,7 +1015,7 @@ class FbxAvatar implements Avatar {
       for (const m of this.skinMats) m.color.setHex(tone);
     }
     for (const m of this.helmetMats) {
-      m.color.setHex(trim);
+      m.color.setHex(helmet);
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
     // Carried ball: keep it connected to the carrier's hand. The nub is a group child (so it
@@ -1707,7 +1714,7 @@ export class Scene3D {
   sync(opts: {
     players: Player[];
     ball: Ball;
-    colorFor: (p: Player) => { jersey: number; trim: number; accent: number; onFire: boolean; defense: boolean };
+    colorFor: (p: Player) => { jersey: number; trim: number; accent: number; helmet: number; onFire: boolean; defense: boolean };
     focusX: number;
     focusY: number;
     dir: number;
@@ -1722,7 +1729,7 @@ export class Scene3D {
       const p = players[i];
       if (p) {
         const col = opts.colorFor(p);
-        this.players[i].update(p, col.jersey, col.trim, col.accent, col.onFire, opts.dt, col.defense);
+        this.players[i].update(p, col.jersey, col.trim, col.accent, col.helmet, col.onFire, opts.dt, col.defense);
       } else {
         this.players[i].hide();
       }

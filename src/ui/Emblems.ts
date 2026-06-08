@@ -6,7 +6,7 @@
 
 import { COLORS } from "./Theme";
 
-export type EmblemIcon = "bolt" | "horn" | "fin" | "wing" | "viper" | "star";
+export type EmblemIcon = "bolt" | "horn" | "fin" | "wing" | "viper" | "star" | "claw" | "flame";
 
 export interface CrestTeam {
   abbr: string;
@@ -99,6 +99,30 @@ export function drawIcon(
       // Fang head.
       ctx.beginPath();
       ctx.arc(cx + r * 0.55, cy - r * 0.85, r * 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case "claw": {
+      // Three raking claw slashes.
+      ctx.lineWidth = r * 0.2;
+      for (const dx of [-r * 0.42, 0, r * 0.42]) {
+        ctx.beginPath();
+        ctx.moveTo(cx + dx + r * 0.22, cy - r * 0.9);
+        ctx.quadraticCurveTo(cx + dx - r * 0.05, cy, cx + dx - r * 0.32, cy + r * 0.9);
+        ctx.stroke();
+      }
+      break;
+    }
+    case "flame": {
+      // A licking flame.
+      ctx.beginPath();
+      ctx.moveTo(cx, cy + r);
+      ctx.quadraticCurveTo(cx - r * 0.95, cy + r * 0.2, cx - r * 0.32, cy - r * 0.5);
+      ctx.quadraticCurveTo(cx - r * 0.28, cy + r * 0.05, cx + r * 0.05, cy - r * 0.25);
+      ctx.quadraticCurveTo(cx - r * 0.06, cy - r * 0.8, cx + r * 0.4, cy - r * 1.05);
+      ctx.quadraticCurveTo(cx + r * 0.22, cy - r * 0.35, cx + r * 0.6, cy - r * 0.28);
+      ctx.quadraticCurveTo(cx + r, cy + r * 0.35, cx, cy + r);
+      ctx.closePath();
       ctx.fill();
       break;
     }

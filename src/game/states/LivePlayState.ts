@@ -624,12 +624,16 @@ export class LivePlayState implements GameState {
     this.app.audio.setCrowdIntensity(level);
   }
 
-  private colorFor(p: Player): { jersey: number; trim: number; accent: number; onFire: boolean; defense: boolean } {
+  private colorFor(p: Player): { jersey: number; trim: number; accent: number; helmet: number; onFire: boolean; defense: boolean } {
     const team = this.app.match.team(p.team);
+    // Home club wears its colored kit; the road (AWAY) club wears its white set — the helmet shell
+    // stays the same either way (as in the real game).
+    const uni = p.team === "AWAY" ? team.config.away : team.config.colors;
     return {
-      jersey: hexNum(team.colors.jersey),
-      trim: hexNum(team.colors.trim),
-      accent: hexNum(team.colors.accent),
+      jersey: hexNum(uni.jersey),
+      trim: hexNum(uni.trim),
+      accent: hexNum(uni.accent),
+      helmet: hexNum(team.config.helmet),
       onFire: team.onFire,
       defense: p.team !== this.offenseTeamId,
     };

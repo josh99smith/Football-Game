@@ -29,6 +29,8 @@ export class PracticeState implements GameState {
   private awayColor = 0xe23b3b;
   private homeAccent = 0x1b2f7a;
   private awayAccent = 0xf2c14e;
+  private homeHelmet = 0x14162e;
+  private awayHelmet = 0x2a0a0a;
   private tackledTimer = 0;       // >0 while a tackle cinematic plays out, then we reset
   private dummyRunTimer = 0;      // the uncontrolled carrier stands, then runs downfield
   private exitRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
@@ -42,6 +44,8 @@ export class PracticeState implements GameState {
     this.awayColor = hexNum(away.colors.jersey);
     this.homeAccent = hexNum(home.colors.accent);
     this.awayAccent = hexNum(away.colors.accent);
+    this.homeHelmet = hexNum(home.helmet);
+    this.awayHelmet = hexNum(away.helmet);
   }
 
   enter(): void {
@@ -256,6 +260,7 @@ export class PracticeState implements GameState {
         jersey: p.team === "HOME" ? this.homeColor : this.awayColor,
         trim: 0x111118,
         accent: p.team === "HOME" ? this.homeAccent : this.awayAccent,
+        helmet: p.team === "HOME" ? this.homeHelmet : this.awayHelmet,
         onFire: false,
         defense: p.team === "AWAY",
       }),
