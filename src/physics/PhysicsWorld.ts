@@ -14,8 +14,11 @@ export class PhysicsWorld {
   /** The fixed ground body (at the world origin; collider offset -0.5). Foot-lock joints
    * pin a planted foot to this so a stance foot cannot slide. */
   groundBody!: RAPIER.RigidBody;
-  /** Internal substeps per 1/60 frame — more = more stable joints, more cost. */
-  substeps = 2;
+  /** Internal substeps per 1/60 frame — more = more stable joints + firmer contacts, more cost.
+   * The ragdoll's PD "muscles" are dt-scaled (substep-invariant), so raising this tightens joints
+   * and reduces tunneling/jitter without changing the tuned fall behavior. It only runs while a
+   * ragdoll is active (during tackles), so the extra cost is brief. */
+  substeps = 4;
 
   private constructor(world: RAPIER.World) {
     this.world = world;
