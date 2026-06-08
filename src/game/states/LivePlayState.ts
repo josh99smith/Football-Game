@@ -916,7 +916,7 @@ export class LivePlayState implements GameState {
     }
     if (input.actionReleased && !this.carrierFired) {
       // Context move: fend off a defender squared up in front (STIFF ARM); otherwise SPIN.
-      const d = this.nearestTackler(c, 50);
+      const d = this.nearestTackler(c, 72);
       if (d && this.isAhead(c, d)) this.doStiffArm(c, d);
       else this.doSpin(c);
       this.carrierFired = true;
@@ -2577,7 +2577,7 @@ export class LivePlayState implements GameState {
       const c = this.controlled;
       if (c && this.canThrow(c)) return { action: { text: "PASS", icon: "pass", color: blue } };
       if (c && this.ball.carrier === c) {
-        const d = this.nearestTackler(c, 50);
+        const d = this.nearestTackler(c, 72);
         const text = d && this.isAhead(c, d) ? "STIFF ARM" : "SPIN";
         return { action: { text, icon: "spin", color: green } };
       }
