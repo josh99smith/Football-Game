@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
+import { solveTwoBone } from "./anim/FootIK";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
@@ -43,6 +44,14 @@ const _thRel = new THREE.Vector3();
 const _thQ1 = new THREE.Quaternion();
 const _thQ2 = new THREE.Quaternion();
 const _thQ3 = new THREE.Quaternion();
+// Foot-IK scratch (per-leg solve, reused across all avatars).
+const _ikHip = new THREE.Vector3();
+const _ikKnee = new THREE.Vector3();
+const _ikAnkle = new THREE.Vector3();
+const _ikToe = new THREE.Vector3();
+const _ikTarget = new THREE.Vector3();
+const _ikKneeOut = new THREE.Vector3();
+const _ikDir = new THREE.Vector3();
 function ragEase(x: number): number { return x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2; }
 // Get-up stagger: legs/hips gather first, spine/head follow, arms swing in last.
 function ragGetupDelay(name: string): number {
@@ -313,6 +322,14 @@ const BANK_ACCEL_GAIN = 0.00010;    // rad per px/s^2 of lateral accel (added to
 const PROC_HIP = true;
 const HIP_BOB_AMP = 0.032;          // vertical hip rise/fall (world units) at full forward sprint
 const HIP_ROLL_AMP = 0.022;         // side-to-side weight-shift roll (rad), half the bob frequency
+// --- foot IK (Stage 2): after the mixer poses the skeleton, pull planted feet down onto the ground
+// plane so they stop floating/skating, via two-bone IK on each leg. DEFAULT OFF — it manipulates the
+// leg bones directly and is unverified on real hardware, so it must be enabled + tuned on-device
+// before shipping on. FOOT_PLANT_* are sole heights (world units) bounding the plant→swing fade.
+const FOOT_IK = false;              // master toggle — turn on to A/B foot IK on-device
+const FOOT_IK_WEIGHT = 1;           // 0..1 global blend of the ground correction
+const FOOT_PLANT_LO = 0.03;         // sole at/under this height ⇒ fully planted (corrected)
+const FOOT_PLANT_HI = 0.18;         // sole above this ⇒ swinging (left untouched)
 /** Fraction into the stance clip held for a neutral/idle player: a relaxed UPRIGHT stand
  *  (the clip ends in a deep 3-point crouch, which looks wrong for players just milling). */
 const IDLE_POSE = 0.13;
@@ -613,6 +630,8 @@ class FbxAvatar implements Avatar {
   private readonly getupFrom = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
   /** After get-up, stay standing (ignore the down/contact fall pose) until the next play. */
   private suppressFall = false;
+  /** Cached leg chains + measured bone lengths for foot IK (null if the rig lacks the bones). */
+  private legIK: { hip: THREE.Bone; knee: THREE.Bone; ankle: THREE.Bone; toe: THREE.Bone | null; l1: number; l2: number }[] | null = null;
 
   constructor(asset: CharacterAsset) {
     const inner = skeletonClone(asset.template);
@@ -712,6 +731,54 @@ class FbxAvatar implements Avatar {
     inner.traverse((o) => {
       if ((o as THREE.Bone).isBone) this.restPose.set(o as THREE.Bone, { p: o.position.clone(), q: o.quaternion.clone() });
     });
+    this.setupFootIK();
+  }
+
+  /** Cache each leg's hip/knee/ankle/toe bones and measure the (rigid) thigh + shin lengths from
+   *  the bind pose, so foot IK can run allocation-free each frame. */
+  private setupFootIK(): void {
+    this.inner.updateWorldMatrix(true, true);
+    const legs: NonNullable<typeof this.legIK> = [];
+    for (const side of ["Left", "Right"] as const) {
+      const hip = this.bone(side + "UpLeg");
+      const knee = this.bone(side + "Leg");
+      const ankle = this.bone(side + "Foot");
+      if (!hip || !knee || !ankle) continue;
+      hip.getWorldPosition(_ikHip);
+      knee.getWorldPosition(_ikKnee);
+      ankle.getWorldPosition(_ikAnkle);
+      legs.push({ hip, knee, ankle, toe: this.bone(side + "ToeBase"), l1: _ikHip.distanceTo(_ikKnee), l2: _ikKnee.distanceTo(_ikAnkle) });
+    }
+    this.legIK = legs.length ? legs : null;
+  }
+
+  /**
+   * Ground-adhesion foot IK — run after the mixer poses the skeleton (in present()). For each leg,
+   * when the foot is low (planted) pull the ankle straight down so its lowest contact point meets
+   * the ground plane (y=0), killing the floaty hover; two-bone IK keeps the leg rigid and the knee
+   * bending the way the clip already poses it. Swing (lifted) feet fade out untouched. Vertical only
+   * — no horizontal plant-locking yet — to stay conservative.
+   */
+  private applyFootIK(): void {
+    const legs = this.legIK;
+    if (!legs) return;
+    for (const leg of legs) {
+      leg.hip.getWorldPosition(_ikHip);
+      leg.knee.getWorldPosition(_ikKnee);
+      leg.ankle.getWorldPosition(_ikAnkle);
+      let soleY = _ikAnkle.y;
+      if (leg.toe) { leg.toe.getWorldPosition(_ikToe); soleY = Math.min(soleY, _ikToe.y); }
+      const plant = 1 - smoothstep(FOOT_PLANT_LO, FOOT_PLANT_HI, soleY);
+      if (plant <= 0.001) continue;
+      _ikTarget.copy(_ikAnkle);
+      _ikTarget.y = _ikAnkle.y - soleY * plant * FOOT_IK_WEIGHT; // drop so the sole reaches y=0
+      solveTwoBone(_ikHip, _ikKnee, _ikTarget, leg.l1, leg.l2, _ikKneeOut);
+      _ikDir.subVectors(_ikKneeOut, _ikHip).normalize();
+      this.aimBone(leg.hip, leg.knee, _ikDir, 1);
+      leg.knee.getWorldPosition(_ikKnee); // refreshed by aimBone's updateWorldMatrix
+      _ikDir.subVectors(_ikTarget, _ikKnee).normalize();
+      this.aimBone(leg.knee, leg.ankle, _ikDir, 1);
+    }
   }
 
   /**
@@ -923,6 +990,9 @@ class FbxAvatar implements Avatar {
       this.throwT -= dt;
       this.applyThrow(clamp(1 - this.throwT / THROW_DUR, 0, 1));
     }
+    // Foot IK runs on the fully-posed skeleton (after the mixer + throw). Suppressed during one-shot
+    // overlays (tackle/juke/spin) where the legs do non-locomotion things. Default-off (see FOOT_IK).
+    if (FOOT_IK && !this.oneShot) this.applyFootIK();
     if (this.nub.visible) {
       const hand = this.bone("RightHand") ?? this.bone("RightForeArm");
       if (hand) {
