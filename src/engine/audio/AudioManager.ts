@@ -31,6 +31,14 @@ export class AudioManager {
     if (this.master) this.master.gain.value = m ? 0 : 0.6;
   }
 
+  /** Suspend all audio while the page is hidden (tabbed away / app backgrounded), and resume on
+   * return — without disturbing the player's own mute toggle. */
+  setPageHidden(hidden: boolean): void {
+    if (!this.ctx) return;
+    if (hidden) void this.ctx.suspend();
+    else if (!this.muted) void this.ctx.resume();
+  }
+
   private now(): number {
     return this.ctx ? this.ctx.currentTime : 0;
   }

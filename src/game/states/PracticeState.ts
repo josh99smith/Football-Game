@@ -286,10 +286,11 @@ export class PracticeState implements GameState {
         : { text: "BIG HIT", icon: "tackle", color: "#d23a2a" },
     });
 
-    // Top bar: EXIT + SWITCH + a one-line hint.
+    // Top bar: EXIT + SWITCH + a one-line hint. Nudge clear of any notch / rounded corners.
     const bw = Math.min(120, r.width * 0.26);
-    this.exitRect = { x: 12, y: 12, w: bw, h: 34 };
-    this.switchRect = { x: r.width - bw - 12, y: 12, w: bw, h: 34 };
+    const top = 12 + r.safe.top;
+    this.exitRect = { x: 12 + r.safe.left, y: top, w: bw, h: 34 };
+    this.switchRect = { x: r.width - bw - 12 - r.safe.right, y: top, w: bw, h: 34 };
     drawButton(r, this.exitRect, "‹ EXIT", { fill: COLORS.concrete, size: 14 });
     drawButton(r, this.switchRect, "SWITCH", { fill: COLORS.steel, size: 14 });
     r.text("PRACTICE", r.width / 2, 18, { size: 14, align: "center", color: COLORS.blood, baseline: "top", font: FONT.display });

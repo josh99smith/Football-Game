@@ -14,6 +14,13 @@ export class Renderer {
   width = 0;
   height = 0;
   dpr = 1;
+  /**
+   * Display safe-area insets (CSS px) for notches / rounded corners / the home indicator, read from
+   * `env(safe-area-inset-*)`. UI that hugs a screen edge should add the matching inset so it never
+   * lands under a notch or the home bar on phones (the page sets `viewport-fit=cover`).
+   */
+  readonly safe = { top: 0, right: 0, bottom: 0, left: 0 };
+  private safeProbe: HTMLElement | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -24,8 +31,35 @@ export class Renderer {
     this.resize();
   }
 
+  /**
+   * A hidden probe whose padding is set to the four `env(safe-area-inset-*)` values; reading its
+   * computed padding back gives us the insets as plain pixels (env() can't be read any other way).
+   */
+  private ensureSafeProbe(): HTMLElement | null {
+    if (this.safeProbe || typeof document === "undefined") return this.safeProbe;
+    const el = document.createElement("div");
+    el.style.cssText =
+      "position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;" +
+      "padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);" +
+      "padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);";
+    document.body.appendChild(el);
+    this.safeProbe = el;
+    return el;
+  }
+
+  private readSafeInsets(): void {
+    const el = this.ensureSafeProbe();
+    if (!el) return;
+    const cs = getComputedStyle(el);
+    this.safe.top = parseFloat(cs.paddingTop) || 0;
+    this.safe.right = parseFloat(cs.paddingRight) || 0;
+    this.safe.bottom = parseFloat(cs.paddingBottom) || 0;
+    this.safe.left = parseFloat(cs.paddingLeft) || 0;
+  }
+
   /** Match the backing store to the element size * DPR. Returns true if size changed. */
   resize(): boolean {
+    this.readSafeInsets();
     const rect = this.canvas.getBoundingClientRect();
     const cssW = Math.max(1, Math.round(rect.width));
     const cssH = Math.max(1, Math.round(rect.height));

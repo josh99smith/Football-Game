@@ -145,6 +145,8 @@ export class GameApp {
 
     this.loop = new Loop(this.tick, this.draw);
     window.addEventListener("resize", this.onResize);
+    // Polite citizen: silence audio while the tab/app is backgrounded; restore on return.
+    document.addEventListener("visibilitychange", () => this.audio.setPageHidden(document.hidden));
     this.onResize();
   }
 

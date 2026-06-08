@@ -25,17 +25,22 @@ export class TouchControls {
 
   computeLayout(r: Renderer): ControlLayout {
     const margin = 24;
+    // Pad the edge margins by the display safe-area insets so the thumb clusters never sit under a
+    // notch or the home indicator on phones (landscape: side notch + bottom home bar).
+    const mL = margin + r.safe.left;
+    const mR = margin + r.safe.right;
+    const mB = margin + r.safe.bottom;
     const big = Math.max(40, Math.min(58, r.height * 0.1));
     const small = big * 0.9;
     // Right-hand cluster: the big ACTION button sits in the corner (primary thumb
     // position) with TURBO up and to its left.
-    const ax = r.width - margin - big;
-    const ay = r.height - margin - big;
+    const ax = r.width - mR - big;
+    const ay = r.height - mB - big;
     this.layout = {
       action: { x: ax, y: ay, r: big },
       turbo: { x: ax - big * 1.7, y: ay - big * 0.5, r: small },
       action2: { x: 0, y: 0, r: 0 }, // unused in the two-button setup (never hit-tests)
-      joystick: { x: margin + 64, y: r.height - margin - 64, r: 56 },
+      joystick: { x: mL + 64, y: r.height - mB - 64, r: 56 },
       joystickZoneRight: r.width * 0.5,
     };
     return this.layout;

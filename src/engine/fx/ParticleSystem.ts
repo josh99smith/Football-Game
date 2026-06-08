@@ -30,12 +30,17 @@ interface Particle {
  * (h); they are projected to the screen by the 3D camera at render time so dust
  * scatters on the turf while fire/confetti rise convincingly.
  */
+/** Hard cap on live particles so a long on-fire stretch can't grow the pool unbounded on phones. */
+const MAX_PARTICLES = 500;
+
 export class ParticleSystem {
   private readonly pool: Particle[] = [];
   /** Cache of soft radial glow sprites keyed by color (additive flame/ember rendering). */
   private readonly glowCache = new Map<string, HTMLCanvasElement>();
 
   private spawn(p: Particle): void {
+    // At the cap, retire the oldest particle to make room — bounds the per-frame work on low-end GPUs.
+    if (this.pool.length >= MAX_PARTICLES) this.pool.shift();
     this.pool.push(p);
   }
 

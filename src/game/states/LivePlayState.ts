@@ -2306,23 +2306,25 @@ export class LivePlayState implements GameState {
       return;
     }
 
-    this.rcClose = { x: W - 56, y: 8, w: 44, h: 32 };
+    // Keep the replay controls clear of notches / the home indicator on phones.
+    const sa = r.safe;
+    this.rcClose = { x: W - 56 - sa.right, y: 8 + sa.top, w: 44, h: 32 };
     drawButton(r, this.rcClose, "✕", { fill: COLORS.blood, size: 18 });
 
     // Zoom buttons (right side).
     const zb = 44;
-    this.rcZoomIn = { x: W - zb - 12, y: H * 0.4, w: zb, h: zb };
-    this.rcZoomOut = { x: W - zb - 12, y: H * 0.4 + zb + 10, w: zb, h: zb };
+    this.rcZoomIn = { x: W - zb - 12 - sa.right, y: H * 0.4, w: zb, h: zb };
+    this.rcZoomOut = { x: W - zb - 12 - sa.right, y: H * 0.4 + zb + 10, w: zb, h: zb };
     drawButton(r, this.rcZoomIn, "+", { fill: COLORS.concrete, size: 24 });
     drawButton(r, this.rcZoomOut, "–", { fill: COLORS.concrete, size: 24 });
 
     // Bottom transport: play/pause + scrub slider.
-    const by = H - 56;
-    this.rcPlay = { x: 14, y: by - 6, w: 56, h: 48 };
+    const by = H - 56 - sa.bottom;
+    this.rcPlay = { x: 14 + sa.left, y: by - 6, w: 56, h: 48 };
     drawButton(r, this.rcPlay, this.replayPlaying ? "❚❚" : "▶", { fill: COLORS.concrete, accent: COLORS.hazard, size: 18 });
 
-    const sx = 84;
-    const sw = W - sx - 14 - zb - 16;
+    const sx = 84 + sa.left;
+    const sw = W - sx - 14 - zb - 16 - sa.right;
     const sliderY = by + 14;
     this.rcSlider = { x: sx, y: sliderY, w: sw, h: 14 };
     // Track + progress + handle.
