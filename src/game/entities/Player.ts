@@ -31,6 +31,10 @@ export interface LocoState {
   contact: boolean;
   /** Glancing-hit stumble (still upright / in control). */
   stumbling: boolean;
+  /** Low-pass-filtered acceleration in FIELD space (px/s^2) — drives the avatar's weight lean
+   *  (decelerate ⇒ lean back, cut ⇒ bank into it). */
+  accelX: number;
+  accelY: number;
 }
 
 // Gait hysteresis (normalized speed) — avoids idle<->jog flicker at the boundary.
@@ -101,7 +105,11 @@ export class Player {
     down: false,
     contact: false,
     stumbling: false,
+    accelX: 0,
+    accelY: 0,
   };
+  /** Previous-frame velocity, for deriving acceleration in updateLoco (no-alloc). */
+  private readonly _prevVel: Vec2 = { x: 0, y: 0 };
 
   /** Countdown after being tackled before the player is "down" cleanup happens. */
   tackledTimer = 0;
@@ -274,6 +282,21 @@ export class Player {
     lo.down = this.state === "tackled";
     lo.contact = this.state === "contact";
     lo.stumbling = this.state === "stumbling";
+    // Low-passed acceleration for the avatar's weight lean (the brief's ~4/T critically-damped
+    // filter, T≈0.12s). Zeroed while down/contact so a state change can't spike the lean.
+    if (lo.down || lo.contact) {
+      lo.accelX = 0;
+      lo.accelY = 0;
+    } else {
+      const inv = 1 / Math.max(dt, 1 / 120);
+      const rawAx = (this.vel.x - this._prevVel.x) * inv;
+      const rawAy = (this.vel.y - this._prevVel.y) * inv;
+      const k = clamp((4 / 0.12) * dt, 0, 1);
+      lo.accelX += (rawAx - lo.accelX) * k;
+      lo.accelY += (rawAy - lo.accelY) * k;
+    }
+    this._prevVel.x = this.vel.x;
+    this._prevVel.y = this.vel.y;
     // Gait with hysteresis.
     const wasJogging = lo.gait !== "idle";
     if (this.turbo || speed01 > SPRINT_AT) lo.gait = "sprint";

@@ -300,6 +300,13 @@ const BACK_PLANT_K = 0.0194; // backpedal clip ~3.2 yd/s
 const STRAFE_PLANT_K = 0.0163; // strafe clip ~3.8 yd/s
 const IDLE_OUT = 0.06; // speed01 below this is idle
 const MOVE_FULL = 0.18; // speed01 above this is fully in locomotion (idle faded out)
+// --- acceleration-based weight lean (procedural locomotion, Stage 1) -----------------------------
+// Decompose a player's low-passed acceleration into fore/aft + lateral and lean the body into it:
+// decelerating ⇒ lean back, accelerating ⇒ lean in, hard cut ⇒ bank. Sells weight & momentum.
+const ACCEL_LEAN = true;            // master toggle (A/B); off ⇒ exactly the prior turn-rate lean
+const LEAN_ACCEL_GAIN = 0.00012;    // rad per px/s^2 of fore/aft accel
+const LEAN_PITCH_MAX = 0.2;         // clamp on the accel pitch contribution
+const BANK_ACCEL_GAIN = 0.00010;    // rad per px/s^2 of lateral accel (added to the turn bank)
 /** Fraction into the stance clip held for a neutral/idle player: a relaxed UPRIGHT stand
  *  (the clip ends in a deep 3-point crouch, which looks wrong for players just milling). */
 const IDLE_POSE = 0.13;
@@ -1031,11 +1038,17 @@ class FbxAvatar implements Avatar {
       // A gentle breathing bob when idle keeps a standing player from reading as a frozen statue.
       const breathe = Math.sin(this.phase * 2.1 + this.breatheOffset) * 0.012 * (1 - moving01);
       g.position.y = Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd + breathe;
-      const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.42, -0.62, 0.62);
+      // Acceleration → weight lean: project the low-passed accel onto facing (fore/aft) and the
+      // perpendicular (lateral). Decel ⇒ lean back; accel ⇒ lean in; lateral accel ⇒ extra bank.
+      const ch = Math.cos(lo.heading), sh = Math.sin(lo.heading);
+      const aFwd = ACCEL_LEAN ? lo.accelX * ch + lo.accelY * sh : 0;
+      const aLat = ACCEL_LEAN ? -lo.accelX * sh + lo.accelY * ch : 0;
+      const accelPitch = clamp(aFwd * LEAN_ACCEL_GAIN, -LEAN_PITCH_MAX, LEAN_PITCH_MAX);
+      const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.42 + aLat * BANK_ACCEL_GAIN, -0.62, 0.62);
       this.bankSmooth += (bankTarget - this.bankSmooth) * Math.min(1, dt * 9);
       // Forward lean while running ahead (more at speed), slight backward lean when backpedaling
-      // (added on top of the fall pitch, which is ~0 while upright).
-      this.lean.rotation.x += ((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01;
+      // (added on top of the fall pitch, which is ~0 while upright), plus the accel weight pitch.
+      this.lean.rotation.x += ((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01 + accelPitch;
       this.lean.rotation.z = this.bankSmooth;
       this.lean.rotation.y = 0;
       this.phase += dt;
