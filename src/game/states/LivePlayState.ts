@@ -915,9 +915,47 @@ export class LivePlayState implements GameState {
       }
     }
     if (input.actionReleased && !this.carrierFired) {
-      this.doSpin(c);
+      // Context move: fend off a defender squared up in front (STIFF ARM); otherwise SPIN.
+      const d = this.nearestTackler(c, 50);
+      if (d && this.isAhead(c, d)) this.doStiffArm(c, d);
+      else this.doSpin(c);
       this.carrierFired = true;
     }
+  }
+
+  /** Nearest standing defender within `range` of the carrier. */
+  private nearestTackler(c: Player, range: number): Player | null {
+    let best: Player | null = null, bestD = range;
+    for (const d of this.defense) {
+      if (d.isDown) continue;
+      const dd = dist(d.pos, c.pos);
+      if (dd < bestD) { bestD = dd; best = d; }
+    }
+    return best;
+  }
+
+  /** Is `d` roughly in front of the carrier's run direction (within ~63°)? */
+  private isAhead(c: Player, d: Player): boolean {
+    const dx = d.pos.x - c.pos.x, dy = d.pos.y - c.pos.y, dl = Math.hypot(dx, dy) || 1;
+    return (Math.cos(c.facing) * dx + Math.sin(c.facing) * dy) / dl > 0.45;
+  }
+
+  /** Stiff-arm: fend off the defender squared up in front — he's shoved aside and stumbles while
+   * the carrier powers straight through with only a small loss of speed (no lateral curl, unlike a
+   * spin). Brief immunity makes the tackle engine whiff that man. */
+  private doStiffArm(c: Player, d: Player): void {
+    c.jukeTimer = 0.22;
+    const dx = d.pos.x - c.pos.x, dy = d.pos.y - c.pos.y, dl = Math.hypot(dx, dy) || 1;
+    d.vel.x += (dx / dl) * 150; d.vel.y += (dy / dl) * 150;
+    d.knockDown(0.55);
+    c.vel.x *= 0.92; c.vel.y *= 0.92;
+    const cross = Math.cos(c.facing) * (dy / dl) - Math.sin(c.facing) * (dx / dl);
+    c.leanTarget = -Math.sign(cross) || 1;
+    c.animEvent = "stiffArm";
+    this.app.audio.juke();
+    this.app.shake.add(0.12);
+    this.app.particles.burst(d.pos.x, d.pos.y, "#ffffff", 7, 95);
+    this.app.floating.add("STIFF ARM!", c.pos.x, c.pos.y - 24, { size: 18, color: "#cfe8d4", life: 0.8 });
   }
 
   /** Spin move: brief tackle-immunity + a burst that carries forward momentum through a 360°
@@ -2538,7 +2576,11 @@ export class LivePlayState implements GameState {
     if (this.humanIsOffense) {
       const c = this.controlled;
       if (c && this.canThrow(c)) return { action: { text: "PASS", icon: "pass", color: blue } };
-      if (c && this.ball.carrier === c) return { action: { text: "SPIN", icon: "spin", color: green } };
+      if (c && this.ball.carrier === c) {
+        const d = this.nearestTackler(c, 50);
+        const text = d && this.isAhead(c, d) ? "STIFF ARM" : "SPIN";
+        return { action: { text, icon: "spin", color: green } };
+      }
       if (this.ball.state === "inAir") return { action: { text: "CATCH", icon: "pass", color: green } };
       return { action: { text: "—", icon: "switch", color: grey } };
     }
