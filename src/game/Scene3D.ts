@@ -140,6 +140,8 @@ class BoxAvatar implements Avatar {
   private readonly torsoMat: THREE.MeshStandardMaterial;
   private readonly padsMat: THREE.MeshStandardMaterial;
   private readonly helmetMat: THREE.MeshStandardMaterial;
+  private readonly skinMat: THREE.MeshStandardMaterial;
+  private skinTone = -1;
   private readonly legL: THREE.Group;
   private readonly legR: THREE.Group;
   private readonly armL: THREE.Group;
@@ -155,7 +157,8 @@ class BoxAvatar implements Avatar {
     this.torsoMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
     this.padsMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55 });
     this.helmetMat = new THREE.MeshStandardMaterial({ color: 0x222233, roughness: 0.35, metalness: 0.1 });
-    const skinMat = new THREE.MeshStandardMaterial({ color: SKIN, roughness: 0.8 });
+    this.skinMat = new THREE.MeshStandardMaterial({ color: SKIN, roughness: 0.8 });
+    const skinMat = this.skinMat;
 
     // Legs (swing from the hips).
     this.legL = this.limb(G.leg, this.torsoMat, -0.16, 0.82, 0.41);
@@ -237,6 +240,8 @@ class BoxAvatar implements Avatar {
     this.torsoMat.color.setHex(jersey);
     this.padsMat.color.setHex(jersey);
     this.helmetMat.color.setHex(trim);
+    const tone = skinToneFor(p.number);
+    if (tone !== this.skinTone) { this.skinTone = tone; this.skinMat.color.setHex(tone); }
     if (onFire) {
       this.torsoMat.emissive.setHex(0xff5a1e);
       this.torsoMat.emissiveIntensity = 0.3;
@@ -361,39 +366,110 @@ function shade(n: number, f: number): string {
   const m = (v: number) => Math.max(0, Math.min(255, Math.round(f < 0 ? v * (1 + f) : v + (255 - v) * f)));
   return `#${((m(r) << 16) | (m(g) << 8) | m(b)).toString(16).padStart(6, "0")}`;
 }
+/** Realistic skin-tone palette (light → deep) so a roster isn't 22 clones of one complexion. */
+const SKIN_TONES = [0xf2cda0, 0xe3b48a, 0xcd935f, 0xb07a47, 0x946239, 0x70492a, 0x4f3320];
+/** Pick a stable skin tone for a player from their number (distinct numbers spread the roster). */
+function skinToneFor(num: number): number {
+  return SKIN_TONES[((num * 2654435761) >>> 0) % SKIN_TONES.length];
+}
+/** A stable uniform "cut" per team color so teams differ in pattern, not just hue (the channel sum
+ *  spreads the stock palette evenly across all four cuts). */
+function jerseyStyleOf(jersey: number): number {
+  return (((jersey >> 16) & 0xff) + ((jersey >> 8) & 0xff) + (jersey & 0xff)) % 4;
+}
+
 function jerseyTexture(jersey: number, accent: number, num: number): THREE.CanvasTexture {
-  const key = `${jersey.toString(16)}-${accent.toString(16)}-${num}`;
+  const style = jerseyStyleOf(jersey);
+  const key = `${jersey.toString(16)}-${accent.toString(16)}-${num}-${style}`;
   const cached = _jerseyCache.get(key);
   if (cached) return cached;
-  const base = hexCss(jersey), acc = hexCss(accent), light = "#f4f4ee", pants = shade(jersey, -0.4);
+  const base = hexCss(jersey), acc = hexCss(accent), light = "#f4f4ee";
+  const pants = shade(jersey, -0.4), dark = shade(jersey, -0.5);
   const S = 512, c = document.createElement("canvas");
   c.width = c.height = S;
   const x = c.getContext("2d")!;
   const Y = (v: number) => (1 - v) * S, U2 = (u: number) => u * S;
   x.fillStyle = base; x.fillRect(0, 0, S, S);
+
+  // Fabric depth: a soft top-lit vertical sheen + a faint woven speckle so the cloth isn't dead flat.
+  const grd = x.createLinearGradient(0, 0, 0, S);
+  grd.addColorStop(0, "rgba(255,255,255,0.10)");
+  grd.addColorStop(0.45, "rgba(0,0,0,0)");
+  grd.addColorStop(1, "rgba(0,0,0,0.22)");
+  x.fillStyle = grd; x.fillRect(0, 0, S, S);
+  x.globalAlpha = 0.05;
+  for (let i = 0; i < 1600; i++) {
+    x.fillStyle = i & 1 ? "#000" : "#fff";
+    x.fillRect((Math.random() * S) | 0, (Math.random() * S) | 0, 2, 2);
+  }
+  x.globalAlpha = 1;
+
   // pants (lower V) + shoes, with an accent hip stripe at the waist
   x.fillStyle = pants; x.fillRect(0, Y(0.46), S, S - Y(0.46));
   x.fillStyle = "#15151a"; x.fillRect(0, Y(0.07), S, S - Y(0.07));
   x.fillStyle = acc; x.fillRect(0, Y(0.44), S, 5);
-  // sleeve stripes (accent / white / accent) wrapping the shoulder caps in the edge columns
+
+  // --- torso "cut": each team gets one of four distinct uniform patterns -------------------------
+  const torsoCols = [0.125, 0.625]; // left edge of front / back torso columns (each .25 wide)
+  const vTop = 0.92, vWaist = 0.46;
+  const colW = U2(0.25), colH = Y(vWaist) - Y(vTop);
+  for (const u0 of torsoCols) {
+    const px = U2(u0), py = Y(vTop);
+    if (style === 1) {
+      // Bold twin chest stripes flanking the number.
+      const sw = colW * 0.1;
+      x.fillStyle = acc;
+      x.fillRect(px + colW * 0.1, py, sw, colH);
+      x.fillRect(px + colW * 0.8, py, sw, colH);
+      x.fillStyle = light;
+      x.fillRect(px + colW * 0.1 + sw, py, sw * 0.35, colH);
+      x.fillRect(px + colW * 0.8 - sw * 0.35, py, sw * 0.35, colH);
+    } else if (style === 2) {
+      // Contrast side panels down the torso edges.
+      x.fillStyle = acc;
+      x.fillRect(px, py, colW * 0.13, colH);
+      x.fillRect(px + colW * 0.87, py, colW * 0.13, colH);
+      x.fillStyle = dark;
+      x.fillRect(px + colW * 0.13, py, colW * 0.03, colH);
+      x.fillRect(px + colW * 0.84, py, colW * 0.03, colH);
+    } else if (style === 3) {
+      // Diagonal sash across the chest (clipped to the torso column).
+      x.save();
+      x.beginPath(); x.rect(px, py, colW, colH); x.clip();
+      x.strokeStyle = acc; x.lineWidth = colW * 0.2;
+      x.beginPath(); x.moveTo(px - 12, Y(0.56)); x.lineTo(px + colW + 12, Y(0.86)); x.stroke();
+      x.strokeStyle = light; x.lineWidth = colW * 0.05;
+      x.beginPath(); x.moveTo(px - 12, Y(0.54)); x.lineTo(px + colW + 12, Y(0.84)); x.stroke();
+      x.restore();
+    } else {
+      // Classic: white shoulder yoke band + accent collar V.
+      x.fillStyle = light; x.fillRect(px, Y(0.84), colW, 9);
+    }
+  }
+
+  // sleeve stripes (accent / white / accent) + a solid accent cuff at the sleeve end
   for (const [u0, u1] of [[0, 0.125], [0.375, 0.5], [0.5, 0.625], [0.875, 1.0]]) {
     const bands: [number, string][] = [[0.90, acc], [0.865, light], [0.83, acc]];
     for (const [v, col] of bands) { x.fillStyle = col; x.fillRect(U2(u0), Y(v), U2(u1 - u0), 9); }
+    x.fillStyle = acc; x.fillRect(U2(u0), Y(0.99), U2(u1 - u0), Y(0.93) - Y(0.99)); // cuff
   }
-  // white shoulder yoke band + accent collar V (front & back torso)
-  for (const u0 of [0.125, 0.625]) { x.fillStyle = light; x.fillRect(U2(u0), Y(0.84), U2(0.25), 9); }
+
+  // accent collar V (front & back torso) for every cut
   x.strokeStyle = acc; x.lineWidth = 7;
   for (const cx of [0.25, 0.75]) {
     x.beginPath(); x.moveTo(U2(cx - 0.05), Y(0.86)); x.lineTo(U2(cx), Y(0.80)); x.lineTo(U2(cx + 0.05), Y(0.86)); x.stroke();
   }
-  // chest/back number, white filled with an accent outline
+
+  // chest/back number — white with an accent outline and a soft drop shadow for legibility
   const label = String(num);
   for (const cx of [0.25, 0.75]) {
     x.save();
     x.translate(U2(cx), Y(0.63));
     x.textAlign = "center"; x.textBaseline = "middle";
-    x.font = "900 75px Arial Narrow, Arial, sans-serif";
-    x.lineWidth = 6; x.strokeStyle = acc; x.strokeText(label, 0, 0);
+    x.font = "900 78px Arial Narrow, Arial, sans-serif";
+    x.shadowColor = "rgba(0,0,0,0.45)"; x.shadowBlur = 6; x.shadowOffsetY = 3;
+    x.lineWidth = 7; x.strokeStyle = acc; x.strokeText(label, 0, 0);
+    x.shadowColor = "transparent";
     x.fillStyle = light; x.fillText(label, 0, 0);
     x.restore();
   }
@@ -438,6 +514,8 @@ class FbxAvatar implements Avatar {
   private readonly skinMats: THREE.MeshStandardMaterial[] = [];
   /** Cache key of the jersey texture currently applied, so we only swap it when it changes. */
   private jerseyKey = "";
+  /** Skin tone currently applied to the face/arms, so we only re-tint when the player changes. */
+  private skinTone = -1;
   private readonly lean = new THREE.Group();
   private readonly ring: THREE.Mesh;
   private readonly chevron: THREE.Mesh;
@@ -922,6 +1000,12 @@ class FbxAvatar implements Avatar {
     for (const m of this.jerseyMats) {
       m.color.setHex(0xffffff);
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
+    }
+    // Vary the complexion per player so a team isn't 11 identical faces.
+    const tone = skinToneFor(p.number);
+    if (tone !== this.skinTone) {
+      this.skinTone = tone;
+      for (const m of this.skinMats) m.color.setHex(tone);
     }
     for (const m of this.helmetMats) {
       m.color.setHex(trim);
