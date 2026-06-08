@@ -66,7 +66,7 @@ interface Avatar {
   update(p: Player, jersey: number, trim: number, accent: number, helmet: number, decal: EmblemIcon | undefined, onFire: boolean, dt: number, isDefense: boolean): void;
   /** Apply the fixed-step interpolation: place the body between the last two sim
    * positions by `alpha` (0..1) so motion is smooth on any refresh rate. */
-  present(alpha: number): void;
+  present(alpha: number, dt: number): void;
   hide(): void;
   resetPose(): void;
   /** True while a physics ragdoll owns this body (falling or getting up). */
@@ -256,7 +256,7 @@ class BoxAvatar implements Avatar {
     this.nub.visible = p.hasBall && !p.isDown;
   }
 
-  present(alpha: number): void {
+  present(alpha: number, _dt: number): void {
     this.group.position.x = this.interp.x(alpha);
     this.group.position.z = this.interp.z(alpha);
   }
@@ -896,10 +896,28 @@ class FbxAvatar implements Avatar {
     this.interp.reset();
   }
 
-  present(alpha: number): void {
+  present(alpha: number, dt: number): void {
     if (this.rPhase !== "anim") return; // physics fixed the group while ragdolling; don't slide it
     this.group.position.x = this.interp.x(alpha);
     this.group.position.z = this.interp.z(alpha);
+
+    // Advance the skinned animation at the DISPLAY refresh rate (real dt), decoupled from the fixed
+    // 60Hz sim. The sim sets the action weights/targets each tick; rendering the clips here keeps the
+    // motion smooth on 90/120Hz screens (where a sim step happens only every ~2nd frame) instead of
+    // popping/stuttering. The procedural throw + carried-ball follow the mixer, so they run here too.
+    this.mixer.update(dt);
+    if (this.throwT > 0) {
+      this.throwT -= dt;
+      this.applyThrow(clamp(1 - this.throwT / THROW_DUR, 0, 1));
+    }
+    if (this.nub.visible) {
+      const hand = this.bone("RightHand") ?? this.bone("RightForeArm");
+      if (hand) {
+        hand.getWorldPosition(_handPos);
+        this.group.worldToLocal(_handPos);
+        this.nub.position.set(_handPos.x, _handPos.y, _handPos.z);
+      }
+    }
   }
 
   update(p: Player, jersey: number, trim: number, accent: number, helmet: number, decal: EmblemIcon | undefined, onFire: boolean, dt: number, isDefense: boolean): void {
@@ -1033,14 +1051,8 @@ class FbxAvatar implements Avatar {
     blendW(this.backAction, tBack * loco, dt);
     blendW(this.strafeAction, tStrafe * loco, dt);
 
-    this.mixer.update(dt);
-
-    // Procedural over-the-top throw: drive the right arm through a wind-up -> release arc on top
-    // of whatever the mixer posed (the source "pass" clip buries its throw in a 7.6s sequence).
-    if (this.throwT > 0) {
-      this.throwT -= dt;
-      this.applyThrow(clamp(1 - this.throwT / THROW_DUR, 0, 1));
-    }
+    // NOTE: the mixer is advanced in present() at the display's refresh rate (not here at the fixed
+    // 60Hz sim rate) so the skinned animation is smooth on high-refresh screens — see present().
 
     // Paint the team jersey skin onto the body mesh (cached per team-colors + number), keep the
     // helmet on the dark trim color. The jersey color lives in the texture, so the material color
@@ -1072,18 +1084,8 @@ class FbxAvatar implements Avatar {
       m.color.setHex(0xffffff);
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
-    // Carried ball: keep it connected to the carrier's hand. The nub is a group child (so it
-    // stays world-sized despite the model's tiny bone scale); each frame we read the carry
-    // hand/forearm bone's world position and place the nub there, cradled a touch into the body.
+    // Carried ball visibility (its position is placed in present(), after the mixer poses the hand).
     this.nub.visible = p.hasBall && !p.isDown;
-    if (this.nub.visible) {
-      const hand = this.bone("RightHand") ?? this.bone("RightForeArm");
-      if (hand) {
-        hand.getWorldPosition(_handPos);
-        this.group.worldToLocal(_handPos);
-        this.nub.position.set(_handPos.x, _handPos.y, _handPos.z);
-      }
-    }
   }
 
   hide(): void {
@@ -1903,8 +1905,9 @@ export class Scene3D {
     const rdt = this.atmoLast ? Math.min(0.05, (now - this.atmoLast) / 1000) : 0.016;
     this.atmoLast = now;
     this.tickAtmosphere(rdt);
-    // Interpolate every moving body between its last two sim positions by `alpha`.
-    for (const av of this.players) av.present(a);
+    // Interpolate every moving body between its last two sim positions by `alpha`, and advance each
+    // avatar's skinned animation by the real render delta `rdt` (smooth on high-refresh displays).
+    for (const av of this.players) av.present(a, rdt);
     if (this.ballGroup.visible && this.ballPrimed) {
       this.ballGroup.position.lerpVectors(this.ballPrev, this.ballCur, a);
     }
