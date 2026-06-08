@@ -158,6 +158,8 @@ export class GameApp {
       quarterLength: this.config.quarterLength,
       difficulty: this.config.difficulty,
     });
+    // Paint the turf for this matchup: team-colored, team-named end zones + the home crest at the 50.
+    this.scene3d.setFieldTeams(home, away);
     return this.match;
   }
 

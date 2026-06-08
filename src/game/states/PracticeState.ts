@@ -46,6 +46,7 @@ export class PracticeState implements GameState {
     this.awayAccent = hexNum(away.colors.accent);
     this.homeHelmet = hexNum(home.helmet);
     this.awayHelmet = hexNum(away.helmet);
+    app.scene3d.setFieldTeams(home, away); // brand the practice turf to match the selected clubs
   }
 
   enter(): void {

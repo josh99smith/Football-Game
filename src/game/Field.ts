@@ -1,5 +1,16 @@
 import type { Renderer } from "../engine/Renderer";
 import type { Camera } from "../engine/Camera";
+import { drawCrest, type EmblemIcon } from "../ui/Emblems";
+
+/** Team branding for painting end zones + the midfield crest into the baked turf. */
+export interface FieldBrand {
+  color: string;   // end-zone fill
+  accent: string;  // end-zone wordmark + crest border
+  label: string;   // end-zone wordmark (team nickname)
+  abbr: string;
+  trim: string;
+  icon: EmblemIcon;
+}
 
 /**
  * Field geometry and yard<->world conversions. World units are pixels.
@@ -69,7 +80,9 @@ export class Field {
    * by 0..FIELD_WIDTH). Used to bake a richly-textured turf for the 3D field plane.
    * Optional team colors paint the end zones.
    */
-  drawTexture(ctx: CanvasRenderingContext2D, homeColor = "#0e6b8f", awayColor = "#b03a3a"): void {
+  drawTexture(ctx: CanvasRenderingContext2D, home?: FieldBrand, away?: FieldBrand): void {
+    const homeColor = home?.color ?? "#0e6b8f";
+    const awayColor = away?.color ?? "#b03a3a";
     // Base turf.
     ctx.fillStyle = "#16823a";
     ctx.fillRect(0, 0, FIELD_LENGTH, FIELD_WIDTH);
@@ -97,9 +110,9 @@ export class Field {
       ctx.fillRect(gx, gy, 2, 2);
     }
 
-    // End zones (team-colored) with a diagonal hatch.
-    this.endzone(ctx, 0, homeColor);
-    this.endzone(ctx, RIGHT_GOAL_X, awayColor);
+    // End zones (team-colored) with a diagonal hatch + the team nickname.
+    this.endzone(ctx, 0, homeColor, home?.label ?? "BLITZ", home?.accent ?? "rgba(255,255,255,0.95)");
+    this.endzone(ctx, RIGHT_GOAL_X, awayColor, away?.label ?? "BLITZ", away?.accent ?? "rgba(255,255,255,0.95)");
 
     // Yard lines + goal lines.
     for (let yd = 0; yd <= FIELD_PLAY_YARDS; yd += 5) {
@@ -150,8 +163,14 @@ export class Field {
     }
     ctx.restore();
 
-    // Midfield logo: a ringed star at the 50.
-    this.midfieldLogo(ctx, xFromLeftGoal(50), FIELD_WIDTH / 2);
+    // Midfield: the home club's crest at the 50 (or a ringed star with no branding).
+    if (home) {
+      drawCrest(ctx, xFromLeftGoal(50), FIELD_WIDTH / 2, 66, {
+        abbr: home.abbr, icon: home.icon, colors: { jersey: home.color, trim: home.trim },
+      });
+    } else {
+      this.midfieldLogo(ctx, xFromLeftGoal(50), FIELD_WIDTH / 2);
+    }
 
     // Sideline border.
     ctx.strokeStyle = "#ffffff";
@@ -159,7 +178,7 @@ export class Field {
     ctx.strokeRect(2, 2, FIELD_LENGTH - 4, FIELD_WIDTH - 4);
   }
 
-  private endzone(ctx: CanvasRenderingContext2D, x0: number, color: string): void {
+  private endzone(ctx: CanvasRenderingContext2D, x0: number, color: string, label: string, accent: string): void {
     ctx.fillStyle = color;
     ctx.fillRect(x0, 0, ENDZONE_PX, FIELD_WIDTH);
     // Diagonal hatch.
@@ -176,15 +195,20 @@ export class Field {
       ctx.stroke();
     }
     ctx.restore();
-    // "BLITZ" wordmark.
+    // Team wordmark — white fill with an accent outline, sized to fit the end-zone depth.
     ctx.save();
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
-    ctx.font = `900 70px "Trebuchet MS", system-ui, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
     ctx.translate(x0 + ENDZONE_PX / 2, FIELD_WIDTH / 2);
     ctx.rotate(x0 === 0 ? -Math.PI / 2 : Math.PI / 2);
-    ctx.fillText("BLITZ", 0, 0);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const text = label.toUpperCase();
+    const size = Math.min(96, (FIELD_WIDTH * 0.92) / Math.max(4, text.length) * 1.5);
+    ctx.font = `900 ${size}px "Trebuchet MS", system-ui, sans-serif`;
+    ctx.lineWidth = Math.max(3, size * 0.07);
+    ctx.strokeStyle = accent;
+    ctx.strokeText(text, 0, 0);
+    ctx.fillStyle = "rgba(255,255,255,0.96)";
+    ctx.fillText(text, 0, 0);
     ctx.restore();
   }
 

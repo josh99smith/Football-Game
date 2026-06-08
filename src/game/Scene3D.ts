@@ -9,7 +9,8 @@ import type { Ball } from "./entities/Ball";
 import type { CharacterAsset } from "./CharacterModel";
 import { clamp, moveToward } from "../engine/math/Vec2";
 import { STEP } from "../engine/Loop";
-import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD } from "./Field";
+import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD, type FieldBrand } from "./Field";
+import type { TeamConfig } from "./Team";
 import { PhysicsWorld } from "../physics/PhysicsWorld";
 import { TackleRagdoll } from "../physics/TackleRagdoll";
 
@@ -1242,6 +1243,22 @@ export class Scene3D {
     return tex;
   }
 
+  private fieldRef!: Field;
+  private fieldCtx!: CanvasRenderingContext2D;
+  private fieldTex!: THREE.CanvasTexture;
+
+  /** Re-bake the turf with the two clubs' end-zone colors + names and the home crest at midfield.
+   *  Called when a match starts (the field mesh is built once, then re-painted per matchup). */
+  setFieldTeams(home: TeamConfig, away: TeamConfig): void {
+    if (!this.fieldCtx || !this.fieldTex) return;
+    const brand = (cfg: TeamConfig): FieldBrand => ({
+      color: cfg.colors.jersey, accent: cfg.colors.accent, label: cfg.nickname,
+      abbr: cfg.abbr, trim: cfg.colors.trim, icon: cfg.icon,
+    });
+    this.fieldRef.drawTexture(this.fieldCtx, brand(home), brand(away));
+    this.fieldTex.needsUpdate = true;
+  }
+
   private buildField(field: Field): void {
     const c = document.createElement("canvas");
     c.width = Math.round(FIELD_LENGTH);
@@ -1251,6 +1268,9 @@ export class Scene3D {
     const tex = new THREE.CanvasTexture(c);
     tex.anisotropy = 8;
     tex.colorSpace = THREE.SRGBColorSpace;
+    this.fieldRef = field;
+    this.fieldCtx = ctx;
+    this.fieldTex = tex;
 
     const geo = new THREE.PlaneGeometry(FIELD_LEN_U, FIELD_WID_U);
     const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.92 });
