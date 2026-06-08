@@ -1515,19 +1515,22 @@ export class LivePlayState implements GameState {
     this.commentate(o);
   }
 
-  /** Punchy, street-flavored call-outs on notable plays (broadcast feedback). The biggest moments
-   * also slam a full-screen announcer banner up + ring a stinger. */
+  /**
+   * One punchy, street-flavored call-out on a notable play. Kept to a SINGLE local floating line:
+   * the formal result (e.g. "INTERCEPTED!", "SACKED!") is already shown by the dead-ball result
+   * panel, so we don't also slam a redundant full-screen banner here — that screen banner is now
+   * reserved for ON FIRE. A stinger still rings on the marquee takeaways for audio punch.
+   */
   private commentate(o: PlayOutcome): void {
     const pick = (arr: string[]) => arr[(Math.random() * arr.length) | 0];
     let line: string | null = null;
     let color = "#ffd23a";
-    let banner: string | null = null; // marquee headline (screen-space) for the big ones
+    let big = false; // a marquee turnover/sack — earns an audio stinger
     switch (o.type) {
-      case "sack": line = pick(["SACKED!", "BROUGHT HIM DOWN!", "GET OUTTA HERE!"]); color = "#ff6a3a"; banner = "SACK!"; break;
-      case "interception": line = pick(["PICKED OFF!", "BALL'S OURS!", "READ IT EASY!"]); color = "#ff5a3a"; banner = "INTERCEPTED!"; break;
-      case "fumbleLost": line = pick(["COUGHED IT UP!", "STRIPPED!", "TAKEAWAY!"]); color = "#ff5a3a"; banner = "FUMBLE!"; break;
-      case "turnoverOnDowns": line = pick(["STONEWALLED!", "STUFFED ON DOWNS!", "DENIED!"]); color = "#ff6a3a"; banner = "TURNOVER ON DOWNS"; break;
-      case "safety": banner = "SAFETY!"; color = "#ff9a9a"; break;
+      case "sack": line = pick(["SACKED!", "BROUGHT HIM DOWN!", "GET OUTTA HERE!"]); color = "#ff6a3a"; big = true; break;
+      case "interception": line = pick(["PICKED OFF!", "BALL'S OURS!", "READ IT EASY!"]); color = "#ff5a3a"; big = true; break;
+      case "fumbleLost": line = pick(["COUGHED IT UP!", "STRIPPED!", "TAKEAWAY!"]); color = "#ff5a3a"; big = true; break;
+      case "turnoverOnDowns": line = pick(["STONEWALLED!", "STUFFED ON DOWNS!", "DENIED!"]); color = "#ff6a3a"; big = true; break;
       case "tackle":
       case "outOfBounds":
         if (o.yards >= 22) line = pick(["TAKIN' OFF!", "BIG GAINER!", "TO THE RACES!"]);
@@ -1536,12 +1539,9 @@ export class LivePlayState implements GameState {
     }
     if (line) {
       const s = this.ballSpot();
-      this.app.floating.add(line, s.x, s.y - 30, { size: 22, color, life: 1.3 });
+      this.app.floating.add(line, s.x, s.y - 30, { size: 22, color, life: 1.2 });
     }
-    if (banner) {
-      this.app.banner.show(banner, { color, accent: "#ff8a1e", sub: line ?? "" });
-      this.app.audio.stinger();
-    }
+    if (big) this.app.audio.stinger();
   }
 
   /** Add fire to a team; announce + celebrate the moment it ignites. */
@@ -1550,8 +1550,7 @@ export class LivePlayState implements GameState {
     if (team.addFire(amount)) {
       this.app.audio.fire();
       this.app.shake.add(0.3);
-      const s = this.ballSpot();
-      this.app.floating.add(`${team.config.name.toUpperCase()} — ON FIRE!`, s.x, s.y - 24, { size: 28, color: "#ff8a1e", life: 1.8 });
+      // The screen banner is the headline for ignition (no floating tag — keeps it uncluttered).
       this.app.banner.show("ON FIRE!", { color: "#ff8a1e", accent: "#ffd23a", sub: team.config.name.toUpperCase(), life: 2.2 });
       this.celebrateTeam(teamId);
     }
@@ -1590,10 +1589,7 @@ export class LivePlayState implements GameState {
     }
     this.app.shake.add(0.6);
     this.app.particles.confetti(carrier.pos.x, carrier.pos.y, 50);
-    this.app.floating.add(this.twoPoint ? "GOT IN!" : "TOUCHDOWN!", carrier.pos.x, carrier.pos.y - 30, { size: 34, color: "#ffd23a", life: 1.6 });
-    this.app.banner.show(this.twoPoint ? "TWO-POINT CONVERSION!" : "TOUCHDOWN!", {
-      color: "#ffe24a", accent: "#ff8a1e", sub: this.app.match.team(carrier.team).config.name.toUpperCase(), life: 2.4,
-    });
+    // No floating tag or screen banner here — the dead-ball score celebration panel is the headline.
     this.app.time.slow(0.4, 0.5);
     // The whole scoring unit breaks into a celebration during the post-play beat.
     this.celebrate(this.scoringTeamPlayers(carrier));

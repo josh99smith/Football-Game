@@ -14,6 +14,10 @@ interface FloatText {
   outline: string;
 }
 
+/** Most popups allowed on screen at once — beyond this the oldest is retired so call-outs from a
+ *  busy sequence (hit + break + tackle + commentary) can't pile into an unreadable stack. */
+const MAX_ITEMS = 3;
+
 /** World-anchored popups like "BOOM!", "TD!", "PICKED!" that rise and fade. */
 export class FloatingText {
   private readonly items: FloatText[] = [];
@@ -24,6 +28,10 @@ export class FloatingText {
     y: number,
     opts: { size?: number; color?: string; life?: number; outline?: string } = {},
   ): void {
+    // Drop an identical popup that's still fresh on screen (avoids the same word doubling up).
+    if (this.items.some((it) => it.text === text && it.life > it.maxLife * 0.5)) return;
+    // Cap concurrent popups: retire the oldest so the screen never crowds.
+    while (this.items.length >= MAX_ITEMS) this.items.shift();
     const life = opts.life ?? 1.1;
     this.items.push({
       text,
