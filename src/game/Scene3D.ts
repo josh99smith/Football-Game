@@ -516,10 +516,13 @@ function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THRE
   const by = vY(0.40), bh = S * 0.045; // high-v = crown of the helmet
   x.fillStyle = "#f4f4ee"; x.fillRect(0, by - bh * 1.2, u(0.67), bh * 2.4);
   x.fillStyle = acc; x.fillRect(0, by - bh * 0.55, u(0.67), bh * 1.1);
-  // Team decal on each side panel.
+  // Team decal on the side panel. The helmet's two sides share one mirrored UV island centered at
+  // ~(0.21, 0.11) (measured from the mesh geometry), so a single stamp shows on BOTH sides. On a
+  // light shell use a dark decal (the accent may itself be light, e.g. silver-on-silver); on a dark
+  // shell the bright accent pops.
   if (decal) {
-    const decalColor = lum(helmet) > 0.6 ? acc : "#f4f4ee";
-    for (const uu of [0.13, 0.55]) drawIcon(x, u(uu), vY(0.2), S * 0.06, decal, decalColor);
+    const decalColor = lum(helmet) > 0.55 ? "#15171c" : acc;
+    drawIcon(x, u(0.21), vY(0.11), S * 0.07, decal, decalColor);
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
