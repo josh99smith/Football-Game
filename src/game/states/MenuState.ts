@@ -6,7 +6,7 @@ import { drawCrest, drawHardcoreBadge } from "../../ui/Emblems";
 import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveSettings, loadSettings } from "../storage";
 import { MatchupIntroState } from "./MatchupIntroState";
-import { PracticeState } from "./PracticeState";
+import { PlaySelectState } from "./PlaySelectState";
 import { versionLabel, buildDate } from "../buildInfo";
 
 const DIFFS: GameApp["config"]["difficulty"][] = ["rookie", "pro", "allpro"];
@@ -127,8 +127,7 @@ export class MenuState implements GameState {
       this.startGame();
       return;
     } else if (tappedIn(this.rects.practice, taps)) {
-      this.app.audio.uiConfirm();
-      this.app.setState(new PracticeState(this.app));
+      this.startPractice();
       return;
     } else {
       this.app.audio.uiTap();
@@ -143,6 +142,15 @@ export class MenuState implements GameState {
     this.app.audio.uiConfirm();
     this.app.newMatch();
     this.app.setState(new MatchupIntroState(this.app));
+  }
+
+  /** Sandbox: the real game loop with full mechanics + controls, but the clock is frozen and the
+   *  scoring/kickoff ceremonies are skipped — straight into the play-call to rep every move. */
+  private startPractice(): void {
+    this.app.audio.uiConfirm();
+    this.app.newMatch();
+    this.app.match.beginPractice();
+    this.app.setState(new PlaySelectState(this.app));
   }
 
   render(): void {

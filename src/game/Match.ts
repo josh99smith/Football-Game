@@ -87,6 +87,10 @@ export class Match {
   losX = 0;
   firstDownX = 0;
 
+  /** Sandbox mode: the regular game loop runs with full mechanics, but the clock is frozen and the
+   *  scoring/turnover/4th-down ceremonies are skipped so you can rep every move on both sides. */
+  practice = false;
+
   /** Set while a two-point conversion attempt is the active "play" (a goal-line down from the 2). */
   twoPointActive = false;
 
@@ -264,7 +268,14 @@ export class Match {
   /** Run the play clock down, clamped at 0. The quarter is NOT advanced here — the
    * clock simply stops at 0 mid-play; the caller advances the quarter between plays. */
   tickClock(dt: number): void {
+    if (this.practice) return; // sandbox: clock is frozen (no quarter/game end)
     this.clock = Math.max(0, this.clock - dt);
+  }
+
+  /** Enter sandbox practice: full mechanics, frozen clock, ball spotted at midfield for the human. */
+  beginPractice(): void {
+    this.practice = true;
+    this.startSeries(this.humanTeam, (LEFT_GOAL_X + RIGHT_GOAL_X) / 2);
   }
 
   /** Halves in which the two-minute warning has already been given (keyed by quarter 2 / 4). */

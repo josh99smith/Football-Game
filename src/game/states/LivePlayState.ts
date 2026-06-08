@@ -26,6 +26,7 @@ import { KickoffState } from "./KickoffState";
 import { GameOverState } from "./GameOverState";
 import { PatChoiceState } from "./PatChoiceState";
 import { FourthDownState } from "./FourthDownState";
+import { MenuState } from "./MenuState";
 
 type Phase = "presnap" | "live" | "dead" | "playcall" | "replay" | "struggle";
 
@@ -184,6 +185,8 @@ export class LivePlayState implements GameState {
   private letterbox = 0;
   // UI hit-rects (set in render, read in update — one-frame lag is fine).
   private replayBtn: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  /** Practice-only "EXIT" button (back to the menu), shown during the between-downs play-call. */
+  private practiceExitRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
   private rcClose: Rect = { x: 0, y: 0, w: 0, h: 0 };
   private rcPlay: Rect = { x: 0, y: 0, w: 0, h: 0 };
   private rcZoomIn: Rect = { x: 0, y: 0, w: 0, h: 0 };
@@ -2061,6 +2064,8 @@ export class LivePlayState implements GameState {
     this.playCallT = 0;
     this.computeRegroupTargets();
     this.playCall.layout(this.app.r, m.possession === m.humanTeam);
+    const top = 12 + this.app.r.safe.top;
+    this.practiceExitRect = { x: 14 + this.app.r.safe.left, y: top, w: 84, h: 30 };
     this.app.input.consumeTaps(); // don't let the skip-tap also pick a card
   }
 
@@ -2081,6 +2086,11 @@ export class LivePlayState implements GameState {
     this.spawnFireFx();
 
     const taps = this.app.input.consumeTaps();
+    if (m.practice && taps.some((t) => tappedIn(this.practiceExitRect, [t]))) {
+      this.app.audio.stopCrowd();
+      this.app.setState(new MenuState(this.app));
+      return;
+    }
     if (this.replay.available && taps.some((t) => tappedIn(this.replayBtn, [t]))) {
       this.enterReplay();
       return;
@@ -2144,6 +2154,16 @@ export class LivePlayState implements GameState {
     this.committed = true;
     const m = this.app.match;
     const res = this.playResult;
+    if (m.practice) {
+      // Sandbox: no game-over / PAT / kickoff. Hand the ball off at midfield after a score (so you
+      // rep the other side too); otherwise keep the live down + possession the play left — turnovers
+      // included — and drop straight back into the play-call. Same mechanics, no ceremony.
+      const mid = (LEFT_GOAL_X + RIGHT_GOAL_X) / 2;
+      if (res.touchdown && res.scoringTeam) m.startSeries(m.opponent(res.scoringTeam), mid);
+      else if (res.kickoff && res.kickReceiver) m.startSeries(res.kickReceiver, mid);
+      this.enterPlayCall();
+      return;
+    }
     if (m.isOver) {
       this.app.audio.stopCrowd();
       this.app.setState(new GameOverState(this.app));
@@ -2245,6 +2265,10 @@ export class LivePlayState implements GameState {
       this.renderResultBanner(r, false);
       this.renderReplayButton(r);
       this.playCall.render(r, { alpha: this.playCallT });
+      if (this.app.match.practice) {
+        drawButton(r, this.practiceExitRect, "‹ EXIT", { fill: COLORS.concrete, size: 13 });
+        r.text("PRACTICE", r.width / 2, this.practiceExitRect.y + 6, { size: 13, align: "center", color: COLORS.hazard, font: FONT.ui });
+      }
     } else {
       app.input.setLayout(this.controls.computeLayout(r));
       this.controls.render(r, app.input, this.controlLabels());
