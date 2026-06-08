@@ -5,6 +5,7 @@ import { Loop } from "./Loop";
 import { AudioManager } from "./audio/AudioManager";
 import { ParticleSystem } from "./fx/ParticleSystem";
 import { FloatingText } from "./fx/FloatingText";
+import { Banner } from "./fx/Banner";
 import { ScreenShake } from "./fx/ScreenShake";
 import { TimeScale } from "./fx/TimeScale";
 import type { GameState } from "./GameState";
@@ -37,6 +38,7 @@ export class GameApp {
 
   readonly particles: ParticleSystem;
   readonly floating: FloatingText;
+  readonly banner: Banner;
   readonly shake: ScreenShake;
   readonly time: TimeScale;
 
@@ -136,6 +138,7 @@ export class GameApp {
     loadRig();
     this.particles = new ParticleSystem();
     this.floating = new FloatingText();
+    this.banner = new Banner();
     this.shake = new ScreenShake();
     this.time = new TimeScale();
     this.rotatePrompt = document.getElementById("rotate-prompt");
@@ -195,6 +198,7 @@ export class GameApp {
     this.cam.shakeY = this.shake.offsetY;
     this.particles.update(scaled);
     this.floating.update(scaled);
+    this.banner.update(dt); // UI call-out: real time, so bullet-time doesn't stall it
 
     if (this.nextState) {
       this.state?.exit?.();
@@ -211,5 +215,6 @@ export class GameApp {
     // paints its own opaque background (menus) or leaves it clear (live play).
     this.r.clear();
     this.state?.render(alpha);
+    this.banner.render(this.r); // marquee call-outs ride above every state
   };
 }

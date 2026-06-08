@@ -195,6 +195,13 @@ export class AudioManager {
     });
   }
 
+  /** A dramatic announcer stinger under a marquee call-out: deep boom + a bright metallic ring. */
+  stinger(): void {
+    this.blip("sine", 140, 0.45, 0.42, 60); // body boom
+    this.blip("triangle", 1180, 0.5, 0.16, 760); // shimmer tail
+    this.noise(0.16, 0.22, 300); // impact crack
+  }
+
   /** Start a quiet looping crowd-noise bed. Safe to call repeatedly. */
   startCrowd(): void {
     if (!this.ctx || !this.master || this.crowd) return;
