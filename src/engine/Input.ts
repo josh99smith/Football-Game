@@ -66,6 +66,8 @@ export class Input {
   private lastActionDownTime = -1;
   private joystickPointerId: number | null = null;
   private pendingTaps: Vec2[] = [];
+  /** A quick directional flick (off the joystick + buttons), consumed by carrier moves. */
+  private pendingSwipe: Vec2 | null = null;
 
   constructor(el: HTMLElement) {
     this.el = el;
@@ -139,6 +141,15 @@ export class Input {
     e.preventDefault();
     const dt = performance.now() - ptr.startTime;
     if (!ptr.moved && dt < 400) this.pendingTaps.push({ x: ptr.x, y: ptr.y });
+    // A fast directional flick that isn't the joystick or a button press is a swipe (carrier moves:
+    // left/right = juke, downfield = truck). The joystick lives in the left half, so swipes are the
+    // right thumb.
+    const sdx = ptr.x - ptr.startX;
+    const sdy = ptr.y - ptr.startY;
+    const sdist = Math.hypot(sdx, sdy);
+    if (ptr.role === "tap" && dt < 250 && sdist > 36) {
+      this.pendingSwipe = { x: sdx / sdist, y: sdy / sdist };
+    }
     if (this.joystickPointerId === e.pointerId) {
       this.joystickPointerId = null;
       this.joystickActive = false;
@@ -234,6 +245,13 @@ export class Input {
     const t = this.pendingTaps;
     this.pendingTaps = [];
     return t;
+  }
+
+  /** Take the latest swipe flick direction (screen-space unit vector) once, or null. */
+  consumeSwipe(): Vec2 | null {
+    const s = this.pendingSwipe;
+    this.pendingSwipe = null;
+    return s;
   }
 
   isKeyDown(k: string): boolean {

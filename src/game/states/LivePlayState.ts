@@ -914,6 +914,18 @@ export class LivePlayState implements GameState {
   /** Ball-carrier ACTION: a quick tap spins (spin move), holding past a beat dives. */
   private updateCarrierAction(c: Player, dt: number): void {
     const input = this.app.input;
+    // Swipe moves: flick sideways to JUKE that way, flick forward (downfield) to lower the head and
+    // TRUCK. Decompose the flick (mapped to field space like the stick) against the run direction.
+    const sw = input.consumeSwipe();
+    if (sw && c.state === "active" && c.animEvent === null && c.jukeTimer <= 0 && c.diveTimer <= 0) {
+      const fx = -sw.y * this.dir;
+      const fy = sw.x * this.dir;
+      const fwd = Math.cos(c.facing) * fx + Math.sin(c.facing) * fy; // along the run direction
+      const lat = Math.cos(c.facing) * fy - Math.sin(c.facing) * fx; // sideways component
+      if (fwd > Math.abs(lat) && fwd > 0.3) this.doTruck(c);
+      else this.doJuke(c, fx, fy);
+      return;
+    }
     if (input.actionPressed) {
       this.carrierHeld = 0;
       this.carrierFired = false;
@@ -995,6 +1007,47 @@ export class LivePlayState implements GameState {
     c.animEvent = "spin";
     this.app.audio.juke();
     this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
+  }
+
+  /** Swipe juke: a sharp sidestep in the flick direction (`fx,fy` = field-space unit) with brief
+   *  tackle immunity, so the carrier cuts off a defender who's closing in. */
+  private doJuke(c: Player, fx: number, fy: number): void {
+    c.vel.x += fx * 125;
+    c.vel.y += fy * 125;
+    c.jukeTimer = 0.4; // immunity through the cut (the nearest tackler whiffs)
+    c.cutTimer = 0.4;
+    const cross = Math.cos(c.facing) * fy - Math.sin(c.facing) * fx;
+    c.leanTarget = Math.sign(cross) || 1; // bank into the cut
+    c.animEvent = "juke";
+    this.app.audio.juke();
+    this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 6, 80);
+    this.app.floating.add("JUKE!", c.pos.x, c.pos.y - 24, { size: 18, color: "#cfe8d4", life: 0.7 });
+  }
+
+  /** Swipe-forward truck: lower the head and power straight ahead — a defender squared up in front is
+   *  bowled over (knocked down) while the carrier plows through with a little loss of steam. */
+  private doTruck(c: Player): void {
+    const sp = Math.hypot(c.vel.x, c.vel.y);
+    const fwx = sp > 30 ? c.vel.x / sp : Math.cos(c.facing);
+    const fwy = sp > 30 ? c.vel.y / sp : Math.sin(c.facing);
+    c.vel.x += fwx * 95;
+    c.vel.y += fwy * 95;
+    c.jukeTimer = 0.3; // power through the first hit
+    c.leanTarget = 0; // square + head down, no lateral bank
+    c.animEvent = "stiffArm"; // head-down power move (no dedicated truck clip)
+    const d = this.nearestTackler(c, 80);
+    if (d && this.isAhead(c, d)) {
+      const dx = d.pos.x - c.pos.x, dy = d.pos.y - c.pos.y, dl = Math.hypot(dx, dy) || 1;
+      d.vel.x += (dx / dl) * 220; d.vel.y += (dy / dl) * 220;
+      d.knockDown(0.7);
+      c.vel.x *= 0.82; c.vel.y *= 0.82; // lose a little steam bowling him over
+      this.app.shake.add(0.2);
+      this.app.particles.burst(d.pos.x, d.pos.y, "#ffd24a", 10, 120);
+    } else {
+      this.app.shake.add(0.1);
+    }
+    this.app.audio.juke();
+    this.app.floating.add("TRUCK!", c.pos.x, c.pos.y - 24, { size: 20, color: "#ffd24a", life: 0.8 });
   }
 
   /** Defender ACTION is contextual: unleash a committed BIG HIT when near the carrier,
