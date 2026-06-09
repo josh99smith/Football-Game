@@ -48,6 +48,8 @@ export class GameApp {
   private nextState: GameState | null = null;
   /** On-device tuning overlay; created lazily while a debug-mode match is live, else null. */
   private debug: DebugMode | null = null;
+  /** DEBUG: when true, freeze the gameplay sim + animation pose (toggled from the debug overlay). */
+  paused = false;
 
   /** Persistent session selections. */
   config: SessionConfig = {
@@ -197,7 +199,11 @@ export class GameApp {
     const scale = this.time.update(dt);
     const scaled = dt * scale;
 
-    this.state?.update(scaled);
+    // DEBUG pause: freeze the gameplay sim (and, via scene3d.paused, the animation pose) so the
+    // camera can be repositioned without time pressure. The DEBUG overlay below still updates so the
+    // free camera / panel stay responsive while paused.
+    if (!this.paused) this.state?.update(scaled);
+    this.scene3d.paused = this.paused;
 
     // DEBUG overlay: live only while a debug-mode match runs (the menu clears the flag on return).
     if (this.match?.debugMode) {
@@ -205,14 +211,17 @@ export class GameApp {
     } else if (this.debug) {
       this.debug.dispose();
       this.debug = null;
+      this.paused = false; // never leave a non-debug state frozen
     }
 
-    // Global FX advance on real time so they don't freeze during hit-stop.
-    this.shake.update(dt);
-    this.cam.shakeX = this.shake.offsetX;
-    this.cam.shakeY = this.shake.offsetY;
-    this.particles.update(scaled);
-    this.floating.update(scaled);
+    // Global FX advance on real time so they don't freeze during hit-stop (skipped while paused).
+    if (!this.paused) {
+      this.shake.update(dt);
+      this.cam.shakeX = this.shake.offsetX;
+      this.cam.shakeY = this.shake.offsetY;
+      this.particles.update(scaled);
+      this.floating.update(scaled);
+    }
     this.banner.update(dt); // UI call-out: real time, so bullet-time doesn't stall it
 
     if (this.nextState) {

@@ -63,6 +63,10 @@ export class DebugMode {
     camF.add(cam, "freeCam").name("Free camera").onChange((v: boolean) => this.setFreeCam(v));
     camF.add(cam, "frame").name("Center on player");
 
+    // Pause freezes the gameplay sim + animation pose so the camera can be set up at leisure
+    // (snap → pause → orbit to the angle → unpause to watch it play from there).
+    this.gui.addFolder("Playback").add(this.app, "paused").name("⏸ Pause game").listen();
+
     // Capture (downloads to the device — share the PNGs back for tuning review). The contact sheet
     // is a 3×3 grid of frames over ~1s: a single image that shows a whole motion cycle (stride / cut
     // / foot plant), since still images — not video — are what can be reviewed.

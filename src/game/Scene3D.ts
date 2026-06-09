@@ -1976,6 +1976,9 @@ export class Scene3D {
   /** DEBUG free camera: when true, skip the follow-cam each frame so an external controller
    *  (OrbitControls) owns the camera position/orientation. */
   freeCam = false;
+  /** DEBUG pause: when true, advance the skinned animation by dt=0 so the pose freezes too (the sim
+   *  is frozen by GameApp); the scene still renders so the frozen moment can be orbited. */
+  paused = false;
   /** The 3D field camera, exposed for the DEBUG free-camera controller. */
   getCamera(): THREE.PerspectiveCamera {
     return this.camera;
@@ -2000,7 +2003,8 @@ export class Scene3D {
     this.tickAtmosphere(rdt);
     // Interpolate every moving body between its last two sim positions by `alpha`, and advance each
     // avatar's skinned animation by the real render delta `rdt` (smooth on high-refresh displays).
-    for (const av of this.players) av.present(a, rdt);
+    const mdt = this.paused ? 0 : rdt; // DEBUG pause freezes the pose
+    for (const av of this.players) av.present(a, mdt);
     if (this.ballGroup.visible && this.ballPrimed) {
       this.ballGroup.position.lerpVectors(this.ballPrev, this.ballCur, a);
     }
