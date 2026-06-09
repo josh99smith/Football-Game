@@ -15,6 +15,7 @@ import { loadBaseRig, loadAnimationClips, clipsComplete, loadedClipCount, locomo
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
+import { DebugMode } from "../debug/DebugMode";
 
 export interface SessionConfig {
   homeTeamIndex: number;
@@ -45,6 +46,8 @@ export class GameApp {
   private readonly loop: Loop;
   private state: GameState | null = null;
   private nextState: GameState | null = null;
+  /** On-device tuning overlay; created lazily while a debug-mode match is live, else null. */
+  private debug: DebugMode | null = null;
 
   /** Persistent session selections. */
   config: SessionConfig = {
@@ -195,6 +198,14 @@ export class GameApp {
     const scaled = dt * scale;
 
     this.state?.update(scaled);
+
+    // DEBUG overlay: live only while a debug-mode match runs (the menu clears the flag on return).
+    if (this.match?.debugMode) {
+      (this.debug ??= new DebugMode()).update(dt, this.state);
+    } else if (this.debug) {
+      this.debug.dispose();
+      this.debug = null;
+    }
 
     // Global FX advance on real time so they don't freeze during hit-stop.
     this.shake.update(dt);

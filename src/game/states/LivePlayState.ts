@@ -392,6 +392,11 @@ export class LivePlayState implements GameState {
     // play's endPlay sets it, and it must persist across re-arming the next down.
   }
 
+  /** DEBUG overlay focus: the player whose live motion the tuning readouts report on. */
+  debugSubject(): Player | null {
+    return this.controlled ?? this.ball.carrier ?? null;
+  }
+
   /** DEV-only: force the ball carrier to be tackled by the nearest defender (headless tests). */
   debugForceTackle(_big = true, hitStick = false): boolean {
     if (this.phase !== "live") return false;

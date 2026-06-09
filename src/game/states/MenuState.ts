@@ -44,6 +44,8 @@ export class MenuState implements GameState {
     this.app.input.consumeTaps();
     this.layout();
     this.app.audio.setMuted(this.app.config.muted);
+    // Returning to the menu ends any debug session (tears down the overlay next tick).
+    if (this.app.match) this.app.match.debugMode = false;
   }
 
   /**
