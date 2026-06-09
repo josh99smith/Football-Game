@@ -31,6 +31,11 @@ export class DebugMode {
   private readonly out = { fps: 60, focus: "—", speed: 0, speed01: 0, gait: "—", accel: 0, turnRate: 0 };
   private fpsEMA = 60;
   private lastSubject: Player | null = null;
+  /** Active contact-sheet burst: composites N frames spaced a few render frames apart into a grid. */
+  private burst: {
+    frames: number; captured: number; everyN: number; counter: number;
+    grid: HTMLCanvasElement; gctx: CanvasRenderingContext2D; cols: number; cw: number; ch: number;
+  } | null = null;
 
   constructor(app: GameApp) {
     this.app = app;
@@ -46,6 +51,14 @@ export class DebugMode {
     const camF = this.gui.addFolder("Camera");
     camF.add(cam, "freeCam").name("Free camera").onChange((v: boolean) => this.setFreeCam(v));
     camF.add(cam, "frame").name("Center on player");
+
+    // Capture (downloads to the device — share the PNGs back for tuning review). The contact sheet
+    // is a 3×3 grid of frames over ~1s: a single image that shows a whole motion cycle (stride / cut
+    // / foot plant), since still images — not video — are what can be reviewed.
+    const cap = { shot: () => this.screenshot(), sheet: () => this.startContactSheet() };
+    const capF = this.gui.addFolder("Capture");
+    capF.add(cap, "shot").name("Screenshot PNG");
+    capF.add(cap, "sheet").name("Anim contact sheet");
 
     const lean = this.gui.addFolder("Weight lean");
     lean.add(ANIM, "ACCEL_LEAN");
@@ -94,6 +107,66 @@ export class DebugMode {
       this.out.focus = "—";
     }
     if (this.controls.enabled) this.controls.update();
+    this.driveBurst();
+  }
+
+  // --- capture ------------------------------------------------------------------------------------
+
+  private screenshot(): void {
+    this.app.scene3d.requestCapture((c) =>
+      this.downloadURL(c.toDataURL("image/png"), `gridiron-shot-${this.stamp()}.png`),
+    );
+  }
+
+  private startContactSheet(): void {
+    if (this.burst) return;
+    const src = this.app.scene3d.canvas;
+    const cols = 3;
+    const frames = 9;
+    const scale = 0.5; // half-res cells keep the grid PNG a sensible size
+    const cw = Math.max(1, Math.round(src.width * scale));
+    const ch = Math.max(1, Math.round(src.height * scale));
+    const grid = document.createElement("canvas");
+    grid.width = cw * cols;
+    grid.height = ch * Math.ceil(frames / cols);
+    const gctx = grid.getContext("2d");
+    if (!gctx) return;
+    gctx.fillStyle = "#000";
+    gctx.fillRect(0, 0, grid.width, grid.height);
+    this.burst = { frames, captured: 0, everyN: 6, counter: 6, grid, gctx, cols, cw, ch };
+  }
+
+  /** Advance an in-progress contact-sheet burst: every `everyN` frames, snapshot the 3D canvas into
+   *  the next grid cell; finalize + download after the last frame. */
+  private driveBurst(): void {
+    const b = this.burst;
+    if (!b) return;
+    b.counter++;
+    if (b.counter < b.everyN || b.captured >= b.frames) return;
+    b.counter = 0;
+    const idx = b.captured++;
+    this.app.scene3d.requestCapture((c) => {
+      const col = idx % b.cols;
+      const row = Math.floor(idx / b.cols);
+      b.gctx.drawImage(c, col * b.cw, row * b.ch, b.cw, b.ch);
+      if (idx === b.frames - 1) {
+        this.downloadURL(b.grid.toDataURL("image/png"), `gridiron-anim-${this.stamp()}.png`);
+        this.burst = null;
+      }
+    });
+  }
+
+  private downloadURL(url: string, name: string): void {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  private stamp(): string {
+    return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   }
 
   private setFreeCam(on: boolean): void {

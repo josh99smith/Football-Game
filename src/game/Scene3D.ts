@@ -1984,6 +1984,12 @@ export class Scene3D {
   fieldToWorld(px: number, py: number, out: THREE.Vector3): THREE.Vector3 {
     return out.set(px * U, 1, py * U);
   }
+  /** DEBUG capture: invoke `cb` with the freshly-rendered 3D canvas at the end of the next frame —
+   *  reading it then (toDataURL / drawImage) is valid even without preserveDrawingBuffer. */
+  private captureCb: ((canvas: HTMLCanvasElement) => void) | null = null;
+  requestCapture(cb: (canvas: HTMLCanvasElement) => void): void {
+    this.captureCb = cb;
+  }
 
   render(alpha = 1): void {
     const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
@@ -2006,6 +2012,11 @@ export class Scene3D {
     }
 
     this.composer.render();
+    if (this.captureCb) {
+      const cb = this.captureCb;
+      this.captureCb = null;
+      cb(this.canvas);
+    }
   }
 
   // --- special-teams place-kick view ----------------------------------------------------
