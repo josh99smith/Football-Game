@@ -326,7 +326,7 @@ const HIP_ROLL_AMP = 0.022;         // side-to-side weight-shift roll (rad), hal
 // plane so they stop floating/skating, via two-bone IK on each leg. DEFAULT OFF — it manipulates the
 // leg bones directly and is unverified on real hardware, so it must be enabled + tuned on-device
 // before shipping on. FOOT_PLANT_* are sole heights (world units) bounding the plant→swing fade.
-const FOOT_IK = false;              // master toggle — turn on to A/B foot IK on-device
+const FOOT_IK = true;               // master toggle — turn on to A/B foot IK on-device
 const FOOT_IK_WEIGHT = 1;           // 0..1 global blend of the ground correction
 const FOOT_PLANT_LO = 0.03;         // sole at/under this height ⇒ fully planted (corrected)
 const FOOT_PLANT_HI = 0.18;         // sole above this ⇒ swinging (left untouched)
