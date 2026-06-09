@@ -1844,6 +1844,13 @@ export class Scene3D {
   ): void {
     const fx = focusX * U;
     const fz = focusY * U;
+    if (this.superstarCam) {
+      // Superstar mode: a tighter, lower over-the-shoulder cam glued to one player (Madden-style),
+      // so a single guy fills the frame and you read the field from his eyes.
+      outPos.set(fx - dir * 5.0, 4.4, fz);
+      outLook.set(fx + dir * 6.5, 1.1, fz);
+      return;
+    }
     // Tight, low "over the shoulder" angle: big readable players + the action up close.
     outPos.set(fx - dir * 7.5, 6.0, fz);
     outLook.set(fx + dir * 10, 0.9, fz);
@@ -1976,6 +1983,8 @@ export class Scene3D {
   /** DEBUG free camera: when true, skip the follow-cam each frame so an external controller
    *  (OrbitControls) owns the camera position/orientation. */
   freeCam = false;
+  /** Superstar camera: tighter, lower chase cam locked on the controlled player (set per-frame). */
+  superstarCam = false;
   /** DEBUG pause: when true, advance the skinned animation by dt=0 so the pose freezes too (the sim
    *  is frozen by GameApp); the scene still renders so the frozen moment can be orbited. */
   paused = false;

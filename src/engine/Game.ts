@@ -23,6 +23,8 @@ export interface SessionConfig {
   difficulty: Match["difficulty"];
   quarterLength: number;
   muted: boolean;
+  /** Superstar camera: a tight, low chase cam locked on the controlled player. */
+  superstarCam: boolean;
 }
 
 /**
@@ -63,6 +65,7 @@ export class GameApp {
     difficulty: "pro",
     quarterLength: 90,
     muted: false,
+    superstarCam: false,
   };
 
   /** The live match (created when a game starts). */

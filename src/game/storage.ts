@@ -40,6 +40,8 @@ export interface PersistedSettings {
   quarterLength?: number;
   muted?: boolean;
   homeTeamIndex?: number;
+  /** Superstar camera: a tight, low chase cam locked on your controlled player. */
+  superstarCam?: boolean;
 }
 
 export function loadSettings(): PersistedSettings {

@@ -577,8 +577,16 @@ export class LivePlayState implements GameState {
     // The only exceptions are short cinematic beats that still frame the ball: the 1-on-1 battle,
     // the big-hit ragdoll close-up (clean tackle only — a fumble tracks the loose ball), and a
     // hold on the spot the play ended between downs.
+    // Superstar camera: lock the tight chase cam onto YOUR controlled player (not the ball) during
+    // live action, so you experience the play through one guy.
+    const superstar = this.app.config.superstarCam;
+    this.app.scene3d.superstarCam = superstar;
+    const starFocus = superstar && this.phase === "live" && this.controlled && !this.controlled.isDown
+      ? this.controlled.pos
+      : null;
+
     const ballFocus = this.ball.carrier ? this.ball.carrier.pos : this.ball.pos;
-    const focus = this.phase === "struggle" && this.struggleCarrier && this.struggleTackler
+    const focus = starFocus ? starFocus : this.phase === "struggle" && this.struggleCarrier && this.struggleTackler
       ? { x: (this.struggleCarrier.pos.x + this.struggleTackler.pos.x) / 2, y: (this.struggleCarrier.pos.y + this.struggleTackler.pos.y) / 2 }
       : busy && this.ragdollFocus && !this.looseBall
         ? this.ragdollFocus.pos // big-hit cinematic on the tackled ball-carrier
