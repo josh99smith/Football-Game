@@ -196,10 +196,17 @@ export class GameApp {
 
   private updateOrientationPrompt(): void {
     if (!this.rotatePrompt) return;
-    // Prompt to rotate only on small portrait screens (phones).
+    // Superstar mode is designed to be played in PORTRAIT (a tall view down the field through one
+    // player), so never nag to rotate while it's on. Otherwise prompt on small portrait phones.
     const portrait = this.r.height > this.r.width;
     const small = Math.min(this.r.width, this.r.height) < 520;
-    this.rotatePrompt.classList.toggle("hidden", !(portrait && small));
+    const allowPortrait = this.config.superstarCam;
+    this.rotatePrompt.classList.toggle("hidden", allowPortrait || !(portrait && small));
+  }
+
+  /** Re-evaluate the rotate nudge now (e.g. right after toggling the superstar/portrait setting). */
+  refreshOrientation(): void {
+    this.updateOrientationPrompt();
   }
 
   private tick = (dt: number): void => {

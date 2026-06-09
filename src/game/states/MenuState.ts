@@ -141,6 +141,7 @@ export class MenuState implements GameState {
       return;
     } else if (tappedIn(this.rects.cam, taps)) {
       c.superstarCam = !c.superstarCam;
+      this.app.refreshOrientation(); // superstar allows portrait — update the rotate nudge now
     } else {
       this.app.audio.uiTap();
       return;
