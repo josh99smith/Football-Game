@@ -27,6 +27,9 @@ export class DebugMode {
   private readonly app: GameApp;
   private readonly gui: GUI;
   private readonly controls: OrbitControls;
+  /** Full-screen transparent input layer that OrbitControls listens on while free-cam is active, so
+   *  camera control is fully isolated from the game's pointer handling on the canvas below. */
+  private readonly camLayer: HTMLDivElement;
   /** Live readouts (lil-gui `.listen()`s these object fields each frame). */
   private readonly out = { fps: 60, focus: "—", speed: 0, speed01: 0, gait: "—", accel: 0, turnRate: 0 };
   private fpsEMA = 60;
@@ -41,9 +44,17 @@ export class DebugMode {
     this.app = app;
     this.gui = new GUI({ title: "DEBUG — Animation Tuning" });
 
-    // Free camera: 1-finger rotate, 2-finger pinch-zoom + pan (mouse: drag rotate, wheel zoom,
-    // right-drag pan). Disabled until the user flips it on, so normal play input is untouched.
-    this.controls = new OrbitControls(app.scene3d.getCamera(), app.scene3d.canvas);
+    // Free camera. The game's Input owns pointer events on the canvas (it even pointer-captures),
+    // so OrbitControls listens on its OWN full-screen layer that we only mount while free-cam is on.
+    // touch-action:none lets it get multi-touch pinch/pan; it sits above the canvas but below the
+    // panel (so the Free camera toggle stays tappable to turn it back off).
+    this.camLayer = document.createElement("div");
+    this.camLayer.style.cssText =
+      "position:fixed;inset:0;z-index:5;touch-action:none;display:none;background:transparent;";
+    document.body.appendChild(this.camLayer);
+    this.gui.domElement.style.zIndex = "20"; // keep the panel above the camera layer
+    // 1-finger rotate, 2-finger pinch-zoom + pan (mouse: drag rotate, wheel zoom, right-drag pan).
+    this.controls = new OrbitControls(app.scene3d.getCamera(), this.camLayer);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
     this.controls.enabled = false;
@@ -172,6 +183,7 @@ export class DebugMode {
   private setFreeCam(on: boolean): void {
     this.app.scene3d.freeCam = on;
     this.controls.enabled = on;
+    this.camLayer.style.display = on ? "block" : "none";
     if (on) this.frameSubject();
   }
 
@@ -196,6 +208,7 @@ export class DebugMode {
   dispose(): void {
     this.app.scene3d.freeCam = false;
     this.controls.dispose();
+    this.camLayer.remove();
     this.gui.destroy();
   }
 }
