@@ -63,6 +63,9 @@ export class Input {
 
   private prevAction = false;
   private prevAction2 = false;
+  private prevQ = false;
+  private prevE = false;
+  private prevR = false;
   private lastActionDownTime = -1;
   private joystickPointerId: number | null = null;
   private pendingTaps: Vec2[] = [];
@@ -147,7 +150,11 @@ export class Input {
     const sdx = ptr.x - ptr.startX;
     const sdy = ptr.y - ptr.startY;
     const sdist = Math.hypot(sdx, sdy);
-    if (ptr.role === "tap" && dt < 300 && sdist > 36) {
+    // A swipe is a quick directional flick: a right-side flick (role "tap") OR a hard flick of the
+    // movement stick (role "joystick", needs a bigger throw so a normal nudge isn't a juke). Holding
+    // the stick to run has a long dt, so it never counts.
+    const minDist = ptr.role === "joystick" ? 52 : 34;
+    if ((ptr.role === "tap" || ptr.role === "joystick") && dt < 300 && sdist > minDist) {
       this.pendingSwipe = { x: sdx / sdist, y: sdy / sdist };
     }
     if (this.joystickPointerId === e.pointerId) {
@@ -238,6 +245,14 @@ export class Input {
 
     this.prevAction = actionDown;
     this.prevAction2 = action2Down;
+
+    // Keyboard carrier moves (desktop): Q/E juke left/right, R trucks forward — fired as swipes on
+    // the key's leading edge (screen-space, mapped to field by the game like a flick).
+    const q = this.keys.has("q"), eK = this.keys.has("e"), rK = this.keys.has("r");
+    if (q && !this.prevQ) this.pendingSwipe = { x: -1, y: 0 };
+    else if (eK && !this.prevE) this.pendingSwipe = { x: 1, y: 0 };
+    else if (rK && !this.prevR) this.pendingSwipe = { x: 0, y: -1 };
+    this.prevQ = q; this.prevE = eK; this.prevR = rK;
   }
 
   consumeTaps(): Vec2[] {
