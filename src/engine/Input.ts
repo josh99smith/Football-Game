@@ -147,7 +147,7 @@ export class Input {
     const sdx = ptr.x - ptr.startX;
     const sdy = ptr.y - ptr.startY;
     const sdist = Math.hypot(sdx, sdy);
-    if (ptr.role === "tap" && dt < 250 && sdist > 36) {
+    if (ptr.role === "tap" && dt < 300 && sdist > 36) {
       this.pendingSwipe = { x: sdx / sdist, y: sdy / sdist };
     }
     if (this.joystickPointerId === e.pointerId) {
