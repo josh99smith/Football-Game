@@ -94,6 +94,9 @@ export class PlayCallOverlay {
   render(r: Renderer, opts: { alpha?: number; title?: string } = {}): void {
     const a = opts.alpha ?? 1;
     if (a <= 0.01) return;
+    // Re-grid for the current size each frame so a rotation (e.g. into superstar portrait after the
+    // call already opened) reflows the cards. Cheap rect math; preserves the current page.
+    if (this.allPlays.length) { this.r = r; this.computePageCards(); }
     const ctx = r.ctx;
     const title = opts.title ?? (this.humanOffense ? "CALL IT — OFFENSE" : "CALL IT — DEFENSE");
 
