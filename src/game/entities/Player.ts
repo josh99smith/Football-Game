@@ -191,13 +191,19 @@ export class Player {
 
     if (this.state === "tackled") {
       this.tackledTimer -= dt;
-      // Decelerate any residual momentum while down.
-      this.vel.x = moveToward(this.vel.x, 0, this.accel * 2 * dt);
-      this.vel.y = moveToward(this.vel.y, 0, this.accel * 2 * dt);
-      this.pos.x += this.vel.x * dt;
-      this.pos.y += this.vel.y * dt;
-      this.updateLoco(dt);
-      return;
+      if (this.tackledTimer > 0) {
+        // Decelerate any residual momentum while down.
+        this.vel.x = moveToward(this.vel.x, 0, this.accel * 2 * dt);
+        this.vel.y = moveToward(this.vel.y, 0, this.accel * 2 * dt);
+        this.pos.x += this.vel.x * dt;
+        this.pos.y += this.vel.y * dt;
+        this.updateLoco(dt);
+        return;
+      }
+      // Timer elapsed: scramble back up and rejoin the play (clears loco.down so the avatar stands).
+      // The ball carrier's tackle has already ended the play by now, so this only revives the
+      // knocked-down (blocked / whiffed-tackle / gang-tackle) players who were stuck lying there.
+      this.state = "active";
     }
 
     if (this.state === "contact") {
