@@ -16,6 +16,7 @@ import { TouchControls, type ControlLabels } from "../../ui/TouchControls";
 import { FONT, COLORS } from "../../ui/Theme";
 import { drawPanel, drawButton, tappedIn, type Rect } from "../../ui/widgets";
 import { ReplaySystem } from "../ReplaySystem";
+import { FreeCamController } from "../../engine/FreeCamController";
 import { TackleEngine, type GangTackle } from "../TackleEngine";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
 import { TWO_POINT_POINTS } from "../Match";
@@ -172,6 +173,8 @@ export class LivePlayState implements GameState {
   private struggleHalf = 0;  // half the (tight) separation so the bodies actually touch
   /** Instant replay: records the play, then plays it back with scrub + zoom + ball-cam. */
   private readonly replay = new ReplaySystem();
+  /** Free-look camera for the replay (orbit/pan/zoom), created lazily on first replay. */
+  private freeCam: FreeCamController | null = null;
   private replayT = 0;          // current replay time (s)
   private replayLastIdx = -1;   // last sampled frame, to detect a scrub/rewind jump
   private replayPlaying = true;
@@ -1959,6 +1962,12 @@ export class LivePlayState implements GameState {
     this.replay.rewind();
     this.app.scene3d.resetAvatars(); // clear any ragdoll so the ghosts animate cleanly
     this.app.input.consumeTaps();
+    // Offer free-look orbit/pan/zoom on a user-opened replay (not the hands-off broadcast cut).
+    if (!auto) {
+      this.freeCam ??= new FreeCamController(this.app.scene3d.getCamera());
+      this.freeCam.onChange = (active) => { this.app.scene3d.freeCam = active; };
+      this.freeCam.show(true);
+    }
   }
 
   private exitReplay(): void {
@@ -1968,6 +1977,8 @@ export class LivePlayState implements GameState {
     this.phase = this.replayFrom;
     this.replayAuto = false;
     this.replaySpeed = 1;
+    this.freeCam?.show(false); // hides the toggle + deactivates free-look (restores follow cam)
+    this.app.scene3d.freeCam = false;
     this.app.scene3d.resetAvatars();
     this.app.input.consumeTaps();
   }
@@ -2037,7 +2048,9 @@ export class LivePlayState implements GameState {
       losX: this.startLosX, firstDownX: this.app.match.firstDownX,
       shakeX: 0, shakeY: 0, dt,
     });
-    this.app.scene3d.replayCam(fr.focusX, fr.focusY, this.dir, this.replayZoom);
+    // Free-look owns the camera while active; otherwise the auto ball-tracking replay cam runs.
+    if (this.freeCam?.active) this.freeCam.update();
+    else this.app.scene3d.replayCam(fr.focusX, fr.focusY, this.dir, this.replayZoom);
   }
 
   /** On a recorded tackle event during forward playback, fire the ragdoll on those avatars and
@@ -2623,6 +2636,10 @@ export class LivePlayState implements GameState {
 
   exit(): void {
     this.app.audio.stopCrowd();
+    // Tear down the replay free-look (removes its DOM overlay + toggle button) and restore the cam.
+    this.freeCam?.dispose();
+    this.freeCam = null;
+    this.app.scene3d.freeCam = false;
   }
 }
 
