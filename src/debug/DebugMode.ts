@@ -105,6 +105,15 @@ export class DebugMode {
 
     // Dump current tuning so it can be pasted back to share / persist.
     this.gui.add({ copy: () => this.copyTuning() }, "copy").name("Copy tuning JSON");
+
+    // Start COLLAPSED so the panel is just a small title bar and never covers the on-screen game
+    // controls (hike / action / turbo on the right). Tap the title to expand it when tuning, then
+    // collapse again to play. Cap its height so an expanded panel scrolls instead of running off
+    // screen over the bottom controls.
+    this.gui.close();
+    const el = this.gui.domElement;
+    el.style.maxHeight = "82vh";
+    el.style.overflowY = "auto";
   }
 
   /** Per-frame: refresh readouts from the focused player of the active state. */
