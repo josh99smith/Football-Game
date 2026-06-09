@@ -26,10 +26,10 @@ const MAX_PLAYERS = 14;
 
 // --- physics ragdoll tackle tuning (mirrors the hybrid sandbox that proved it out) ---
 const RAG_SETTLE_RESIDUAL = 0.8; // total body speed below which it counts as "calm"
-const RAG_MIN_FALL = 0.5;        // don't check for calm until the fall is underway (s)
-const RAG_CALM_NEEDED = 0.7;     // stay calm this long (incl. a beat lying there) before standing
-const RAG_MAX_FALL = 6;          // safety: stand up even if it never fully settles (s)
-const RAG_GETUP_DUR = 1.1;       // seconds to rise to standing
+const RAG_MIN_FALL = 0.22;       // don't check for calm until the fall is underway (s)
+const RAG_CALM_NEEDED = 0.25;    // brief beat on the ground before scrambling up (snappy, esp. mid-play)
+const RAG_MAX_FALL = 2;          // safety: stand up even if it never fully settles (s) — no lying around
+const RAG_GETUP_DUR = 0.55;      // seconds to rise to standing (was 1.1; pop up fast to rejoin the play)
 const _rgp = new THREE.Vector3();
 const _rhip = new THREE.Vector3();
 const _handPos = new THREE.Vector3();
