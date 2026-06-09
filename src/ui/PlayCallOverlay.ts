@@ -42,26 +42,36 @@ export class PlayCallOverlay {
     this.computePageCards();
   }
 
-  /** Lay out the (up to 4) cards for the current page, in one row, plus the page-nav regions. */
+  /** Lay out the (up to 4) cards for the current page, plus the page-nav regions. Landscape uses one
+   *  row; PORTRAIT (superstar mode) stacks them in a 2-column grid so each card stays big + readable. */
   private computePageCards(): void {
     const r = this.r;
     const start = this.page * PER_PAGE;
     const items = this.allPlays.slice(start, start + PER_PAGE);
-    const cols = Math.max(1, items.length);
+    const portrait = r.height > r.width;
     const gap = 12;
-    const cardW = Math.min(168, (r.width - 36 - gap * (cols - 1)) / cols);
-    const cardH = Math.min(168, r.height * 0.34);
+    const cols = portrait ? Math.min(2, items.length) : Math.max(1, items.length);
+    const rows = Math.max(1, Math.ceil(items.length / cols));
+    const cardW = Math.min(portrait ? 220 : 168, (r.width - 36 - gap * (cols - 1)) / cols);
+    const availH = (portrait ? 0.6 : 0.34) * r.height; // vertical room the card grid may use
+    const cardH = Math.min(168, (availH - gap * (rows - 1)) / rows);
     const totalW = cols * cardW + (cols - 1) * gap;
+    const totalH = rows * cardH + (rows - 1) * gap;
     const startX = (r.width - totalW) / 2;
     const navH = this.pages > 1 ? 46 : 14;
-    const startY = r.height - cardH - navH - 18;
+    const startY = r.height - totalH - navH - 18;
 
     this.cards = items.map((p, i) => {
-      const rect: Rect = { x: startX + i * (cardW + gap), y: startY, w: cardW, h: cardH };
+      const rect: Rect = {
+        x: startX + (i % cols) * (cardW + gap),
+        y: startY + Math.floor(i / cols) * (cardH + gap),
+        w: cardW,
+        h: cardH,
+      };
       return this.humanOffense ? { rect, off: p as OffensePlay } : { rect, def: p as DefensePlay };
     });
 
-    const navY = startY + cardH + 8;
+    const navY = startY + totalH + 8;
     this.dotsY = navY + 18;
     const bw = 92;
     this.prevRect = { x: startX, y: navY, w: bw, h: 34 };
