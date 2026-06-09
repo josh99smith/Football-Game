@@ -38,7 +38,6 @@ export class MenuState implements GameState {
     if (s.difficulty) app.config.difficulty = s.difficulty;
     if (typeof s.muted === "boolean") app.config.muted = s.muted;
     if (typeof s.homeTeamIndex === "number") app.config.homeTeamIndex = s.homeTeamIndex;
-    if (typeof s.superstarCam === "boolean") app.config.superstarCam = s.superstarCam;
   }
 
   enter(): void {
@@ -109,8 +108,6 @@ export class MenuState implements GameState {
       practice: { x: cx - playW / 2 + playW * 0.6 + 5, y: playY, w: playW * 0.4 - 5, h: playH },
       // Small DEBUG entry, tucked in the bottom-left safe area (dev/tuning sandbox).
       debug: { x: 10, y: H - 34 - clamp(H * 0.02, 4, 12), w: 84, h: 34 },
-      // Camera toggle (broadcast vs superstar), bottom-right.
-      cam: { x: W - 130, y: H - 34 - clamp(H * 0.02, 4, 12), w: 120, h: 34 },
     };
   }
 
@@ -139,16 +136,13 @@ export class MenuState implements GameState {
     } else if (tappedIn(this.rects.debug, taps)) {
       this.startDebug();
       return;
-    } else if (tappedIn(this.rects.cam, taps)) {
-      c.superstarCam = !c.superstarCam;
-      this.app.refreshOrientation(); // superstar allows portrait — update the rotate nudge now
     } else {
       this.app.audio.uiTap();
       return;
     }
     if (c.awayTeamIndex === c.homeTeamIndex) c.awayTeamIndex = wrap(c.awayTeamIndex + 1);
     this.app.audio.uiTap();
-    saveSettings({ difficulty: c.difficulty, muted: c.muted, homeTeamIndex: c.homeTeamIndex, superstarCam: c.superstarCam });
+    saveSettings({ difficulty: c.difficulty, muted: c.muted, homeTeamIndex: c.homeTeamIndex });
   }
 
   private startGame(): void {
@@ -238,9 +232,6 @@ export class MenuState implements GameState {
       size: clamp(this.rects.practice.h * 0.26, 12, 18),
     });
     drawButton(r, this.rects.debug, "DEBUG", { fill: COLORS.steel, size: 13 });
-    drawButton(r, this.rects.cam, c.superstarCam ? "CAM: SUPERSTAR" : "CAM: BROADCAST", {
-      fill: c.superstarCam ? COLORS.blood : COLORS.concrete, size: 12,
-    });
 
     // Build stamp: version + last-updated date/time (bumped automatically on every build/push).
     ctx.save();

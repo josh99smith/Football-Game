@@ -577,9 +577,10 @@ export class LivePlayState implements GameState {
     // The only exceptions are short cinematic beats that still frame the ball: the 1-on-1 battle,
     // the big-hit ragdoll close-up (clean tackle only — a fumble tracks the loose ball), and a
     // hold on the spot the play ended between downs.
-    // Superstar camera: lock the tight chase cam onto YOUR controlled player (not the ball) during
-    // live action, so you experience the play through one guy.
-    const superstar = this.app.config.superstarCam;
+    // Superstar camera is driven by phone orientation: hold the phone PORTRAIT to lock the tight
+    // chase cam onto YOUR controlled player (experience the play through one guy); LANDSCAPE is the
+    // normal broadcast view. Evaluated live, so rotating mid-play switches modes.
+    const superstar = this.app.r.height > this.app.r.width;
     this.app.scene3d.superstarCam = superstar;
     const starFocus = superstar && this.phase === "live" && this.controlled && !this.controlled.isDown
       ? this.controlled.pos

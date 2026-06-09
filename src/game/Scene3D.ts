@@ -1847,8 +1847,8 @@ export class Scene3D {
     if (this.superstarCam) {
       // Superstar mode: a tighter, lower over-the-shoulder cam glued to one player (Madden-style),
       // so a single guy fills the frame and you read the field from his eyes.
-      outPos.set(fx - dir * 5.0, 4.4, fz);
-      outLook.set(fx + dir * 6.5, 1.1, fz);
+      outPos.set(fx - dir * 6.4, 5.3, fz);
+      outLook.set(fx + dir * 8.5, 1.0, fz);
       return;
     }
     // Tight, low "over the shoulder" angle: big readable players + the action up close.

@@ -23,8 +23,6 @@ export interface SessionConfig {
   difficulty: Match["difficulty"];
   quarterLength: number;
   muted: boolean;
-  /** Superstar camera: a tight, low chase cam locked on the controlled player. */
-  superstarCam: boolean;
 }
 
 /**
@@ -65,7 +63,6 @@ export class GameApp {
     difficulty: "pro",
     quarterLength: 90,
     muted: false,
-    superstarCam: false,
   };
 
   /** The live match (created when a game starts). */
@@ -196,17 +193,9 @@ export class GameApp {
 
   private updateOrientationPrompt(): void {
     if (!this.rotatePrompt) return;
-    // Superstar mode is designed to be played in PORTRAIT (a tall view down the field through one
-    // player), so never nag to rotate while it's on. Otherwise prompt on small portrait phones.
-    const portrait = this.r.height > this.r.width;
-    const small = Math.min(this.r.width, this.r.height) < 520;
-    const allowPortrait = this.config.superstarCam;
-    this.rotatePrompt.classList.toggle("hidden", allowPortrait || !(portrait && small));
-  }
-
-  /** Re-evaluate the rotate nudge now (e.g. right after toggling the superstar/portrait setting). */
-  refreshOrientation(): void {
-    this.updateOrientationPrompt();
+    // Both orientations are now playable — LANDSCAPE is the broadcast view, PORTRAIT is the tight
+    // superstar cam (the orientation IS the mode) — so never nag to rotate.
+    this.rotatePrompt.classList.add("hidden");
   }
 
   private tick = (dt: number): void => {
