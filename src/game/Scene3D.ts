@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { solveTwoBone } from "./anim/FootIK";
+import { ANIM } from "./anim/tuning";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
@@ -309,27 +310,8 @@ const BACK_PLANT_K = 0.0194; // backpedal clip ~3.2 yd/s
 const STRAFE_PLANT_K = 0.0163; // strafe clip ~3.8 yd/s
 const IDLE_OUT = 0.06; // speed01 below this is idle
 const MOVE_FULL = 0.18; // speed01 above this is fully in locomotion (idle faded out)
-// --- acceleration-based weight lean (procedural locomotion, Stage 1) -----------------------------
-// Decompose a player's low-passed acceleration into fore/aft + lateral and lean the body into it:
-// decelerating ⇒ lean back, accelerating ⇒ lean in, hard cut ⇒ bank. Sells weight & momentum.
-const ACCEL_LEAN = true;            // master toggle (A/B); off ⇒ exactly the prior turn-rate lean
-const LEAN_ACCEL_GAIN = 0.00012;    // rad per px/s^2 of fore/aft accel
-const LEAN_PITCH_MAX = 0.2;         // clamp on the accel pitch contribution
-const BANK_ACCEL_GAIN = 0.00010;    // rad per px/s^2 of lateral accel (added to the turn bank)
-// --- procedural hip motion (Stage 3): a speed-scaled vertical bob + a half-frequency weight-shift
-// roll, so a running body rises/falls and rocks side-to-side over the planted foot. Subtle so it
-// doesn't fight the clip; on the model group, never bones.
-const PROC_HIP = true;
-const HIP_BOB_AMP = 0.032;          // vertical hip rise/fall (world units) at full forward sprint
-const HIP_ROLL_AMP = 0.022;         // side-to-side weight-shift roll (rad), half the bob frequency
-// --- foot IK (Stage 2): after the mixer poses the skeleton, pull planted feet down onto the ground
-// plane so they stop floating/skating, via two-bone IK on each leg. DEFAULT OFF — it manipulates the
-// leg bones directly and is unverified on real hardware, so it must be enabled + tuned on-device
-// before shipping on. FOOT_PLANT_* are sole heights (world units) bounding the plant→swing fade.
-const FOOT_IK = true;               // master toggle — turn on to A/B foot IK on-device
-const FOOT_IK_WEIGHT = 1;           // 0..1 global blend of the ground correction
-const FOOT_PLANT_LO = 0.03;         // sole at/under this height ⇒ fully planted (corrected)
-const FOOT_PLANT_HI = 0.18;         // sole above this ⇒ swinging (left untouched)
+// Procedural-locomotion tuning (accel lean, hip motion, foot IK) lives in one mutable object so the
+// in-game DEBUG panel can adjust it live — see src/game/anim/tuning.ts. Read as ANIM.* below.
 /** Fraction into the stance clip held for a neutral/idle player: a relaxed UPRIGHT stand
  *  (the clip ends in a deep 3-point crouch, which looks wrong for players just milling). */
 const IDLE_POSE = 0.13;
@@ -768,10 +750,10 @@ class FbxAvatar implements Avatar {
       leg.ankle.getWorldPosition(_ikAnkle);
       let soleY = _ikAnkle.y;
       if (leg.toe) { leg.toe.getWorldPosition(_ikToe); soleY = Math.min(soleY, _ikToe.y); }
-      const plant = 1 - smoothstep(FOOT_PLANT_LO, FOOT_PLANT_HI, soleY);
+      const plant = 1 - smoothstep(ANIM.FOOT_PLANT_LO, ANIM.FOOT_PLANT_HI, soleY);
       if (plant <= 0.001) continue;
       _ikTarget.copy(_ikAnkle);
-      _ikTarget.y = _ikAnkle.y - soleY * plant * FOOT_IK_WEIGHT; // drop so the sole reaches y=0
+      _ikTarget.y = _ikAnkle.y - soleY * plant * ANIM.FOOT_IK_WEIGHT; // drop so the sole reaches y=0
       solveTwoBone(_ikHip, _ikKnee, _ikTarget, leg.l1, leg.l2, _ikKneeOut);
       _ikDir.subVectors(_ikKneeOut, _ikHip).normalize();
       this.aimBone(leg.hip, leg.knee, _ikDir, 1);
@@ -992,7 +974,7 @@ class FbxAvatar implements Avatar {
     }
     // Foot IK runs on the fully-posed skeleton (after the mixer + throw). Suppressed during one-shot
     // overlays (tackle/juke/spin) where the legs do non-locomotion things. Default-off (see FOOT_IK).
-    if (FOOT_IK && !this.oneShot) this.applyFootIK();
+    if (ANIM.FOOT_IK && !this.oneShot) this.applyFootIK();
     if (this.nub.visible) {
       const hand = this.bone("RightHand") ?? this.bone("RightForeArm");
       if (hand) {
@@ -1113,22 +1095,22 @@ class FbxAvatar implements Avatar {
       // juke lean). Smoothed so it carves in rather than snapping, but quick enough to feel sharp.
       // A gentle breathing bob when idle keeps a standing player from reading as a frozen statue.
       const breathe = Math.sin(this.phase * 2.1 + this.breatheOffset) * 0.012 * (1 - moving01);
-      g.position.y = (PROC_HIP
-        ? Math.abs(Math.sin(this.phase * 7)) * HIP_BOB_AMP * lo.speed01 * fwd
+      g.position.y = (ANIM.PROC_HIP
+        ? Math.abs(Math.sin(this.phase * 7)) * ANIM.HIP_BOB_AMP * lo.speed01 * fwd
         : Math.abs(Math.sin(this.phase * 7)) * 0.03 * Math.min(1, lo.speed / 120) * fwd) + breathe;
       // Acceleration → weight lean: project the low-passed accel onto facing (fore/aft) and the
       // perpendicular (lateral). Decel ⇒ lean back; accel ⇒ lean in; lateral accel ⇒ extra bank.
       const ch = Math.cos(lo.heading), sh = Math.sin(lo.heading);
-      const aFwd = ACCEL_LEAN ? lo.accelX * ch + lo.accelY * sh : 0;
-      const aLat = ACCEL_LEAN ? -lo.accelX * sh + lo.accelY * ch : 0;
-      const accelPitch = clamp(aFwd * LEAN_ACCEL_GAIN, -LEAN_PITCH_MAX, LEAN_PITCH_MAX);
-      const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.42 + aLat * BANK_ACCEL_GAIN, -0.62, 0.62);
+      const aFwd = ANIM.ACCEL_LEAN ? lo.accelX * ch + lo.accelY * sh : 0;
+      const aLat = ANIM.ACCEL_LEAN ? -lo.accelX * sh + lo.accelY * ch : 0;
+      const accelPitch = clamp(aFwd * ANIM.LEAN_ACCEL_GAIN, -ANIM.LEAN_PITCH_MAX, ANIM.LEAN_PITCH_MAX);
+      const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.42 + aLat * ANIM.BANK_ACCEL_GAIN, -0.62, 0.62);
       this.bankSmooth += (bankTarget - this.bankSmooth) * Math.min(1, dt * 9);
       // Forward lean while running ahead (more at speed), slight backward lean when backpedaling
       // (added on top of the fall pitch, which is ~0 while upright), plus the accel weight pitch.
       this.lean.rotation.x += ((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01 + accelPitch;
       // Half-frequency weight-shift roll (once per stride) on top of the turn/accel bank.
-      const hipRoll = PROC_HIP ? Math.sin(this.phase * 3.5) * HIP_ROLL_AMP * moving01 * fwd : 0;
+      const hipRoll = ANIM.PROC_HIP ? Math.sin(this.phase * 3.5) * ANIM.HIP_ROLL_AMP * moving01 * fwd : 0;
       this.lean.rotation.z = this.bankSmooth + hipRoll;
       this.lean.rotation.y = 0;
       this.phase += dt;

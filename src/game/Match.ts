@@ -91,6 +91,10 @@ export class Match {
    *  scoring/turnover/4th-down ceremonies are skipped so you can rep every move on both sides. */
   practice = false;
 
+  /** Debug mode: a practice sandbox with the in-game DEBUG overlay active (free camera, live
+   *  animation tuning, screenshot / contact-sheet capture). Set from the menu's DEBUG button. */
+  debugMode = false;
+
   /** Set while a two-point conversion attempt is the active "play" (a goal-line down from the 2). */
   twoPointActive = false;
 

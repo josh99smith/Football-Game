@@ -104,6 +104,8 @@ export class MenuState implements GameState {
       // Play row split into the primary PLAY button + a PRACTICE button beside it.
       play: { x: cx - playW / 2, y: playY, w: playW * 0.6 - 5, h: playH },
       practice: { x: cx - playW / 2 + playW * 0.6 + 5, y: playY, w: playW * 0.4 - 5, h: playH },
+      // Small DEBUG entry, tucked in the bottom-left safe area (dev/tuning sandbox).
+      debug: { x: 10, y: H - 34 - clamp(H * 0.02, 4, 12), w: 84, h: 34 },
     };
   }
 
@@ -129,6 +131,9 @@ export class MenuState implements GameState {
     } else if (tappedIn(this.rects.practice, taps)) {
       this.startPractice();
       return;
+    } else if (tappedIn(this.rects.debug, taps)) {
+      this.startDebug();
+      return;
     } else {
       this.app.audio.uiTap();
       return;
@@ -150,6 +155,16 @@ export class MenuState implements GameState {
     this.app.audio.uiConfirm();
     this.app.newMatch();
     this.app.match.beginPractice();
+    this.app.setState(new PlaySelectState(this.app));
+  }
+
+  /** Tuning sandbox: practice, plus the in-game DEBUG overlay (free camera, live animation tuning,
+   *  screenshot / contact-sheet capture) so motion can be inspected and tuned on-device. */
+  private startDebug(): void {
+    this.app.audio.uiConfirm();
+    this.app.newMatch();
+    this.app.match.beginPractice();
+    this.app.match.debugMode = true;
     this.app.setState(new PlaySelectState(this.app));
   }
 
@@ -214,6 +229,7 @@ export class MenuState implements GameState {
       fill: COLORS.concrete,
       size: clamp(this.rects.practice.h * 0.26, 12, 18),
     });
+    drawButton(r, this.rects.debug, "DEBUG", { fill: COLORS.steel, size: 13 });
 
     // Build stamp: version + last-updated date/time (bumped automatically on every build/push).
     ctx.save();
