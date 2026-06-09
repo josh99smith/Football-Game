@@ -102,8 +102,17 @@ export class ReplaySystem {
    * Scene3D.sync needs, plus the focus point (the ball, or its carrier when held).
    */
   sample(t: number): { players: Player[]; ball: Ball; colorFor: ColorFor; focusX: number; focusY: number } {
-    const i = Math.max(0, Math.min(this.frames.length - 1, Math.round(t * 60)));
+    const n = this.frames.length;
+    // Continuous frame position; interpolate between the two bracketing recorded frames so playback
+    // is smooth at any speed (esp. slow-mo, where Math.round used to repeat a frame and stutter).
+    const ft = Math.max(0, Math.min(n - 1, t * 60));
+    const i = Math.round(ft); // discrete frame: drives one-shot events + the per-player flags
+    const i0 = Math.floor(ft);
+    const i1 = Math.min(i0 + 1, n - 1);
+    const a = ft - i0; // 0..1 sub-frame blend
     const f = this.frames[i];
+    const f0 = this.frames[i0];
+    const f1 = this.frames[i1];
     // Fire one-shot animations only when playing FORWARD (not when paused or scrubbing); scan the
     // skipped frames so an event isn't missed if a couple of frames were stepped over.
     const forward = i > this.lastIndex && i - this.lastIndex <= 5;
@@ -111,9 +120,15 @@ export class ReplaySystem {
     for (let k = 0; k < f.p.length; k++) {
       const g = this.ghosts[k];
       const s = f.p[k];
-      g.pos.x = s.x;
-      g.pos.y = s.y;
+      const p0 = f0.p[k];
+      const p1 = f1.p[k];
+      // Interpolate position + the continuous loco fields the avatar reads; take the rest discretely.
+      g.pos.x = p0.x + (p1.x - p0.x) * a;
+      g.pos.y = p0.y + (p1.y - p0.y) * a;
       Object.assign(g.loco, s.loco);
+      g.loco.heading = lerpAngle(p0.loco.heading, p1.loco.heading, a);
+      g.loco.speed = p0.loco.speed + (p1.loco.speed - p0.loco.speed) * a;
+      g.loco.speed01 = p0.loco.speed01 + (p1.loco.speed01 - p0.loco.speed01) * a;
       g.hasBall = s.hasBall;
       g.controlled = s.controlled;
       g.isDown = s.isDown;
@@ -124,26 +139,28 @@ export class ReplaySystem {
       g.color = { jersey: s.jersey, trim: s.trim, accent: s.accent, helmet: s.helmet, onFire: s.onFire, defense: s.defense };
       let anim: Player["animEvent"] = null;
       if (forward) {
-        for (let j = i; j > this.lastIndex; j--) { const a = this.frames[j].p[k].anim; if (a) { anim = a; break; } }
+        for (let j = i; j > this.lastIndex; j--) { const a2 = this.frames[j].p[k].anim; if (a2) { anim = a2; break; } }
       }
       g.animEvent = anim;
     }
     this.lastIndex = i;
     const gb = this.ghostBall;
+    const b0 = f0.b;
+    const b1 = f1.b;
     gb.state = f.b.state;
-    gb.pos.x = f.b.x;
-    gb.pos.y = f.b.y;
-    gb.z = f.b.z;
-    gb.vel.x = f.b.vx;
-    gb.vel.y = f.b.vy;
-    gb.vz = f.b.vvel;
-    gb.spin = f.b.spin;
+    gb.pos.x = b0.x + (b1.x - b0.x) * a;
+    gb.pos.y = b0.y + (b1.y - b0.y) * a;
+    gb.z = b0.z + (b1.z - b0.z) * a;
+    gb.vel.x = b0.vx + (b1.vx - b0.vx) * a;
+    gb.vel.y = b0.vy + (b1.vy - b0.vy) * a;
+    gb.vz = b0.vvel + (b1.vvel - b0.vvel) * a;
+    gb.spin = b0.spin + (b1.spin - b0.spin) * a;
 
-    let fx = f.b.x;
-    let fy = f.b.y;
+    let fx = gb.pos.x;
+    let fy = gb.pos.y;
     if (f.b.state === "held") {
-      const carrier = f.p.find((s) => s.hasBall);
-      if (carrier) { fx = carrier.x; fy = carrier.y; }
+      const ci = f.p.findIndex((s) => s.hasBall);
+      if (ci >= 0) { fx = this.ghosts[ci].pos.x; fy = this.ghosts[ci].pos.y; }
     }
     const players = this.ghosts.slice(0, f.p.length) as unknown as Player[];
     return {
@@ -179,6 +196,14 @@ interface GhostBall {
   spin: number;
   carrier: null;
   get verticalVel(): number;
+}
+
+/** Shortest-path angle interpolation (radians), so heading blends don't spin the long way round. */
+function lerpAngle(a: number, b: number, t: number): number {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
 }
 
 function makeGhostPlayer(): GhostPlayer {
