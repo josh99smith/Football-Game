@@ -5,19 +5,14 @@ import { COLORS, FONT, hazardStripe } from "../../ui/Theme";
 import { FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD } from "../Field";
 import { KickoffState } from "./KickoffState";
 
-const DUR = 4.0; // length of the pre-game flythrough before the auto-kickoff
 const MID_X = FIELD_LENGTH / PX_PER_YARD / 2; // midfield, in world units (yards)
 const MID_Z = FIELD_WIDTH / PX_PER_YARD / 2;
 
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
 /**
- * Pre-game broadcast intro: a cinematic camera cranes down over the live 3D stadium toward the
- * branded midfield while the matchup (crests, "VS", clubs) fades up as a lower-third overlay. A tap
- * (or the timer) blows the whistle and starts the opening kickoff — the 3D scene is auto-hidden on
- * the state swap, so the kickoff card takes over cleanly.
+ * Pre-game broadcast intro: a cinematic camera orbits the live 3D stadium in a continuous loop over
+ * the branded midfield while the matchup (crests, "VS", clubs) fades up as a lower-third overlay.
+ * The pan loops indefinitely until the player taps to blow the whistle and start the opening kickoff
+ * — the 3D scene is auto-hidden on the state swap, so the kickoff card takes over cleanly.
  */
 export class MatchupIntroState implements GameState {
   private readonly app: GameApp;
@@ -40,15 +35,19 @@ export class MatchupIntroState implements GameState {
     this.app.scene3d.dollyCam(...c.p, ...c.l);
   }
 
-  /** Crane-down, push-in flythrough toward the branded midfield, with a touch of lateral drift. */
+  /** A continuously orbiting broadcast pan: the camera circles the stadium just outside the
+   *  sidelines at a cinematic height, always looking at the branded midfield. It never ends — it
+   *  loops until the player taps to kick off. */
   private camAt(t: number): { p: [number, number, number]; l: [number, number, number] } {
-    const k = Math.min(1, t / DUR);
-    const e = k * k * (3 - 2 * k); // smoothstep
-    const px = MID_X + Math.sin(t * 0.5) * 12;       // gentle parallax drift
-    const py = lerp(54, 13, e);                      // crane down
-    const pz = lerp(-46, -12, e);                    // push in from beyond the sideline
-    const lx = MID_X + Math.sin(t * 0.35) * 5;
-    return { p: [px, py, pz], l: [lx, 2, MID_Z] };
+    const ang = t * 0.34; // ~18s per lap around the field
+    const rx = 58; // elliptical orbit hugging the long field axis
+    const rz = 30; // ...and sweeping just beyond each sideline
+    const px = MID_X + Math.cos(ang) * rx;
+    const pz = MID_Z + Math.sin(ang) * rz;
+    const py = 24 + (1 + Math.sin(t * 0.25)) * 8; // gentle 24..40 rise/fall
+    const lx = MID_X + Math.sin(t * 0.2) * 4; // look target drifts subtly around midfield
+    const lz = MID_Z + Math.cos(t * 0.16) * 3;
+    return { p: [px, py, pz], l: [lx, 3, lz] };
   }
 
   update(dt: number): void {
@@ -56,8 +55,9 @@ export class MatchupIntroState implements GameState {
     const c = this.camAt(this.t);
     this.app.scene3d.dollyCam(...c.p, ...c.l);
 
+    // The pan loops indefinitely; only a tap (after a short grace) blows the whistle and kicks off.
     const tapped = this.app.input.consumeTaps().length > 0;
-    if (!this.done && (this.t > DUR || (this.t > 0.6 && tapped))) {
+    if (!this.done && this.t > 0.6 && tapped) {
       this.done = true;
       this.app.audio.whistle();
       this.app.setState(new KickoffState(this.app, "HOME"));
