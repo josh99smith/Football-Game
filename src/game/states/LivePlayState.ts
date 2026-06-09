@@ -1966,6 +1966,7 @@ export class LivePlayState implements GameState {
     if (!auto) {
       this.freeCam ??= new FreeCamController(this.app.scene3d.getCamera());
       this.freeCam.onChange = (active) => { this.app.scene3d.freeCam = active; };
+      this.freeCam.reset(); // fresh framing for this play (don't reuse a prior play's locked pose)
       this.freeCam.show(true);
     }
   }

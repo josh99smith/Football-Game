@@ -17,6 +17,11 @@ export class FreeCamController {
   private readonly layer: HTMLDivElement;
   private readonly btn: HTMLButtonElement;
   private readonly fwd = new THREE.Vector3();
+  // Remembered camera pose, so re-entering free-look returns to the user's picked spot (locked)
+  // instead of snapping back to wherever the auto camera has since moved.
+  private readonly savedPos = new THREE.Vector3();
+  private readonly savedTarget = new THREE.Vector3();
+  private hasSaved = false;
 
   constructor(camera: THREE.Camera) {
     this.camera = camera;
@@ -52,12 +57,28 @@ export class FreeCamController {
     this.layer.style.display = on ? "block" : "none";
     this.btn.textContent = on ? "EXIT CAM" : "FREE CAM";
     if (on) {
-      // Center the orbit on whatever the camera is currently looking at.
-      this.camera.getWorldDirection(this.fwd);
-      this.controls.target.copy(this.camera.position).addScaledVector(this.fwd, 16);
+      if (this.hasSaved) {
+        // Lock back onto the user's last picked position/angle (don't snap to the auto cam).
+        this.camera.position.copy(this.savedPos);
+        this.controls.target.copy(this.savedTarget);
+      } else {
+        // First time this replay: center the orbit on whatever the camera is currently looking at.
+        this.camera.getWorldDirection(this.fwd);
+        this.controls.target.copy(this.camera.position).addScaledVector(this.fwd, 16);
+      }
       this.controls.update();
+    } else {
+      // Remember where the user left the camera so the next FREE CAM returns to it.
+      this.savedPos.copy(this.camera.position);
+      this.savedTarget.copy(this.controls.target);
+      this.hasSaved = true;
     }
     this.onChange?.(on);
+  }
+
+  /** Forget the saved pose so the next activation frames from the live camera (a fresh replay). */
+  reset(): void {
+    this.hasSaved = false;
   }
 
   /** Advance damping each frame while active. */
