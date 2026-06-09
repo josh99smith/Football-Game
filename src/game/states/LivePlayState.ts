@@ -233,7 +233,7 @@ export class LivePlayState implements GameState {
     // place (so the 3D field keeps living behind the broadcast-style call), instead of bouncing
     // out to a separate play-select screen.
     this.app.scene3d.setVisible(true);
-    this.app.input.setLayout(this.controls.computeLayout(this.app.r));
+    this.app.input.setLayout(this.controls.computeLayout(this.app.r, this.app.match.debugMode));
     this.app.audio.startCrowd();
     this.twoPoint = this.app.match.twoPointActive; // a goal-line two-point try
     this.twoPointTeam = this.app.match.possession;
@@ -2275,7 +2275,7 @@ export class LivePlayState implements GameState {
         r.text("PRACTICE", r.width / 2, this.practiceExitRect.y + 6, { size: 13, align: "center", color: COLORS.hazard, font: FONT.ui });
       }
     } else {
-      app.input.setLayout(this.controls.computeLayout(r));
+      app.input.setLayout(this.controls.computeLayout(r, app.match.debugMode));
       this.controls.render(r, app.input, this.controlLabels());
     }
 

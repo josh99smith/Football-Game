@@ -23,7 +23,7 @@ export class TouchControls {
     joystickZoneRight: 0,
   };
 
-  computeLayout(r: Renderer): ControlLayout {
+  computeLayout(r: Renderer, debug = false): ControlLayout {
     const margin = 24;
     // Pad the edge margins by the display safe-area insets so the thumb clusters never sit under a
     // notch or the home indicator on phones (landscape: side notch + bottom home bar).
@@ -32,6 +32,23 @@ export class TouchControls {
     const mB = margin + r.safe.bottom;
     const big = Math.max(40, Math.min(58, r.height * 0.1));
     const small = big * 0.9;
+    const jr = 56;
+    const jx = mL + 64;
+    const jy = r.height - mB - 64;
+    if (debug) {
+      // DEBUG layout: stack ACTION + TURBO on the LEFT, directly above the joystick, so the whole
+      // game can be driven with the left thumb while the right hand works the camera / tuning panel.
+      const ay = jy - jr - 12 - big;
+      const ty = ay - big - 10 - small;
+      this.layout = {
+        action: { x: jx, y: ay, r: big },
+        turbo: { x: jx, y: ty, r: small },
+        action2: { x: 0, y: 0, r: 0 },
+        joystick: { x: jx, y: jy, r: jr },
+        joystickZoneRight: r.width * 0.5,
+      };
+      return this.layout;
+    }
     // Right-hand cluster: the big ACTION button sits in the corner (primary thumb
     // position) with TURBO up and to its left.
     const ax = r.width - mR - big;
@@ -40,7 +57,7 @@ export class TouchControls {
       action: { x: ax, y: ay, r: big },
       turbo: { x: ax - big * 1.7, y: ay - big * 0.5, r: small },
       action2: { x: 0, y: 0, r: 0 }, // unused in the two-button setup (never hit-tests)
-      joystick: { x: mL + 64, y: r.height - mB - 64, r: 56 },
+      joystick: { x: jx, y: jy, r: jr },
       joystickZoneRight: r.width * 0.5,
     };
     return this.layout;
