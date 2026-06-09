@@ -1973,6 +1973,18 @@ export class Scene3D {
     this.sun.target.position.set(fx, 0, fz);
   }
 
+  /** DEBUG free camera: when true, skip the follow-cam each frame so an external controller
+   *  (OrbitControls) owns the camera position/orientation. */
+  freeCam = false;
+  /** The 3D field camera, exposed for the DEBUG free-camera controller. */
+  getCamera(): THREE.PerspectiveCamera {
+    return this.camera;
+  }
+  /** Field-pixel (sim) coordinates → world-space point on the field, for framing the debug camera. */
+  fieldToWorld(px: number, py: number, out: THREE.Vector3): THREE.Vector3 {
+    return out.set(px * U, 1, py * U);
+  }
+
   render(alpha = 1): void {
     const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
     // Real-time delta for frame-rate-independent ambient motion (clamped to skip stalls/tab-outs).
@@ -1986,10 +1998,12 @@ export class Scene3D {
     if (this.ballGroup.visible && this.ballPrimed) {
       this.ballGroup.position.lerpVectors(this.ballPrev, this.ballCur, a);
     }
-    _tmpPos.lerpVectors(this.camPosPrev, this.camPosCur, a);
-    _tmpLook.lerpVectors(this.camLookPrev, this.camLookCur, a);
-    this.camera.position.set(_tmpPos.x + this.shakeX * U * 0.5, _tmpPos.y + this.shakeY * U * 0.5, _tmpPos.z);
-    this.camera.lookAt(_tmpLook);
+    if (!this.freeCam) {
+      _tmpPos.lerpVectors(this.camPosPrev, this.camPosCur, a);
+      _tmpLook.lerpVectors(this.camLookPrev, this.camLookCur, a);
+      this.camera.position.set(_tmpPos.x + this.shakeX * U * 0.5, _tmpPos.y + this.shakeY * U * 0.5, _tmpPos.z);
+      this.camera.lookAt(_tmpLook);
+    }
 
     this.composer.render();
   }

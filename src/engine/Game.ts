@@ -201,7 +201,7 @@ export class GameApp {
 
     // DEBUG overlay: live only while a debug-mode match runs (the menu clears the flag on return).
     if (this.match?.debugMode) {
-      (this.debug ??= new DebugMode()).update(dt, this.state);
+      (this.debug ??= new DebugMode(this)).update(dt, this.state);
     } else if (this.debug) {
       this.debug.dispose();
       this.debug = null;
