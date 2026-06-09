@@ -50,6 +50,11 @@ export class GameApp {
   private debug: DebugMode | null = null;
   /** DEBUG: when true, freeze the gameplay sim + animation pose (toggled from the debug overlay). */
   paused = false;
+  /** DEBUG: request to advance exactly one sim step + one animation frame while paused. */
+  private stepPending = false;
+  stepFrame(): void {
+    this.stepPending = true;
+  }
 
   /** Persistent session selections. */
   config: SessionConfig = {
@@ -201,9 +206,13 @@ export class GameApp {
 
     // DEBUG pause: freeze the gameplay sim (and, via scene3d.paused, the animation pose) so the
     // camera can be repositioned without time pressure. The DEBUG overlay below still updates so the
-    // free camera / panel stay responsive while paused.
-    if (!this.paused) this.state?.update(scaled);
+    // free camera / panel stay responsive while paused. A "Step frame" advances exactly one sim tick
+    // (and one animation frame, via scene3d.stepMixer) while staying paused.
+    const stepping = this.paused && this.stepPending;
+    this.stepPending = false;
+    if (!this.paused || stepping) this.state?.update(scaled);
     this.scene3d.paused = this.paused;
+    if (stepping) this.scene3d.stepMixer(scaled);
 
     // DEBUG overlay: live only while a debug-mode match runs (the menu clears the flag on return).
     if (this.match?.debugMode) {

@@ -1979,6 +1979,12 @@ export class Scene3D {
   /** DEBUG pause: when true, advance the skinned animation by dt=0 so the pose freezes too (the sim
    *  is frozen by GameApp); the scene still renders so the frozen moment can be orbited. */
   paused = false;
+  /** DEBUG step: a one-shot animation delta consumed on the next render, so a single frame can be
+   *  advanced while paused (set via stepMixer). */
+  private _mixerStep = 0;
+  stepMixer(dt: number): void {
+    this._mixerStep = dt;
+  }
   /** The 3D field camera, exposed for the DEBUG free-camera controller. */
   getCamera(): THREE.PerspectiveCamera {
     return this.camera;
@@ -2003,7 +2009,12 @@ export class Scene3D {
     this.tickAtmosphere(rdt);
     // Interpolate every moving body between its last two sim positions by `alpha`, and advance each
     // avatar's skinned animation by the real render delta `rdt` (smooth on high-refresh displays).
-    const mdt = this.paused ? 0 : rdt; // DEBUG pause freezes the pose
+    // DEBUG pause freezes the pose (dt=0); a pending step advances it by exactly one frame once.
+    let mdt = rdt;
+    if (this.paused) {
+      mdt = this._mixerStep;
+      this._mixerStep = 0;
+    }
     for (const av of this.players) av.present(a, mdt);
     if (this.ballGroup.visible && this.ballPrimed) {
       this.ballGroup.position.lerpVectors(this.ballPrev, this.ballCur, a);

@@ -65,7 +65,9 @@ export class DebugMode {
 
     // Pause freezes the gameplay sim + animation pose so the camera can be set up at leisure
     // (snap → pause → orbit to the angle → unpause to watch it play from there).
-    this.gui.addFolder("Playback").add(this.app, "paused").name("⏸ Pause game").listen();
+    const pb = this.gui.addFolder("Playback");
+    pb.add(this.app, "paused").name("⏸ Pause game").listen();
+    pb.add({ step: () => { this.app.paused = true; this.app.stepFrame(); } }, "step").name("⏭ Step frame");
 
     // Capture (downloads to the device — share the PNGs back for tuning review). The contact sheet
     // is a 3×3 grid of frames over ~1s: a single image that shows a whole motion cycle (stride / cut
