@@ -38,6 +38,8 @@ export class Ball {
   airTime = 0;
 
   attachTo(p: Player): void {
+    // Clear any previous carrier so two players never both read as "has the ball" (e.g. a handoff).
+    if (this.carrier && this.carrier !== p) this.carrier.hasBall = false;
     this.state = "held";
     this.carrier = p;
     p.hasBall = true;
@@ -54,6 +56,7 @@ export class Ball {
   throwTo(from: Player, target: Vec2, speed: number, loft = 1, spinRate = 34): void {
     this.state = "inAir";
     this.thrownBy = from;
+    if (this.carrier && this.carrier !== from) this.carrier.hasBall = false;
     this.carrier = null;
     from.hasBall = false;
     this.pos = { x: from.pos.x, y: from.pos.y };
@@ -90,6 +93,7 @@ export class Ball {
   kick(fromX: number, fromY: number, vx: number, vy: number, vz: number, gravity: number): void {
     this.state = "inAir";
     this.isKick = true;
+    if (this.carrier) this.carrier.hasBall = false;
     this.carrier = null;
     this.thrownBy = null;
     this.pos = { x: fromX, y: fromY };
@@ -177,6 +181,7 @@ export class Ball {
   becomeLoose(vx: number, vy: number, vz = 150): void {
     this.state = "loose";
     this.isKick = false;
+    if (this.carrier) this.carrier.hasBall = false; // the fumbler no longer carries it (no phantom ball)
     this.carrier = null;
     this.vel.x = vx;
     this.vel.y = vy;
