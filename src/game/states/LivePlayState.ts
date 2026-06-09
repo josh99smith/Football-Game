@@ -1009,45 +1009,123 @@ export class LivePlayState implements GameState {
     this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
   }
 
-  /** Swipe juke: a sharp sidestep in the flick direction (`fx,fy` = field-space unit) with brief
-   *  tackle immunity, so the carrier cuts off a defender who's closing in. */
-  private doJuke(c: Player, fx: number, fy: number): void {
-    c.vel.x += fx * 125;
-    c.vel.y += fy * 125;
-    c.jukeTimer = 0.4; // immunity through the cut (the nearest tackler whiffs)
-    c.cutTimer = 0.4;
-    const cross = Math.cos(c.facing) * fy - Math.sin(c.facing) * fx;
-    c.leanTarget = Math.sign(cross) || 1; // bank into the cut
-    c.animEvent = "juke";
-    this.app.audio.juke();
-    this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 6, 80);
-    this.app.floating.add("JUKE!", c.pos.x, c.pos.y - 24, { size: 18, color: "#cfe8d4", life: 0.7 });
+  /**
+   * Timing window for a swipe move, judged against the nearest threatening defender. A flick thrown
+   * just as a defender closes into the sweet-spot distance (wider if he's committed to a dive/hit)
+   * is "perfect"; close-but-not-quite is "good"; open field (no one near) is "normal". This is the
+   * skill layer: read the defender and swipe on his commitment.
+   */
+  private swipeTiming(c: Player): { d: Player | null; q: "perfect" | "good" | "normal" } {
+    let best: Player | null = null;
+    let bestD = 95;
+    for (const d of this.defense) {
+      if (d.isDown) continue;
+      const dd = dist(d.pos, c.pos);
+      if (dd < bestD) { bestD = dd; best = d; }
+    }
+    if (!best) return { d: null, q: "normal" };
+    const committed = best.diveTimer > 0 || best.bigHitArmed; // reading his commit widens the window
+    const lo = committed ? 12 : 16;
+    const hi = committed ? 66 : 48;
+    if (bestD >= lo && bestD <= hi) return { d: best, q: "perfect" };
+    if (bestD <= 82) return { d: best, q: "good" };
+    return { d: best, q: "normal" };
   }
 
-  /** Swipe-forward truck: lower the head and power straight ahead — a defender squared up in front is
-   *  bowled over (knocked down) while the carrier plows through with a little loss of steam. */
+  /** Bowl a defender over: shove him off the carrier's line and put him on the ground. */
+  private truckOver(c: Player, d: Player, downSec: number, shove: number): void {
+    const dx = d.pos.x - c.pos.x, dy = d.pos.y - c.pos.y, dl = Math.hypot(dx, dy) || 1;
+    d.vel.x += (dx / dl) * shove;
+    d.vel.y += (dy / dl) * shove;
+    d.knockDown(downSec);
+  }
+
+  /** Swipe juke: a sharp sidestep in the flick direction, with tackle immunity scaled by timing —
+   *  a perfectly-timed cut leaves the closing defender grasping at air ("ANKLES!"). */
+  private doJuke(c: Player, fx: number, fy: number): void {
+    const { d, q } = this.swipeTiming(c);
+    c.leanTarget = Math.sign(Math.cos(c.facing) * fy - Math.sin(c.facing) * fx) || 1; // bank into the cut
+    c.animEvent = "juke";
+    this.app.audio.juke();
+    if (q === "perfect") {
+      c.vel.x += fx * 175; c.vel.y += fy * 175;
+      c.jukeTimer = 0.62; c.cutTimer = 0.6; // long immunity — he whiffs badly
+      if (d) d.enterStumble(0.5); // the defender stutters past
+      this.app.time.slow(0.5, 0.22); // a beat of slow-mo on the highlight cut
+      this.app.particles.burst(c.pos.x, c.pos.y, "#9fe0ff", 10, 110);
+      this.app.floating.add("ANKLES!", c.pos.x, c.pos.y - 26, { size: 20, color: "#9fe0ff", life: 0.9 });
+      this.igniteCheck(c.team, 0.22);
+    } else if (q === "good") {
+      c.vel.x += fx * 140; c.vel.y += fy * 140;
+      c.jukeTimer = 0.46; c.cutTimer = 0.45;
+      this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 7, 85);
+      this.app.floating.add("JUKE!", c.pos.x, c.pos.y - 24, { size: 18, color: "#cfe8d4", life: 0.7 });
+    } else {
+      c.vel.x += fx * 112; c.vel.y += fy * 112;
+      c.jukeTimer = 0.34; c.cutTimer = 0.38;
+      this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 5, 75);
+      this.app.floating.add("JUKE!", c.pos.x, c.pos.y - 24, { size: 16, color: "#cfe8d4", life: 0.6 });
+    }
+  }
+
+  /** Swipe-forward truck: lower the head and run through the defender. Timed on his commitment it's a
+   *  devastating TRUCK STICK (flattens him + a second man, slow-mo, fire); mistimed you get stuffed. */
   private doTruck(c: Player): void {
+    const tm = this.swipeTiming(c);
+    const target = tm.d && this.isAhead(c, tm.d) ? tm.d : null;
+    const q = target ? tm.q : "normal";
     const sp = Math.hypot(c.vel.x, c.vel.y);
     const fwx = sp > 30 ? c.vel.x / sp : Math.cos(c.facing);
     const fwy = sp > 30 ? c.vel.y / sp : Math.sin(c.facing);
-    c.vel.x += fwx * 95;
-    c.vel.y += fwy * 95;
-    c.jukeTimer = 0.3; // power through the first hit
-    c.leanTarget = 0; // square + head down, no lateral bank
+    c.leanTarget = 0; // square + head down
     c.animEvent = "stiffArm"; // head-down power move (no dedicated truck clip)
-    const d = this.nearestTackler(c, 80);
-    if (d && this.isAhead(c, d)) {
-      const dx = d.pos.x - c.pos.x, dy = d.pos.y - c.pos.y, dl = Math.hypot(dx, dy) || 1;
-      d.vel.x += (dx / dl) * 220; d.vel.y += (dy / dl) * 220;
-      d.knockDown(0.7);
-      c.vel.x *= 0.82; c.vel.y *= 0.82; // lose a little steam bowling him over
-      this.app.shake.add(0.2);
-      this.app.particles.burst(d.pos.x, d.pos.y, "#ffd24a", 10, 120);
+
+    if (q === "perfect" && target) {
+      c.vel.x += fwx * 150; c.vel.y += fwy * 150; // blow clean through, keep your feet moving
+      c.jukeTimer = 0.55;
+      this.truckOver(c, target, 1.1, 320); // flatten him
+      // Gang truck: a second man crowding the hole gets bowled too.
+      let d2: Player | null = null, d2d = 48;
+      for (const dd of this.defense) {
+        if (dd === target || dd.isDown) continue;
+        const r = dist(dd.pos, c.pos);
+        if (r < d2d) { d2d = r; d2 = dd; }
+      }
+      if (d2) this.truckOver(c, d2, 0.7, 210);
+      this.app.audio.bigHit();
+      this.app.shake.add(0.34);
+      this.app.scene3d.hitZoom(0.5);
+      this.app.time.slow(0.45, 0.32); // hit-stop on the truck
+      this.app.particles.burst(target.pos.x, target.pos.y, "#ffd24a", 16, 150);
+      this.app.floating.add("TRUCK STICK!", c.pos.x, c.pos.y - 26, { size: 22, color: "#ffd24a", life: 1.0 });
+      this.igniteCheck(c.team, 0.34);
+    } else if (q === "good" && target) {
+      c.vel.x += fwx * 122; c.vel.y += fwy * 122;
+      c.jukeTimer = 0.42;
+      this.truckOver(c, target, 0.8, 240);
+      c.vel.x *= 0.9; c.vel.y *= 0.9;
+      this.app.audio.bigHit();
+      this.app.shake.add(0.22);
+      this.app.particles.burst(target.pos.x, target.pos.y, "#ffd24a", 11, 120);
+      this.app.floating.add("TRUCK!", c.pos.x, c.pos.y - 24, { size: 20, color: "#ffd24a", life: 0.85 });
+      this.igniteCheck(c.team, 0.14);
+    } else if (target) {
+      // Mistimed (swiped too early): you lower the head but don't square him up — bounce off and
+      // lose steam, no knockdown. Read his commitment next time.
+      c.vel.x += fwx * 70; c.vel.y += fwy * 70;
+      c.vel.x *= 0.68; c.vel.y *= 0.68;
+      c.jukeTimer = 0.16;
+      this.app.audio.hit(0.6);
+      this.app.shake.add(0.12);
+      this.app.floating.add("STUFFED!", c.pos.x, c.pos.y - 22, { size: 16, color: "#d9b38c", life: 0.7 });
     } else {
-      this.app.shake.add(0.1);
+      // Open field: a head-down power burst with nobody to run over.
+      c.vel.x += fwx * 115; c.vel.y += fwy * 115;
+      c.jukeTimer = 0.3;
+      this.app.audio.juke();
+      this.app.particles.burst(c.pos.x, c.pos.y, "#ffe2a6", 7, 90);
+      this.app.floating.add("TRUCK!", c.pos.x, c.pos.y - 24, { size: 18, color: "#ffd24a", life: 0.7 });
     }
-    this.app.audio.juke();
-    this.app.floating.add("TRUCK!", c.pos.x, c.pos.y - 24, { size: 20, color: "#ffd24a", life: 0.8 });
   }
 
   /** Defender ACTION is contextual: unleash a committed BIG HIT when near the carrier,
