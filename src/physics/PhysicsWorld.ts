@@ -14,8 +14,11 @@ export class PhysicsWorld {
   /** The fixed ground body (at the world origin; collider offset -0.5). Foot-lock joints
    * pin a planted foot to this so a stance foot cannot slide. */
   groundBody!: RAPIER.RigidBody;
-  /** Internal substeps per 1/60 frame — more = more stable joints, more cost. */
-  substeps = 2;
+  /** Internal substeps per 1/60 frame — more = more stable joints + firmer contacts, more cost.
+   * The ragdoll's PD "muscles" are dt-scaled (substep-invariant), so raising this tightens joints
+   * and reduces tunneling/jitter without changing the tuned fall behavior. It only runs while a
+   * ragdoll is active (during tackles), so the extra cost is brief. */
+  substeps = 4;
 
   private constructor(world: RAPIER.World) {
     this.world = world;
@@ -32,8 +35,13 @@ export class PhysicsWorld {
 
   private addGround(): void {
     const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    // The ground must cover the WHOLE field: players (and their ragdolls) live at world
+    // X 0..~120, Z 0..~53 (field pixels * 1/PX_PER_YARD). A ground centered on the origin must
+    // therefore be large enough to reach past midfield in every direction — a too-small slab
+    // let bodies tackled past the 50 fall straight through (and jitter off its edge). The top
+    // surface sits at y=0 (half-height 0.5, translated down 0.5).
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(60, 0.5, 60).setTranslation(0, -0.5, 0).setFriction(1.4),
+      RAPIER.ColliderDesc.cuboid(250, 0.5, 250).setTranslation(0, -0.5, 0).setFriction(1.4),
       body,
     );
     this.groundBody = body;

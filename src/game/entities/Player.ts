@@ -31,6 +31,10 @@ export interface LocoState {
   contact: boolean;
   /** Glancing-hit stumble (still upright / in control). */
   stumbling: boolean;
+  /** Low-pass-filtered acceleration in FIELD space (px/s^2) — drives the avatar's weight lean
+   *  (decelerate ⇒ lean back, cut ⇒ bank into it). */
+  accelX: number;
+  accelY: number;
 }
 
 // Gait hysteresis (normalized speed) — avoids idle<->jog flicker at the boundary.
@@ -45,17 +49,22 @@ const HEADING_TURN_RAD = 12;
  * Per-role base attributes (arcade-tuned, in px/s and px/s^2). Speeds are deliberately
  * moderate for a weightier, more readable pace (slower than a twitch arcade title).
  */
-const ROLE_STATS: Record<Role, { speed: number; accel: number; radius: number }> = {
-  QB: { speed: 150, accel: 1300, radius: 12 },
-  HB: { speed: 176, accel: 1500, radius: 12 },
-  WR: { speed: 180, accel: 1450, radius: 11.5 },
-  OL: { speed: 126, accel: 1050, radius: 14 },
-  DL: { speed: 128, accel: 1100, radius: 14 },
-  LB: { speed: 150, accel: 1250, radius: 13 },
-  DB: { speed: 170, accel: 1400, radius: 11.5 },
+const ROLE_STATS: Record<Role, { speed: number; accel: number; radius: number; strength: number }> = {
+  // Skill positions are fast but light; linemen are slow but powerful; QBs are average; the
+  // secondary runs with the receivers. `strength` (≈1.0 baseline) drives blocking, shoving in
+  // piles, breaking/making tackles, and the tug in the 1-on-1 battle.
+  QB: { speed: 150, accel: 1300, radius: 12, strength: 0.92 },
+  HB: { speed: 178, accel: 1520, radius: 12, strength: 1.06 },
+  WR: { speed: 184, accel: 1460, radius: 11.5, strength: 0.84 },
+  OL: { speed: 118, accel: 1020, radius: 14.5, strength: 1.45 },
+  DL: { speed: 122, accel: 1080, radius: 14.5, strength: 1.4 },
+  LB: { speed: 150, accel: 1250, radius: 13, strength: 1.18 },
+  DB: { speed: 174, accel: 1420, radius: 11.5, strength: 0.9 },
 };
 
 export const TURBO_MULT = 1.4;
+/** Global pace dial: scales every player's top speed (and eases accel) to slow the game down. */
+const SPEED_SCALE = 0.78;
 
 export class Player {
   pos: Vec2;
@@ -69,6 +78,8 @@ export class Player {
   readonly baseSpeed: number;
   readonly accel: number;
   readonly radius: number;
+  /** Position-based power (≈1.0 baseline): blocking, pile shoves, tackle break/make, battle tug. */
+  readonly strength: number;
 
   state: PlayerState = "set";
   hasBall = false;
@@ -94,7 +105,11 @@ export class Player {
     down: false,
     contact: false,
     stumbling: false,
+    accelX: 0,
+    accelY: 0,
   };
+  /** Previous-frame velocity, for deriving acceleration in updateLoco (no-alloc). */
+  private readonly _prevVel: Vec2 = { x: 0, y: 0 };
 
   /** Countdown after being tackled before the player is "down" cleanup happens. */
   tackledTimer = 0;
@@ -102,6 +117,8 @@ export class Player {
   jukeTimer = 0;
   /** Active dive/lunge window (carrier dive or defender dive-tackle). */
   diveTimer = 0;
+  /** This lunge is a committed BIG HIT (hit-stick): devastating on contact, a whiff if it misses. */
+  bigHitArmed = false;
   /** Receiver just made a route break — burst open while the DB reacts late. */
   cutTimer = 0;
   /** Wrapped-up beat: carrier + tackler slide/fall together before the whistle. */
@@ -110,10 +127,12 @@ export class Player {
   contactVel: Vec2 = { x: 0, y: 0 };
   /** Glancing-hit stumble window. */
   stumbleTimer = 0;
+  /** Turn-rate multiplier (the human-controlled player turns/cuts more sharply than the AI). */
+  agility = 1;
   /** Juke/cut lean signal (-1..1), consumed by the avatar for an extra bank. */
   leanTarget = 0;
   /** One-shot animation trigger consumed by the renderer. */
-  animEvent: "pass" | "catch" | "juke" | "tackle" | "tackleMade" | "swat" | "celebrate" | null = null;
+  animEvent: "pass" | "hailMary" | "catch" | "juke" | "spin" | "stiffArm" | "tackle" | "tackleMade" | "swat" | "celebrate" | "kick" | null = null;
 
   // AI scratch fields (used by Offense/Defense AI; harmless when unused).
   /** High-level job assigned by the playbook at snap. */
@@ -135,9 +154,12 @@ export class Player {
     this.number = number;
     this.pos = { x, y };
     const s = ROLE_STATS[role];
-    this.baseSpeed = s.speed;
-    this.accel = s.accel;
+    // A small per-player variance so individuals differ a touch (a fast QB, a bruising back).
+    const vary = 1 + (Math.random() * 2 - 1) * 0.045;
+    this.baseSpeed = s.speed * SPEED_SCALE * vary;
+    this.accel = s.accel * (0.5 + 0.5 * SPEED_SCALE); // ease accel down a touch too, keeps it crisp
     this.radius = s.radius;
+    this.strength = s.strength * (1 + (Math.random() * 2 - 1) * 0.06);
   }
 
   /**
@@ -153,7 +175,7 @@ export class Player {
   speedFor(turbo: boolean, onFire: boolean): number {
     let m = 1;
     if (turbo) m *= TURBO_MULT;
-    if (onFire) m *= 1.12;
+    if (onFire) m *= 1.15; // ON FIRE: the whole team runs hotter
     return this.baseSpeed * m;
   }
 
@@ -169,13 +191,19 @@ export class Player {
 
     if (this.state === "tackled") {
       this.tackledTimer -= dt;
-      // Decelerate any residual momentum while down.
-      this.vel.x = moveToward(this.vel.x, 0, this.accel * 2 * dt);
-      this.vel.y = moveToward(this.vel.y, 0, this.accel * 2 * dt);
-      this.pos.x += this.vel.x * dt;
-      this.pos.y += this.vel.y * dt;
-      this.updateLoco(dt);
-      return;
+      if (this.tackledTimer > 0) {
+        // Decelerate any residual momentum while down.
+        this.vel.x = moveToward(this.vel.x, 0, this.accel * 2 * dt);
+        this.vel.y = moveToward(this.vel.y, 0, this.accel * 2 * dt);
+        this.pos.x += this.vel.x * dt;
+        this.pos.y += this.vel.y * dt;
+        this.updateLoco(dt);
+        return;
+      }
+      // Timer elapsed: scramble back up and rejoin the play (clears loco.down so the avatar stands).
+      // The ball carrier's tackle has already ended the play by now, so this only revives the
+      // knocked-down (blocked / whiffed-tackle / gang-tackle) players who were stuck lying there.
+      this.state = "active";
     }
 
     if (this.state === "contact") {
@@ -236,7 +264,9 @@ export class Player {
       let d = target - this.heading;
       while (d > Math.PI) d -= Math.PI * 2;
       while (d < -Math.PI) d += Math.PI * 2;
-      const maxTurn = HEADING_TURN_RAD * (0.5 + 0.7 * (1 - speed01)) * dt;
+      // Turn faster when slow; the high-speed throttle is gentler now (0.75 vs 0.5) so cuts and
+      // reversals read quickly, and the human-controlled player (agility>1) carves sharper still.
+      const maxTurn = HEADING_TURN_RAD * this.agility * (0.75 + 0.6 * (1 - speed01)) * dt;
       this.heading += clamp(d, -maxTurn, maxTurn);
     }
     // Movement direction relative to where we're facing (drives fwd/back/strafe blend).
@@ -258,6 +288,21 @@ export class Player {
     lo.down = this.state === "tackled";
     lo.contact = this.state === "contact";
     lo.stumbling = this.state === "stumbling";
+    // Low-passed acceleration for the avatar's weight lean (the brief's ~4/T critically-damped
+    // filter, T≈0.12s). Zeroed while down/contact so a state change can't spike the lean.
+    if (lo.down || lo.contact) {
+      lo.accelX = 0;
+      lo.accelY = 0;
+    } else {
+      const inv = 1 / Math.max(dt, 1 / 120);
+      const rawAx = (this.vel.x - this._prevVel.x) * inv;
+      const rawAy = (this.vel.y - this._prevVel.y) * inv;
+      const k = clamp((4 / 0.12) * dt, 0, 1);
+      lo.accelX += (rawAx - lo.accelX) * k;
+      lo.accelY += (rawAy - lo.accelY) * k;
+    }
+    this._prevVel.x = this.vel.x;
+    this._prevVel.y = this.vel.y;
     // Gait with hysteresis.
     const wasJogging = lo.gait !== "idle";
     if (this.turbo || speed01 > SPRINT_AT) lo.gait = "sprint";
@@ -290,9 +335,10 @@ export class Player {
   /** Pick an acceleration rate: faster when decelerating / reversing for snappier control. */
   private brakeStep(v: number, target: number, baseA: number, moving: boolean): number {
     if (!moving) return baseA * 2.6; // no input: stop quickly
-    // Decelerating toward target (opposite sign or shrinking magnitude) gets more grip.
+    // Decelerating toward target (opposite sign or shrinking magnitude) gets a little extra grip
+    // so stops/cuts stay crisp — but not so much that changing direction feels sluggish.
     const decel = Math.sign(target - v) !== Math.sign(v) || Math.abs(target) < Math.abs(v);
-    return decel ? baseA * 1.9 : baseA;
+    return decel ? baseA * 1.5 : baseA;
   }
 
   knockDown(downSeconds = 1.1): void {

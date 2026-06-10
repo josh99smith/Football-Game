@@ -37,7 +37,36 @@ export interface PlayOutcome {
 export const FIRST_DOWN_YARDS = 30; // NFL Blitz: 30 yards to go
 export const TOUCHDOWN_POINTS = 6;
 export const PAT_POINTS = 1;
+export const TWO_POINT_POINTS = 2;
+export const FIELD_GOAL_POINTS = 3;
 export const SAFETY_POINTS = 2;
+const ENDZONE_FG_YARDS = 10; // uprights sit at the back of the 10-yard end zone
+
+/** What the game flow should do next after applying a play/kick result. */
+export interface OutcomeResult {
+  scored: boolean;
+  changedPossession: boolean;
+  kickoff: boolean;
+  /** A touchdown was scored — the flow runs the extra-point try before the kickoff. */
+  touchdown?: boolean;
+  scoringTeam?: TeamId;
+  kickReceiver?: TeamId;
+}
+
+/** Box-score tally kept per team for the end-of-game summary. */
+export interface TeamStats {
+  totalYards: number;
+  firstDowns: number;
+  sacks: number;       // sacks made by this team's defense
+  takeaways: number;   // interceptions + fumble recoveries by this team
+  touchdowns: number;
+  fieldGoals: number;
+  longest: number;     // longest gain (yards)
+}
+
+function emptyStats(): TeamStats {
+  return { totalYards: 0, firstDowns: 0, sacks: 0, takeaways: 0, touchdowns: 0, fieldGoals: 0, longest: 0 };
+}
 
 /** Holds all game-flow / rules state for a single match. */
 export class Match {
@@ -57,6 +86,32 @@ export class Match {
   distanceYards = FIRST_DOWN_YARDS;
   losX = 0;
   firstDownX = 0;
+
+  /** Sandbox mode: the regular game loop runs with full mechanics, but the clock is frozen and the
+   *  scoring/turnover/4th-down ceremonies are skipped so you can rep every move on both sides. */
+  practice = false;
+
+  /** Debug mode: a practice sandbox with the in-game DEBUG overlay active (free camera, live
+   *  animation tuning, screenshot / contact-sheet capture). Set from the menu's DEBUG button. */
+  debugMode = false;
+
+  /** Set while a two-point conversion attempt is the active "play" (a goal-line down from the 2). */
+  twoPointActive = false;
+
+  /** Per-team box score. */
+  readonly stats: Record<TeamId, TeamStats> = { HOME: emptyStats(), AWAY: emptyStats() };
+
+  /** Record an offensive gain (a completed play that ended with the offense keeping the ball). */
+  recordGain(team: TeamId, yards: number, firstDown: boolean): void {
+    const s = this.stats[team];
+    s.totalYards += yards;
+    if (firstDown) s.firstDowns++;
+    if (yards > s.longest) s.longest = yards;
+  }
+  recordSack(defense: TeamId): void { this.stats[defense].sacks++; }
+  recordTakeaway(team: TeamId): void { this.stats[team].takeaways++; }
+  recordTouchdown(team: TeamId): void { this.stats[team].touchdowns++; }
+  recordFieldGoal(team: TeamId): void { this.stats[team].fieldGoals++; }
 
   constructor(
     homeCfg: TeamConfig,
@@ -136,22 +191,15 @@ export class Match {
    * Apply a finished play to the rules state. Returns flags telling the flow what
    * to do next (kickoff after score, or just spot the ball for the next snap).
    */
-  applyOutcome(o: PlayOutcome): {
-    scored: boolean;
-    changedPossession: boolean;
-    kickoff: boolean;
-    scoringTeam?: TeamId;
-    kickReceiver?: TeamId;
-  } {
+  applyOutcome(o: PlayOutcome): OutcomeResult {
     const offense = this.possession;
     const defense = this.opponent(offense);
 
     if (o.type === "touchdown") {
-      const t = this.team(offense);
-      t.score += TOUCHDOWN_POINTS + PAT_POINTS; // auto PAT for v1
+      this.team(offense).score += TOUCHDOWN_POINTS; // the extra-point try is its own beat now
       this.team(defense).extinguish(); // opponent scoring puts out their fire
-      // Scoring team kicks off; the team that was on defense receives.
-      return { scored: true, changedPossession: true, kickoff: true, scoringTeam: offense, kickReceiver: defense };
+      // The scoring team will try the PAT, then kick off; flag it for the special-teams flow.
+      return { scored: true, changedPossession: false, kickoff: false, touchdown: true, scoringTeam: offense, kickReceiver: defense };
     }
 
     if (o.type === "safety") {
@@ -193,10 +241,63 @@ export class Match {
     return { scored: false, changedPossession: false, kickoff: false };
   }
 
+  /**
+   * Resolve a turnover RETURN (interception / fumble recovered by the defense, run back live).
+   * The team that took the ball (`toTeam`) either scores a defensive TD, or takes over on a
+   * fresh series at the spot they were tackled. Mirrors applyOutcome's result shape.
+   */
+  returnResult(toTeam: TeamId, ballX: number, scored: boolean): OutcomeResult {
+    const other = this.opponent(toTeam);
+    if (scored) {
+      this.team(toTeam).score += TOUCHDOWN_POINTS;
+      this.team(other).extinguish();
+      return { scored: true, changedPossession: false, kickoff: false, touchdown: true, scoringTeam: toTeam, kickReceiver: other };
+    }
+    this.startSeries(toTeam, clampToField(ballX));
+    return { scored: false, changedPossession: true, kickoff: false };
+  }
+
+  /** Add raw points (extra point, two-point, field goal). */
+  addPoints(team: TeamId, n: number): void {
+    this.team(team).score += n;
+  }
+
+  /** Yards from the spot of the kick to the back of the target uprights (FG distance). */
+  fieldGoalYards(team: TeamId, losX: number): number {
+    const goalX = this.attackGoalX(team);
+    // The posts sit at the back of the end zone (~10yd past the goal line); add the ~7yd snap/hold.
+    return Math.round(Math.abs(goalX - losX) / PX_PER_YARD + ENDZONE_FG_YARDS + 7);
+  }
+
   /** Run the play clock down, clamped at 0. The quarter is NOT advanced here — the
    * clock simply stops at 0 mid-play; the caller advances the quarter between plays. */
   tickClock(dt: number): void {
+    if (this.practice) return; // sandbox: clock is frozen (no quarter/game end)
     this.clock = Math.max(0, this.clock - dt);
+  }
+
+  /** Enter sandbox practice: full mechanics, frozen clock, ball spotted at midfield for the human. */
+  beginPractice(): void {
+    this.practice = true;
+    this.startSeries(this.humanTeam, (LEFT_GOAL_X + RIGHT_GOAL_X) / 2);
+  }
+
+  /** Halves in which the two-minute warning has already been given (keyed by quarter 2 / 4). */
+  private twoMinuteWarned = new Set<number>();
+
+  /**
+   * Real-football two-minute warning: an automatic stoppage the first time the clock dips under
+   * 2:00 in the 2nd or 4th quarter (the clock then restarts on the next snap). Returns true once,
+   * at the dead ball where it should be applied. Only meaningful if the quarter is long enough to
+   * have a 2:00 mark (short arcade quarters never reach it).
+   */
+  checkTwoMinuteWarning(): boolean {
+    if (this.quarter !== 2 && this.quarter !== 4) return false;
+    if (this.quarterLength <= 130) return false;
+    if (this.clock > 120 || this.clock <= 0) return false;
+    if (this.twoMinuteWarned.has(this.quarter)) return false;
+    this.twoMinuteWarned.add(this.quarter);
+    return true;
   }
 
   get clockExpired(): boolean {

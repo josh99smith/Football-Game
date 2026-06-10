@@ -38,12 +38,15 @@ export class Ball {
   airTime = 0;
 
   attachTo(p: Player): void {
+    // Clear any previous carrier so two players never both read as "has the ball" (e.g. a handoff).
+    if (this.carrier && this.carrier !== p) this.carrier.hasBall = false;
     this.state = "held";
     this.carrier = p;
     p.hasBall = true;
     this.z = 0;
     this.vz = 0;
     this.spinRate = 0;
+    this.isKick = false;
   }
 
   /**
@@ -53,6 +56,7 @@ export class Ball {
   throwTo(from: Player, target: Vec2, speed: number, loft = 1, spinRate = 34): void {
     this.state = "inAir";
     this.thrownBy = from;
+    if (this.carrier && this.carrier !== from) this.carrier.hasBall = false;
     this.carrier = null;
     from.hasBall = false;
     this.pos = { x: from.pos.x, y: from.pos.y };
@@ -77,6 +81,32 @@ export class Ball {
 
   flightTime = 0;
   private gravity = 0;
+  /** A place-kick / punt is in flight (free projectile, not a pass that lands at a target). */
+  private isKick = false;
+  private kickGravity = 0;
+
+  /**
+   * Boot the ball as a free projectile (field goal / punt / kickoff). Unlike a pass it doesn't
+   * home on a landing target — it flies under its own gravity until it hits the ground, so the
+   * caller can watch it sail through (or short of) the uprights.
+   */
+  kick(fromX: number, fromY: number, vx: number, vy: number, vz: number, gravity: number): void {
+    this.state = "inAir";
+    this.isKick = true;
+    if (this.carrier) this.carrier.hasBall = false;
+    this.carrier = null;
+    this.thrownBy = null;
+    this.pos = { x: fromX, y: fromY };
+    this.vel.x = vx;
+    this.vel.y = vy;
+    this.vz = vz;
+    this.kickGravity = gravity;
+    this.z = 0.1;
+    this.airTime = 0;
+    this.spiral = true;
+    this.spinRate = 22;
+    this.spin = 0;
+  }
 
   /** 0 at release, 1 at the landing target. */
   get flightProgress(): number {
@@ -95,6 +125,20 @@ export class Ball {
       this.pos.x = this.carrier.pos.x;
       this.pos.y = this.carrier.pos.y;
       this.z = 0;
+      return false;
+    }
+    if (this.state === "inAir" && this.isKick) {
+      // Free projectile: integrate under constant gravity, land when it returns to the turf.
+      this.airTime += dt;
+      this.pos.x += this.vel.x * dt;
+      this.pos.y += this.vel.y * dt;
+      this.vz -= this.kickGravity * dt;
+      this.z += this.vz * dt;
+      this.spin += this.spinRate * dt;
+      if (this.z <= 0 && this.airTime > 0.1) {
+        this.z = 0;
+        return true; // landed
+      }
       return false;
     }
     if (this.state === "inAir") {
@@ -136,6 +180,8 @@ export class Ball {
 
   becomeLoose(vx: number, vy: number, vz = 150): void {
     this.state = "loose";
+    this.isKick = false;
+    if (this.carrier) this.carrier.hasBall = false; // the fumbler no longer carries it (no phantom ball)
     this.carrier = null;
     this.vel.x = vx;
     this.vel.y = vy;

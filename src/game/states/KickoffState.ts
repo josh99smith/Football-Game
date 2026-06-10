@@ -4,7 +4,8 @@ import type { TeamId } from "../entities/Player";
 import { HUD } from "../../ui/HUD";
 import { drawPanel } from "../../ui/widgets";
 import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
-import { PlaySelectState } from "./PlaySelectState";
+import { LivePlayState } from "./LivePlayState";
+import { OFFENSE_PLAYS, DEFENSE_PLAYS } from "../Playbook";
 
 /**
  * Lightweight kickoff: shows a banner, then spots the ball at the receiving team's
@@ -33,8 +34,12 @@ export class KickoffState implements GameState {
     this.timer -= dt;
     if ((this.timer <= 0 || this.app.input.consumeTaps().length > 0) && !this.done) {
       this.done = true;
-      this.app.match.kickoffTo(this.receiving);
-      this.app.setState(new PlaySelectState(this.app));
+      // Field the kick deep and run it back live — a tackle spots the receiving team's drive,
+      // a house call is a return TD.
+      const m = this.app.match;
+      m.possession = this.receiving; // the returner's team is on "offense" for the return
+      const ballX = m.ownYardX(this.receiving, 9);
+      this.app.setState(new LivePlayState(this.app, OFFENSE_PLAYS[0], DEFENSE_PLAYS[0], { receiver: this.receiving, ballX }));
     }
   }
 

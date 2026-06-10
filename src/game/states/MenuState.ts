@@ -5,7 +5,9 @@ import { drawButton, tappedIn, type Rect } from "../../ui/widgets";
 import { drawCrest, drawHardcoreBadge } from "../../ui/Emblems";
 import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveSettings, loadSettings } from "../storage";
-import { KickoffState } from "./KickoffState";
+import { MatchupIntroState } from "./MatchupIntroState";
+import { PlaySelectState } from "./PlaySelectState";
+import { versionLabel, buildDate } from "../buildInfo";
 
 const DIFFS: GameApp["config"]["difficulty"][] = ["rookie", "pro", "allpro"];
 
@@ -42,6 +44,8 @@ export class MenuState implements GameState {
     this.app.input.consumeTaps();
     this.layout();
     this.app.audio.setMuted(this.app.config.muted);
+    // Returning to the menu ends any debug session (tears down the overlay next tick).
+    if (this.app.match) this.app.match.debugMode = false;
   }
 
   /**
@@ -99,7 +103,11 @@ export class MenuState implements GameState {
       oppNext: arrow(this.cxR, 1),
       diff: { x: cx - optW - 6, y: optY, w: optW, h: optH },
       mute: { x: cx + 6, y: optY, w: optW, h: optH },
-      play: { x: cx - playW / 2, y: playY, w: playW, h: playH },
+      // Play row split into the primary PLAY button + a PRACTICE button beside it.
+      play: { x: cx - playW / 2, y: playY, w: playW * 0.6 - 5, h: playH },
+      practice: { x: cx - playW / 2 + playW * 0.6 + 5, y: playY, w: playW * 0.4 - 5, h: playH },
+      // Small DEBUG entry, tucked in the bottom-left safe area (dev/tuning sandbox).
+      debug: { x: 10, y: H - 34 - clamp(H * 0.02, 4, 12), w: 84, h: 34 },
     };
   }
 
@@ -122,6 +130,12 @@ export class MenuState implements GameState {
     } else if (tappedIn(this.rects.play, taps)) {
       this.startGame();
       return;
+    } else if (tappedIn(this.rects.practice, taps)) {
+      this.startPractice();
+      return;
+    } else if (tappedIn(this.rects.debug, taps)) {
+      this.startDebug();
+      return;
     } else {
       this.app.audio.uiTap();
       return;
@@ -134,7 +148,26 @@ export class MenuState implements GameState {
   private startGame(): void {
     this.app.audio.uiConfirm();
     this.app.newMatch();
-    this.app.setState(new KickoffState(this.app, "HOME"));
+    this.app.setState(new MatchupIntroState(this.app));
+  }
+
+  /** Sandbox: the real game loop with full mechanics + controls, but the clock is frozen and the
+   *  scoring/kickoff ceremonies are skipped — straight into the play-call to rep every move. */
+  private startPractice(): void {
+    this.app.audio.uiConfirm();
+    this.app.newMatch();
+    this.app.match.beginPractice();
+    this.app.setState(new PlaySelectState(this.app));
+  }
+
+  /** Tuning sandbox: practice, plus the in-game DEBUG overlay (free camera, live animation tuning,
+   *  screenshot / contact-sheet capture) so motion can be inspected and tuned on-device. */
+  private startDebug(): void {
+    this.app.audio.uiConfirm();
+    this.app.newMatch();
+    this.app.match.beginPractice();
+    this.app.match.debugMode = true;
+    this.app.setState(new PlaySelectState(this.app));
   }
 
   render(): void {
@@ -189,11 +222,27 @@ export class MenuState implements GameState {
 
     drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: COLORS.concrete, size: 15 });
     drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: COLORS.concrete, size: 14 });
-    drawButton(r, this.rects.play, "ENTER THE PIT", {
+    drawButton(r, this.rects.play, "PLAY", {
       fill: COLORS.blood,
       accent: COLORS.hazard,
-      size: clamp(this.rects.play.h * 0.4, 20, 30),
+      size: clamp(this.rects.play.h * 0.4, 18, 28),
     });
+    drawButton(r, this.rects.practice, "PRACTICE", {
+      fill: COLORS.concrete,
+      size: clamp(this.rects.practice.h * 0.26, 12, 18),
+    });
+    drawButton(r, this.rects.debug, "DEBUG", { fill: COLORS.steel, size: 13 });
+
+    // Build stamp: version + last-updated date/time (bumped automatically on every build/push).
+    ctx.save();
+    ctx.letterSpacing = "1px";
+    r.text(versionLabel(), cx, r.height - 26, {
+      size: 11, align: "center", color: COLORS.steel, weight: "normal", baseline: "middle", font: FONT.ui,
+    });
+    r.text(`UPDATED ${buildDate().toUpperCase()}`, cx, r.height - 12, {
+      size: 10, align: "center", color: COLORS.ash, weight: "normal", baseline: "middle", font: FONT.ui,
+    });
+    ctx.restore();
   }
 
   /** Heavy poster wordmark with a blood-red mis-registration shadow + dark outline. */

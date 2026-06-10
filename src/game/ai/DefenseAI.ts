@@ -62,6 +62,23 @@ export function assignDefense(ctx: PlayContext, scheme: DefenseScheme): void {
       dbSorted[1].job = "zone";
       dbSorted[1].zonePoint = { x: ctx.losX + ctx.dir * 18 * 16, y: ctx.defense[0].pos.y };
     }
+  } else if (scheme === "zone") {
+    // Cover-3 shell: the three DBs each wall off a deep third, the LBs sit in the underneath
+    // flats/hook, the DL rush. Strong against the deep ball; soft underneath.
+    const fieldCenterY = ctx.defense.reduce((s, p) => s + p.home.y, 0) / (ctx.defense.length || 1);
+    const deep = ctx.losX + ctx.dir * 20 * 16;
+    const thirds = [-14, 0, 14];
+    dbSorted.forEach((d, i) => {
+      d.job = "zone";
+      d.zonePoint = { x: deep, y: fieldCenterY + (thirds[i] ?? 0) * 16 };
+      d.assignment = null;
+    });
+    const under = ctx.losX + ctx.dir * 7 * 16;
+    lb.forEach((l, i) => {
+      l.job = "zone";
+      l.zonePoint = { x: under, y: fieldCenterY + (i === 0 ? -9 : 9) * 16 };
+      l.assignment = null;
+    });
   } else {
     // spy
     if (lb[0]) {
@@ -99,11 +116,11 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
       steer = seek(d.pos, huntTarget);
       d.turbo = true;
     } else if (carrierIsRunning && carrier) {
-      // Take a proper pursuit angle: aim at an interception point on the carrier's
-      // path, biased to the goal side so defenders keep leverage and funnel the
-      // runner instead of trailing them.
+      // Take a proper pursuit angle: aim at the point where this defender can actually meet the
+      // carrier (a real interception solve), kept goal-side so he cuts the runner off and squares
+      // up instead of trailing. Sprint to close; ease off only when right on top to make the hit.
       steer = seek(d.pos, interceptPoint(d, carrier, ctx));
-      d.turbo = dist2(d.pos, carrier.pos) > 95 * 95;
+      d.turbo = dist2(d.pos, carrier.pos) > 30 * 30;
     } else {
       switch (d.job) {
         case "rush": {
@@ -114,24 +131,24 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
           break;
         }
         case "cover": {
-          // Break on the ball once it's in the air.
+          // Break hard on the ball once it's in the air (jump the route).
           if (ball.state === "inAir") {
             steer = seek(d.pos, ball.target);
             d.turbo = true;
             break;
           }
           if (d.assignment && !d.assignment.isDown) {
-            // Trail the receiver, staying a touch toward our own goal (downfield).
-            const lead = pursue(d.pos, d.assignment, 0.12);
-            const cushion = {
-              x: d.assignment.pos.x + ctx.dir * 14,
-              y: d.assignment.pos.y,
-            };
-            steer = addSteer(lead, seek(d.pos, cushion), 0.5);
+            const a = d.assignment;
+            // Mirror the receiver, anticipating their movement, with a small goal-side cushion
+            // so we keep leverage instead of trailing. Sprint to recover if we've lost a step.
+            const lead = pursue(d.pos, a, 0.2);
+            const cushion = { x: a.pos.x + ctx.dir * 10, y: a.pos.y };
+            steer = addSteer(lead, seek(d.pos, cushion), 0.6);
+            d.turbo = dist2(d.pos, a.pos) > 38 * 38; // glued unless beaten, then chase
           } else if (qb) {
             steer = seek(d.pos, qb.pos);
+            d.turbo = false;
           }
-          d.turbo = false;
           break;
         }
         case "spy": {
@@ -145,10 +162,17 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
           break;
         }
         case "zone": {
+          // Break on the ball in the air like everyone else.
+          if (ball.state === "inAir") {
+            steer = seek(d.pos, ball.target);
+            d.turbo = true;
+            break;
+          }
           const anchor = d.zonePoint ?? d.home;
-          // Break on the nearest threat entering the zone, else hold.
+          // Drive on the nearest threat entering the zone, else settle on the spot.
           const threat = nearestOffenseTo(ctx, anchor, 150);
           steer = threat ? seek(d.pos, threat.pos) : seek(d.pos, anchor);
+          d.turbo = threat != null && dist2(d.pos, threat.pos) > 70 * 70;
           break;
         }
         default:
@@ -156,8 +180,9 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
       }
     }
 
+    // Spread out in coverage, but converge to swarm/gang-tackle a live ball-carrier.
     const sep = separation(d, defense, 26);
-    d.desired = addSteer(steer, sep, 0.5);
+    d.desired = addSteer(steer, sep, carrierIsRunning || ball.state === "loose" ? 0.18 : 0.5);
 
     // Face the play while in coverage so drops/mirrors read as backpedals & shuffles;
     // face movement when rushing or chasing a runner (forward run).
@@ -171,17 +196,34 @@ export function updateDefense(ctx: PlayContext, controlled: Player | null): void
   void CENTER_Y_FALLBACK;
 }
 
-/** Where a defender should aim to cut off the ball carrier (lead + goal-side leverage). */
+/**
+ * Where a defender should aim to cut off the ball carrier. Solves (iteratively) for the point
+ * on the carrier's projected path that this defender can reach at the same time — a true pursuit
+ * angle — then keeps it goal-side so he gets in front and squares up rather than chasing the hip.
+ */
 function interceptPoint(d: Player, carrier: Player, ctx: PlayContext): Vec2 {
-  const toX = carrier.pos.x - d.pos.x;
-  const toY = carrier.pos.y - d.pos.y;
-  const dist = Math.hypot(toX, toY) || 1;
-  const lead = Math.min(0.9, dist / (d.baseSpeed * 1.25));
-  const px = carrier.pos.x + carrier.vel.x * lead;
-  const py = carrier.pos.y + carrier.vel.y * lead;
-  // Stay on the goal side of the runner so they can't just bounce upfield past us.
-  const aheadX = carrier.pos.x + ctx.dir * 6;
-  return { x: ctx.dir > 0 ? Math.max(px, aheadX) : Math.min(px, aheadX), y: py };
+  // Right on top of him: aim AT the carrier and square up for the tackle (no leverage offset,
+  // or defenders just circle a stationary back without ever making contact).
+  if (dist2(d.pos, carrier.pos) < 46 * 46) return { x: carrier.pos.x, y: carrier.pos.y };
+
+  const dSpeed = Math.max(60, d.baseSpeed);
+  // Converge on the meeting time: t ≈ distance-to-future-spot / defender speed.
+  let t = Math.hypot(carrier.pos.x - d.pos.x, carrier.pos.y - d.pos.y) / dSpeed;
+  for (let i = 0; i < 3; i++) {
+    const fx = carrier.pos.x + carrier.vel.x * t;
+    const fy = carrier.pos.y + carrier.vel.y * t;
+    t = Math.hypot(fx - d.pos.x, fy - d.pos.y) / dSpeed;
+  }
+  t = Math.min(t, 1.5); // don't over-project on a far, fast runner
+  let px = carrier.pos.x + carrier.vel.x * t;
+  const py = carrier.pos.y + carrier.vel.y * t;
+  // Cut-off leverage scaled by how fast he's actually advancing — only get ahead of a runner
+  // who's gaining ground, so a slow/stopped carrier isn't overshot.
+  const downSpeed = Math.max(0, ctx.dir > 0 ? carrier.vel.x : -carrier.vel.x);
+  const lead = Math.min(18, downSpeed * 0.07);
+  const goalSide = carrier.pos.x + ctx.dir * lead;
+  px = ctx.dir > 0 ? Math.max(px, goalSide) : Math.min(px, goalSide);
+  return { x: px, y: py };
 }
 
 function pastLine(p: Player, ctx: PlayContext): boolean {
