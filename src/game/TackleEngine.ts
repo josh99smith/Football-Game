@@ -161,10 +161,14 @@ export class TackleEngine {
     let my = carrier.vel.y * carrier.strength;
     let mass = carrier.strength;
     for (const t of pile) { mx += t.vel.x * t.strength; my += t.vel.y * t.strength; mass += t.strength; }
-    // Plus a shove off the lead tackler (hard for a committed big hit — that's where the pop is).
+    // Wrap-up energy loss (ground friction + grappling): the pile bleeds momentum as it grows, so a
+    // lone arm-tackle keeps ~88% of the shared COM velocity (drags the runner forward) while a 4-man
+    // gang keeps ~70% (stones him / drives him back). Plus a shove off the lead tackler (hard for a
+    // committed big hit — that's the pop).
+    const kappa = clamp(0.12 + 0.06 * (gangSize - 1), 0.12, 0.3);
     const shove = hitStick ? 90 : big ? 55 : 22;
-    const pvx = mx / mass + (dirX / dl) * shove;
-    const pvy = my / mass + (dirY / dl) * shove;
+    const pvx = (mx / mass) * (1 - kappa) + (dirX / dl) * shove;
+    const pvy = (my / mass) * (1 - kappa) + (dirY / dl) * shove;
 
     const beat = clamp(0.2 + gangSize * 0.035 + (big ? 0.08 : 0), 0.2, 0.42);
 
@@ -178,7 +182,7 @@ export class TackleEngine {
     carrier.animEvent = "tackle";
     for (let i = 0; i < pile.length; i++) {
       const t = pile[i];
-      t.enterContact(pvx * 0.5, pvy * 0.5, beat);
+      t.enterContact(pvx, pvy, beat); // full share — the pile rides as ONE body (no separating during the wrap)
       t.animEvent = "tackleMade";
       t.facing = Math.atan2(carrier.pos.y - t.pos.y, carrier.pos.x - t.pos.x);
       t.heading = t.facing;
