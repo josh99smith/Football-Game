@@ -376,6 +376,14 @@ function makeBlobTexture(): THREE.Texture {
 // We paint a jersey in that layout — base color, white shoulder yoke, accent collar V + sleeve
 // stripes, and an outlined player number front & back — then cache it per (jersey,accent,number).
 const _jerseyCache = new Map<string, THREE.CanvasTexture>();
+// Optional REALISTIC image skins, keyed by a team's HOME jersey color. Drop a PNG at /public/<file>
+// and the loaded image replaces the procedural draw for that team in place (the procedural texture is
+// still drawn first, so a missing/failed file just falls back to it — the game never breaks). NOTE:
+// the player number is baked into the image, so every player on that team shows it for now; a
+// numberless base + a drawn number is the follow-up once a skin is dialed in.
+const JERSEY_SKIN_OVERRIDES: Record<number, string> = {
+  0x0a1c3f: "skins/dal_home_jersey.png", // Dallas Outlaws — home
+};
 function hexCss(n: number): string {
   return `#${(n & 0xffffff).toString(16).padStart(6, "0")}`;
 }
@@ -501,6 +509,15 @@ function jerseyTexture(jersey: number, accent: number, trim: number, num: number
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
+  // If a realistic image skin exists for this jersey color, load it and swap it in place once it
+  // arrives (same texture object → no re-bind needed). On a missing/failed file the procedural draw
+  // above just stays — graceful fallback.
+  const skin = JERSEY_SKIN_OVERRIDES[jersey];
+  if (skin && typeof Image !== "undefined") {
+    const img = new Image();
+    img.onload = () => { tex.image = img; tex.needsUpdate = true; };
+    img.src = (import.meta.env.BASE_URL || "/") + skin;
+  }
   _jerseyCache.set(key, tex);
   return tex;
 }
