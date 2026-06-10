@@ -687,6 +687,10 @@ class FbxAvatar implements Avatar {
   private readonly restPose = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
   /** Extremity bones sampled to keep the body on the turf during the get-up (lazy-cached). */
   private contactBones: THREE.Bone[] | null = null;
+  /** Foot-IK influence (1 at a stand/walk, fading to 0 at a sprint). The ground correction pops the
+   *  planted foot frame-to-frame at high stride rates — that was the open-field run "stutter" — and
+   *  the stride-warp already keeps fast feet from skating, so we fade IK out as speed climbs. */
+  private footIKScale = 1;
   private ragdoll: TackleRagdoll | null = null;
   private rPhase: "anim" | "fall" | "getup" = "anim";
   /** Formal animation state, derived each frame (observability now; drives transition-enforced
@@ -865,7 +869,9 @@ class FbxAvatar implements Avatar {
       leg.ankle.getWorldPosition(_ikAnkle);
       let soleY = _ikAnkle.y;
       if (leg.toe) { leg.toe.getWorldPosition(_ikToe); soleY = Math.min(soleY, _ikToe.y); }
-      const plant = 1 - smoothstep(ANIM.FOOT_PLANT_LO, ANIM.FOOT_PLANT_HI, soleY);
+      // Fade the correction out with speed (footIKScale): at footIKScale=1 this is the exact prior
+      // plant amount; toward a sprint it collapses to ~0 so the foot is left on its clip (no pop).
+      const plant = (1 - smoothstep(ANIM.FOOT_PLANT_LO, ANIM.FOOT_PLANT_HI, soleY)) * this.footIKScale;
       if (plant <= 0.001) continue;
       _ikTarget.copy(_ikAnkle);
       _ikTarget.y = _ikAnkle.y - soleY * plant * ANIM.FOOT_IK_WEIGHT; // drop so the sole reaches y=0
@@ -1220,7 +1226,7 @@ class FbxAvatar implements Avatar {
     }
     // Foot IK runs on the fully-posed skeleton (after the mixer + throw). Suppressed during one-shot
     // overlays (tackle/juke/spin) where the legs do non-locomotion things. Default-off (see FOOT_IK).
-    if (ANIM.FOOT_IK && !this.oneShot) this.applyFootIK();
+    if (ANIM.FOOT_IK && !this.oneShot && this.footIKScale > 0.02) this.applyFootIK();
     if (this.nub.visible) {
       const hand = this.handBone ?? this.foreBone;
       if (hand) {
@@ -1280,6 +1286,10 @@ class FbxAvatar implements Avatar {
     p.animEvent = null;
 
     const lo = p.loco;
+
+    // Foot IK is stable for a planted stand/walk but pops the foot once the run cycle plays fast, so
+    // fade it out across the jog→sprint band (the stride-warp prevents skating up there anyway).
+    this.footIKScale = 1 - smoothstep(0.34, 0.66, lo.speed01);
 
     // Smooth, rate-limited yaw toward the heading the sim already smoothed (carve, no snap).
     const targetYaw = toModelYaw(lo.heading) + MODEL_FORWARD;
