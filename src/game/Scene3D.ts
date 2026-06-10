@@ -1977,10 +1977,13 @@ export class Scene3D {
     const fx = focusX * U;
     const fz = focusY * U;
     if (this.superstarCam) {
-      // Superstar mode: a tighter, lower over-the-shoulder cam glued to one player (Madden-style),
-      // so a single guy fills the frame and you read the field from his eyes.
-      outPos.set(fx - dir * 6.4, 5.3, fz);
-      outLook.set(fx + dir * 8.5, 1.0, fz);
+      // Superstar mode: an over-the-shoulder cam BEHIND the controlled player's facing (works for the
+      // QB looking downfield and a defender facing the play), pulled back a bit so you see more. As a
+      // passing QB it pans toward the receiver you're aiming at.
+      const ch = this._ssFwdX, sh = this._ssFwdZ;
+      outPos.set(fx - ch * 8.6, 6.4, fz - sh * 8.6);
+      outLook.set(fx + ch * 9, 1.3, fz + sh * 9);
+      if (this._ssHasLook) outLook.lerp(this._ssLook, 0.55); // tilt/pan toward the targeted receiver
       return;
     }
     // Tight, low "over the shoulder" angle: big readable players + the action up close.
@@ -2012,6 +2015,10 @@ export class Scene3D {
     shakeX: number;
     shakeY: number;
     dt: number;
+    /** Superstar cam: the controlled player's facing (field radians) — the cam sits behind it. */
+    ssHeading?: number;
+    /** Superstar cam: a field point (px) to pan the look toward (e.g. the QB's targeted receiver). */
+    ssLook?: { x: number; y: number } | null;
   }): void {
     const { players, ball } = opts;
     for (let i = 0; i < this.players.length; i++) {
@@ -2087,6 +2094,24 @@ export class Scene3D {
     // Smooth camera follow (per-tick); the final placement is interpolated in render().
     const tp = _tmpPos;
     const tl = _tmpLook;
+    // Superstar aim smoothing: ease the behind-cam heading + the look point so the camera pans
+    // (never jumps) as you switch which receiver you're eyeing or as you face a new direction.
+    if (opts.ssHeading != null) {
+      const k = Math.min(1, opts.dt * 4);
+      this._ssFwdX += (Math.cos(opts.ssHeading) - this._ssFwdX) * k;
+      this._ssFwdZ += (Math.sin(opts.ssHeading) - this._ssFwdZ) * k;
+      const m = Math.hypot(this._ssFwdX, this._ssFwdZ) || 1;
+      this._ssFwdX /= m; this._ssFwdZ /= m;
+    }
+    if (opts.ssLook) {
+      const lk = Math.min(1, opts.dt * 3.5);
+      this._ssLook.x += (opts.ssLook.x * U - this._ssLook.x) * lk;
+      this._ssLook.z += (opts.ssLook.y * U - this._ssLook.z) * lk;
+      this._ssLook.y = 1.3;
+      this._ssHasLook = true;
+    } else {
+      this._ssHasLook = false;
+    }
     this.computeCamTarget(opts.focusX, opts.focusY, opts.dir, tp, tl);
 
     // Cinematic hit push-in. Advance `cine` on REAL time (fixed 1/60 step) so it snaps in even
@@ -2130,6 +2155,12 @@ export class Scene3D {
   freeCam = false;
   /** Superstar camera: tighter, lower chase cam locked on the controlled player (set per-frame). */
   superstarCam = false;
+  // Smoothed superstar aim: the behind-cam forward (world x,z) + the receiver look point, both eased
+  // each frame so the cam pans/rotates toward who you're looking at instead of snapping.
+  private _ssFwdX = 1;
+  private _ssFwdZ = 0;
+  private readonly _ssLook = new THREE.Vector3(0, 1.3, 0);
+  private _ssHasLook = false;
   /** DEBUG pause: when true, advance the skinned animation by dt=0 so the pose freezes too (the sim
    *  is frozen by GameApp); the scene still renders so the frozen moment can be orbited. */
   paused = false;

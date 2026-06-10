@@ -582,9 +582,27 @@ export class LivePlayState implements GameState {
     // normal broadcast view. Evaluated live, so rotating mid-play switches modes.
     const superstar = this.app.r.height > this.app.r.width;
     this.app.scene3d.superstarCam = superstar;
-    const starFocus = superstar && this.phase === "live" && this.controlled && !this.controlled.isDown
-      ? this.controlled.pos
-      : null;
+    let starFocus: Vec2 | null = null;
+    let ssHeading: number | undefined;
+    let ssLook: Vec2 | null = null;
+    if (superstar && this.phase === "live" && this.controlled && !this.controlled.isDown) {
+      const c = this.controlled;
+      ssHeading = c.heading; // the cam sits behind whoever you control (QB downfield / defender facing the play)
+      const threw = this.passThrown && this.ball.thrownBy === c;
+      if (threw) {
+        // You're locked to the QB but watch the throw: ride behind the receiver once he catches it,
+        // else look downfield at the ball in flight.
+        const carrier = this.ball.carrier;
+        if (carrier && !carrier.isDown) { starFocus = carrier.pos; ssHeading = carrier.heading; }
+        else { starFocus = this.ball.pos; ssLook = { x: this.ball.pos.x, y: this.ball.pos.y }; }
+      } else {
+        starFocus = c.pos;
+        if (this.humanIsOffense && this.canThrow(c)) {
+          const rcv = this.aimedReceiver(c); // QB: pan toward the receiver you're aiming at
+          if (rcv) ssLook = { x: rcv.pos.x, y: rcv.pos.y };
+        }
+      }
+    }
 
     const ballFocus = this.ball.carrier ? this.ball.carrier.pos : this.ball.pos;
     const focus = starFocus ? starFocus : this.phase === "struggle" && this.struggleCarrier && this.struggleTackler
@@ -613,6 +631,8 @@ export class LivePlayState implements GameState {
       shakeX: this.app.shake.offsetX,
       shakeY: this.app.shake.offsetY,
       dt,
+      ssHeading,
+      ssLook,
     });
 
     this.updateAtmosphere(dt);
@@ -816,14 +836,21 @@ export class LivePlayState implements GameState {
     return { x: -m.y * this.dir, y: m.x * this.dir };
   }
 
+  /** Superstar QB: the receiver currently being aimed at (the same one the throw would pick), so the
+   *  camera can pan toward him. */
+  private aimedReceiver(qb: Player): Player | null {
+    const t = chooseTarget(qb, this.offense, this.defense, this.dir, this.stickToField());
+    return t ? t.receiver : null;
+  }
+
   private handleHumanControl(dt: number): void {
     const input = this.app.input;
     const c = this.controlled;
 
     if (!c || c.isDown) {
-      // No live controlled player (e.g. ball in air). Defense switches to the nearest
-      // defender to the ball; offense grabs the targeted receiver to go up for it.
-      if (input.actionPressed) {
+      // No live controlled player (e.g. ball in air). Defense switches to the nearest defender to the
+      // ball; offense grabs the targeted receiver to go up for it. Disabled in superstar (locked).
+      if (input.actionPressed && !this.app.scene3d.superstarCam) {
         if (!this.humanIsOffense) this.switchDefender();
         else if (this.ball.state === "inAir" && this.passTarget && !this.passTarget.isDown) {
           this.setControlled(this.passTarget);
@@ -1152,8 +1179,8 @@ export class LivePlayState implements GameState {
       c.vel.y += Math.sin(c.facing) * burst;
       this.app.particles.burst(c.pos.x, c.pos.y, "#dce6ff", 6, 80);
       this.app.shake.add(0.12);
-    } else {
-      this.switchDefender();
+    } else if (!this.app.scene3d.superstarCam) {
+      this.switchDefender(); // no switching in superstar — you're locked to your defender for the play
     }
   }
 
@@ -1357,7 +1384,9 @@ export class LivePlayState implements GameState {
       this.app.audio.catchBall();
       this.app.floating.add("CAUGHT!", res.caught.pos.x, res.caught.pos.y - 20, { size: 18, color: "#bfffd0" });
       if (res.caught.team === this.app.match.humanTeam) this.app.audio.crowdCheer();
-      if (res.caught.team === this.app.match.humanTeam && this.humanIsOffense) {
+      // Take control of the receiver on a catch — UNLESS in superstar mode, where you're locked to
+      // your player (the QB) and just watch the catch + run.
+      if (res.caught.team === this.app.match.humanTeam && this.humanIsOffense && !this.app.scene3d.superstarCam) {
         this.setControlled(res.caught);
       }
     } else if (res.intercepted) {
