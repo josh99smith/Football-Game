@@ -37,6 +37,13 @@ const _getQ = new THREE.Quaternion(); // scratch for the settled-pose -> clip cr
 const _rgp = new THREE.Vector3();
 const _rhip = new THREE.Vector3();
 const _handPos = new THREE.Vector3();
+const _cnA = new THREE.Vector3(); // chest-normal scratch (get-up orientation match)
+const _cnB = new THREE.Vector3();
+const _cnC = new THREE.Vector3();
+const _cnD = new THREE.Vector3();
+const _cnSpine = new THREE.Vector3();
+const _cnSide = new THREE.Vector3();
+const _cnNorm = new THREE.Vector3();
 // Scratch for the procedural QB throw (aim the arm bones each frame).
 const _thA = new THREE.Vector3();
 const _thB = new THREE.Vector3();
@@ -637,7 +644,11 @@ class FbxAvatar implements Avatar {
   private readonly diveAction: THREE.AnimationAction | null;
   private readonly pickupAction: THREE.AnimationAction | null;
   private readonly turnRunAction: THREE.AnimationAction | null;
-  private readonly getupAction: THREE.AnimationAction | null;
+  /** Currently-selected get-up clip (chosen by how the body settled, in startGetup). */
+  private getupAction: THREE.AnimationAction | null = null;
+  /** Get-up clip pool, each with the chest-normal Y of its first (lying) frame, so we can match the
+   *  settled ragdoll's orientation to the right clip (face-up vs face-down) instead of guessing. */
+  private readonly getupPool: { action: THREE.AnimationAction; startY: number }[] = [];
   private getupViaClip = false; // true while a real get-up CLIP is driving the stand-up (vs procedural)
   /** Touchdown-celebration clips (base + sports variants) with each one's slice point, picked at random. */
   private readonly celebVariants: { a: THREE.AnimationAction; s: number }[];
@@ -767,7 +778,9 @@ class FbxAvatar implements Avatar {
     this.diveAction = clips.dive ? this.mixer.clipAction(clips.dive) : null;
     this.pickupAction = clips.pickup ? this.mixer.clipAction(clips.pickup) : null;
     this.turnRunAction = clips.turnRun ? this.mixer.clipAction(clips.turnRun) : null;
-    this.getupAction = clips.getup ? this.mixer.clipAction(clips.getup) : null;
+    for (const clip of [clips.getup, clips.getupB, clips.getupC]) {
+      if (clip) this.getupPool.push({ action: this.mixer.clipAction(clip), startY: 0 });
+    }
     // Each celebration with its slice point (the sports takes are 20-32s; the swing is buried inside).
     const ca = (c: THREE.AnimationClip | null) => (c ? this.mixer.clipAction(c) : null);
     this.celebVariants = ([
@@ -783,7 +796,7 @@ class FbxAvatar implements Avatar {
       a?.play();
       a?.setEffectiveWeight(0);
     }
-    this.oneShotActions = [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction, this.qbThrowAction, this.pitchAction, this.kickAction, this.diveAction, this.pickupAction, this.turnRunAction, this.getupAction, ...this.celebVariants.map((v) => v.a)]
+    this.oneShotActions = [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction, this.qbThrowAction, this.pitchAction, this.kickAction, this.diveAction, this.pickupAction, this.turnRunAction, ...this.getupPool.map((g) => g.action), ...this.celebVariants.map((v) => v.a)]
       .filter((a): a is THREE.AnimationAction => a != null);
     for (const a of this.oneShotActions) {
       a.setLoop(THREE.LoopOnce, 1);
@@ -831,7 +844,47 @@ class FbxAvatar implements Avatar {
     inner.traverse((o) => {
       if ((o as THREE.Bone).isBone) this.restPose.set(o as THREE.Bone, { p: o.position.clone(), q: o.quaternion.clone() });
     });
+    this.measureGetupOrientations();
     this.setupFootIK();
+  }
+
+  /** The up/down component of the torso's chest normal: > 0 ⇒ chest faces up (lying on the back),
+   *  < 0 ⇒ chest faces down (lying on the front). Built from joint world positions (hips → upper
+   *  spine × shoulder line) so it's independent of bone-axis convention, and it's yaw-invariant
+   *  (rotation about Y doesn't change a vector's Y), so a clip pose and a settled pose are comparable
+   *  no matter which way either is facing. */
+  private chestNormalY(): number {
+    const hips = this.bone("Hips");
+    const top = this.bone("Spine2") ?? this.bone("Spine1") ?? this.bone("Neck");
+    const la = this.bone("LeftArm");
+    const ra = this.bone("RightArm");
+    if (!hips || !top || !la || !ra) return 0;
+    hips.getWorldPosition(_cnA); top.getWorldPosition(_cnB);
+    la.getWorldPosition(_cnC); ra.getWorldPosition(_cnD);
+    _cnSpine.subVectors(_cnB, _cnA);
+    _cnSide.subVectors(_cnC, _cnD);
+    _cnNorm.crossVectors(_cnSpine, _cnSide);
+    return _cnNorm.lengthSq() > 1e-9 ? _cnNorm.normalize().y : 0;
+  }
+
+  /** Sample each get-up clip's first (lying) frame and record its chest-normal orientation, so a
+   *  ragdoll that settled face-up vs face-down can later pick the clip that starts the same way. */
+  private measureGetupOrientations(): void {
+    for (const g of this.getupPool) {
+      g.action.reset();
+      g.action.setLoop(THREE.LoopOnce, 1);
+      g.action.time = 0;
+      g.action.setEffectiveWeight(1);
+      g.action.play();
+      this.mixer.update(0.001); // apply the clip's first-frame pose (tiny dt so it's still ≈ t=0)
+      this.inner.updateWorldMatrix(true, true);
+      g.startY = this.chestNormalY();
+      g.action.stop();
+      g.action.setEffectiveWeight(0);
+    }
+    // Restore the bind pose the sampling disturbed.
+    for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
+    this.inner.updateWorldMatrix(true, true);
   }
 
   /** Cache each leg's hip/knee/ankle/toe bones and measure the (rigid) thigh + shin lengths from
@@ -1026,13 +1079,26 @@ class FbxAvatar implements Avatar {
     bone.updateWorldMatrix(false, true);          // refresh so the next aim reads fresh child pos
   }
 
+  /** Pick the get-up clip whose lying start-frame orientation is closest to how the body settled
+   *  (face-up vs face-down), so the stand-up never plays from the wrong side. */
+  private pickGetup(): THREE.AnimationAction | null {
+    if (this.getupPool.length === 0) return null;
+    const settledY = this.chestNormalY();
+    let best = this.getupPool[0];
+    for (const g of this.getupPool) {
+      if (Math.abs(g.startY - settledY) < Math.abs(best.startY - settledY)) best = g;
+    }
+    return best.action;
+  }
+
   private startGetup(): void {
     this.getupFrom.clear();
     for (const [bone] of this.restPose) this.getupFrom.set(bone, { p: bone.position.clone(), q: bone.quaternion.clone() });
+    this.getupAction = this.pickGetup(); // match the settled orientation BEFORE the physics hand-off
     this.ragdoll!.dispose(); // hand off from physics to the stand-up
     this.rPhase = "getup"; this.getupT = 0;
-    // Drive the stand-up with the real get-up CLIP when we have it (crossfaded from the settled pose
-    // so it doesn't pop); otherwise the procedural blend back to the rest stance.
+    // Drive the stand-up with the matched get-up CLIP when we have one (crossfaded from the settled
+    // pose so it doesn't pop); otherwise the procedural blend back to the rest stance.
     this.getupViaClip = this.getupAction != null;
     if (this.getupAction) {
       // Only the get-up clip drives during the stand-up — silence locomotion/one-shots so the mixer
