@@ -525,7 +525,10 @@ export class LivePlayState implements GameState {
     // backpedal); once he scrambles past the line or throws, he faces his movement.
     if (this.qb) {
       const behind = this.dir > 0 ? this.qb.pos.x < this.startLosX : this.qb.pos.x > this.startLosX;
-      const inPocket = this.ball.carrier === this.qb && !this.passThrown && !this.offensePlay.isRun && behind;
+      // Turbo in the backfield = tuck and scramble: drop the downfield pocket facing so he turns and
+      // faces his movement → the forward RUN animation, instead of a downfield-facing backpedal.
+      const scrambling = this.qb === this.controlled && this.qb.turbo;
+      const inPocket = this.ball.carrier === this.qb && !this.passThrown && !this.offensePlay.isRun && behind && !scrambling;
       this.qb.lookDir = inPocket ? (this.dir > 0 ? 0 : Math.PI) : null;
     }
 
