@@ -2104,9 +2104,17 @@ export class Scene3D {
       this._ssFwdX /= m; this._ssFwdZ /= m;
     }
     if (opts.ssLook) {
-      const lk = Math.min(1, opts.dt * 3.5);
-      this._ssLook.x += (opts.ssLook.x * U - this._ssLook.x) * lk;
-      this._ssLook.z += (opts.ssLook.y * U - this._ssLook.z) * lk;
+      const lx = opts.ssLook.x * U, lz = opts.ssLook.y * U;
+      if (this._ssHasLook) {
+        // Already tracking a target: ease toward it so switching receivers pans smoothly.
+        const lk = Math.min(1, opts.dt * 3.5);
+        this._ssLook.x += (lx - this._ssLook.x) * lk;
+        this._ssLook.z += (lz - this._ssLook.z) * lk;
+      } else {
+        // First acquisition this play: snap on so we don't drift in from a stale point.
+        this._ssLook.x = lx;
+        this._ssLook.z = lz;
+      }
       this._ssLook.y = 1.3;
       this._ssHasLook = true;
     } else {
