@@ -84,6 +84,18 @@ function prep(clip: THREE.AnimationClip): THREE.AnimationClip {
   return c;
 }
 
+/**
+ * Strict retarget for clips authored on a DIFFERENT-proportioned skeleton (the sports mocap): keep
+ * ONLY rotation (quaternion) tracks and drop every position/scale track, so the clip drives our
+ * rig's joint angles while the rig keeps its OWN bone lengths. Without this, the clips' baked bone
+ * positions force our model into the source skeleton's proportions — the "tall + thin" stretch.
+ */
+function prepStrict(clip: THREE.AnimationClip): THREE.AnimationClip {
+  const c = clip.clone();
+  c.tracks = c.tracks.filter((t) => /\.quaternion$/i.test(t.name));
+  return c;
+}
+
 /** Reject if a promise doesn't settle in time — a hung mobile fetch must not stall forever. */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -162,10 +174,11 @@ function disposeSource(obj: THREE.Object3D): void {
  * animation is simply disabled) so it can never take down the whole skinned model. Only the base
  * rig is critical. The source FBX mesh is disposed immediately (we keep only the clip).
  */
-async function loadClip(loader: FBXLoader, url: string): Promise<THREE.AnimationClip | null> {
+async function loadClip(loader: FBXLoader, url: string, strict = false): Promise<THREE.AnimationClip | null> {
   try {
     const fbx = await loadFbx(loader, url);
-    const clip = fbx.animations[0] ? prep(fbx.animations[0]) : null;
+    const src = fbx.animations[0];
+    const clip = src ? (strict ? prepStrict(src) : prep(src)) : null;
     disposeSource(fbx); // free the throwaway character mesh before the next clip loads
     return clip;
   } catch (e) {
@@ -217,6 +230,8 @@ const CLIP_URL_KEY: Record<Exclude<keyof CharacterClips, "idle">, keyof Characte
   walk: "walk", tackle: "tackle", spin: "spin", defTackle: "defTackle", defSwat: "defSwat", celebrate: "celebrate",
   qbThrow: "qbThrow", pitch: "pitch", kick: "kick", celebGolf: "celebGolf", celebBat: "celebBat", celebTennis: "celebTennis",
 };
+/** Clips authored on a different skeleton — retarget rotation-only to preserve our proportions. */
+const SPORTS_RETARGET = new Set<Exclude<keyof CharacterClips, "idle">>(["qbThrow", "pitch", "kick", "celebGolf", "celebBat", "celebTennis"]);
 
 /** True once every animation clip (not just idle) is loaded — i.e. nothing left to retry. */
 export function clipsComplete(asset: CharacterAsset): boolean {
@@ -255,7 +270,9 @@ export async function loadAnimationClips(
     if (clips[k] != null) continue;
     const url = urls[CLIP_URL_KEY[k]];
     if (!url) continue; // optional clip not supplied (e.g. a sandbox) — skip it
-    clips[k] = await loadClip(loader, url);
+    // The sports mocap is on a differently-proportioned skeleton: retarget rotation-only so it
+    // doesn't stretch our model. The game's own clips keep the normal prep.
+    clips[k] = await loadClip(loader, url, SPORTS_RETARGET.has(k));
     onProgress?.(buildAsset(current.template, { ...clips }));
   }
   return buildAsset(current.template, clips);
