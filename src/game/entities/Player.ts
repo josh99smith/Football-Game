@@ -115,6 +115,9 @@ export class Player {
   tackledTimer = 0;
   /** Brief windows used by AI/cuts. */
   jukeTimer = 0;
+  /** Slot of this player in the owning state's sim list — set once per play at roster build, so the
+   *  tackle path can map a player→ragdoll index in O(1) instead of an indexOf scan each frame. */
+  simIndex = 0;
   /** Active dive/lunge window (carrier dive or defender dive-tackle). */
   diveTimer = 0;
   /** This lunge is a committed BIG HIT (hit-stick): devastating on contact, a whiff if it misses. */

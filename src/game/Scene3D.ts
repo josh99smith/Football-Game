@@ -14,7 +14,7 @@ import { STEP } from "../engine/Loop";
 import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD, type FieldBrand } from "./Field";
 import type { TeamConfig } from "./Team";
 import { drawIcon, type EmblemIcon } from "../ui/Emblems";
-import { PhysicsWorld } from "../physics/PhysicsWorld";
+import type { PhysicsWorld } from "../physics/PhysicsWorld";
 import { TackleRagdoll } from "../physics/TackleRagdoll";
 
 /** Units per field-pixel (1 yard = 1 world unit in 3D). */
@@ -619,6 +619,11 @@ class FbxAvatar implements Avatar {
   private suppressFall = false;
   /** Cached leg chains + measured bone lengths for foot IK (null if the rig lacks the bones). */
   private legIK: { hip: THREE.Bone; knee: THREE.Bone; ankle: THREE.Bone; toe: THREE.Bone | null; l1: number; l2: number }[] | null = null;
+  // Cached right-arm chain + hand, looked up once (bone() does a full skeleton traverse) so the
+  // per-frame procedural throw + carried-ball nub don't re-traverse every frame.
+  private armBone: THREE.Bone | null = null;
+  private foreBone: THREE.Bone | null = null;
+  private handBone: THREE.Bone | null = null;
 
   constructor(asset: CharacterAsset) {
     const inner = skeletonClone(asset.template);
@@ -750,6 +755,10 @@ class FbxAvatar implements Avatar {
       legs.push({ hip, knee, ankle, toe: this.bone(side + "ToeBase"), l1: _ikHip.distanceTo(_ikKnee), l2: _ikKnee.distanceTo(_ikAnkle) });
     }
     this.legIK = legs.length ? legs : null;
+    // Cache the throw/nub bones once here too (same one-time traverse window).
+    this.armBone = this.bone("RightArm");
+    this.foreBone = this.bone("RightForeArm");
+    this.handBone = this.bone("RightHand");
   }
 
   /**
@@ -773,11 +782,13 @@ class FbxAvatar implements Avatar {
       _ikTarget.copy(_ikAnkle);
       _ikTarget.y = _ikAnkle.y - soleY * plant * ANIM.FOOT_IK_WEIGHT; // drop so the sole reaches y=0
       solveTwoBone(_ikHip, _ikKnee, _ikTarget, leg.l1, leg.l2, _ikKneeOut);
-      _ikDir.subVectors(_ikKneeOut, _ikHip).normalize();
-      this.aimBone(leg.hip, leg.knee, _ikDir, 1);
+      // Guard the normalizes: a degenerate solve (knee coincident with hip/target) gives a zero-length
+      // dir → normalize() = NaN → a NaN quaternion that blows the whole limb up. Skip the aim instead.
+      _ikDir.subVectors(_ikKneeOut, _ikHip);
+      if (_ikDir.lengthSq() > 1e-8) { _ikDir.normalize(); this.aimBone(leg.hip, leg.knee, _ikDir, 1); }
       leg.knee.getWorldPosition(_ikKnee); // refreshed by aimBone's updateWorldMatrix
-      _ikDir.subVectors(_ikTarget, _ikKnee).normalize();
-      this.aimBone(leg.knee, leg.ankle, _ikDir, 1);
+      _ikDir.subVectors(_ikTarget, _ikKnee);
+      if (_ikDir.lengthSq() > 1e-8) { _ikDir.normalize(); this.aimBone(leg.knee, leg.ankle, _ikDir, 1); }
 
       // Level the planted foot: pulling the ankle down dorsiflexes the foot "toes up", so re-aim the
       // foot bone so its TOE reaches the turf (y≈0). Targeting the actual ground gets the correct
@@ -875,9 +886,9 @@ class FbxAvatar implements Avatar {
    * through — blending in/out so it crossfades with locomotion. `p` is 0..1 through the throw.
    */
   private applyThrow(p: number): void {
-    const arm = this.bone("RightArm");
-    const fore = this.bone("RightForeArm");
-    const hand = this.bone("RightHand");
+    const arm = this.armBone;
+    const fore = this.foreBone;
+    const hand = this.handBone;
     if (!arm || !fore) return;
     const h = this.throwHeading;
     _thFwd.set(Math.cos(h), 0, Math.sin(h));          // character's world forward
@@ -982,6 +993,8 @@ class FbxAvatar implements Avatar {
     for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
     this.fallT = 0;
     this.bankSmooth = 0;
+    this.throwT = 0; // kill any in-flight procedural throw so a reset mid-arc can't jam the arm next play
+    this.oneShot?.stop(); // actually halt the LoopOnce action, not just hide it (it was still clamping live)
     this.oneShot?.setEffectiveWeight(0);
     this.oneShot = null;
     this.lean.rotation.set(0, 0, 0);
@@ -1016,7 +1029,7 @@ class FbxAvatar implements Avatar {
     // overlays (tackle/juke/spin) where the legs do non-locomotion things. Default-off (see FOOT_IK).
     if (ANIM.FOOT_IK && !this.oneShot) this.applyFootIK();
     if (this.nub.visible) {
-      const hand = this.bone("RightHand") ?? this.bone("RightForeArm");
+      const hand = this.handBone ?? this.foreBone;
       if (hand) {
         hand.getWorldPosition(_handPos);
         this.group.worldToLocal(_handPos);
@@ -1383,9 +1396,21 @@ export class Scene3D {
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
-    // Spin up the physics world for ragdoll tackles (async WASM). It's ready well before the
-    // first snap; until then, tackles fall back to the canned animation.
-    void PhysicsWorld.create().then((w) => { this.physics = w; });
+    // Physics (2.7MB Rapier WASM) is loaded LAZILY via ensurePhysics() on the first play, not here —
+    // keeping it off the initial load path. Until it resolves, tackles fall back to canned animation.
+  }
+
+  private physicsLoading = false;
+  /** Lazily spin up the physics world for ragdoll tackles on demand (called when a play starts), so
+   *  the heavy WASM chunk isn't fetched/initialized at startup. Idempotent; retries on failure. */
+  ensurePhysics(): void {
+    if (this.physics || this.physicsLoading) return;
+    this.physicsLoading = true;
+    void import("../physics/PhysicsWorld")
+      .then((m) => m.PhysicsWorld.create())
+      .then((w) => { this.physics = w; })
+      .catch(() => { /* leave physics null → canned-animation fallback */ })
+      .finally(() => { this.physicsLoading = false; });
   }
 
   /** Begin a physics ragdoll tackle on the player at `index` (its slot in the sync list). */

@@ -106,7 +106,7 @@ export class TackleRagdoll {
   // drive every one of them identically, or one mesh's limb follows physics while another's
   // (e.g. the hand's fingers) stays frozen and tears off.
   private bones = new Map<string, THREE.Bone[]>();
-  private prevSubsteps = 2;
+  private highSub = false; // true while this ragdoll holds the high-substep refcount
   private age = 0; // seconds since spawn — limits fade out as this grows
   private groups = 0x00020003; // collision membership|filter, set per spawn (see spawn)
 
@@ -160,9 +160,10 @@ export class TackleRagdoll {
     const R = this.physics.rapier;
     const byName = new Map<string, Seg>();
     this.age = 0;
-    // Joints solve far more stably with more substeps — the key fix for "goes crazy".
-    this.prevSubsteps = this.physics.substeps;
-    this.physics.substeps = 8;
+    // Joints solve far more stably with more substeps — the key fix for "goes crazy". Refcounted so
+    // overlapping pile ragdolls don't clobber the shared baseline.
+    this.physics.acquireHighSubsteps();
+    this.highSub = true;
     const hitVel = _upVel.copy(hitDir).multiplyScalar(hitSpeed).add(carryVel); // tier that's hit
     const midVel = _midVel.copy(hitDir).multiplyScalar(hitSpeed * 0.45).add(carryVel); // pelvis
 
@@ -404,7 +405,7 @@ export class TackleRagdoll {
     for (const seg of this.segs) this.physics.world.removeRigidBody(seg.body);
     this.segs = [];
     this.active = false;
-    this.physics.substeps = this.prevSubsteps;
+    if (this.highSub) { this.physics.releaseHighSubsteps(); this.highSub = false; } // balanced acquire/release
   }
 }
 

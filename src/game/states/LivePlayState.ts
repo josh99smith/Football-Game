@@ -17,7 +17,7 @@ import { FONT, COLORS } from "../../ui/Theme";
 import { drawPanel, drawButton, tappedIn, type Rect } from "../../ui/widgets";
 import { ReplaySystem } from "../ReplaySystem";
 import { FreeCamController } from "../../engine/FreeCamController";
-import { TackleEngine, type GangTackle } from "../TackleEngine";
+import { TackleEngine, type GangTackle, type TackleQuery } from "../TackleEngine";
 import { LEFT_GOAL_X, RIGHT_GOAL_X, PX_PER_YARD } from "../Field";
 import { TWO_POINT_POINTS } from "../Match";
 import type { Match, PlayOutcome, OutcomeType } from "../Match";
@@ -236,6 +236,7 @@ export class LivePlayState implements GameState {
     // place (so the 3D field keeps living behind the broadcast-style call), instead of bouncing
     // out to a separate play-select screen.
     this.app.scene3d.setVisible(true);
+    this.app.scene3d.ensurePhysics(); // warm up the ragdoll physics WASM now (lazy, off the startup path)
     this.app.input.setLayout(this.controls.computeLayout(this.app.r, this.app.match.debugMode));
     this.app.audio.startCrowd();
     this.twoPoint = this.app.match.twoPointActive; // a goal-line two-point try
@@ -285,6 +286,7 @@ export class LivePlayState implements GameState {
     this.offense = [returner, ...blockers];
     this.defense = cover;
     this.all = [...this.offense, ...this.defense];
+    for (let i = 0; i < this.all.length; i++) this.all[i].simIndex = i;
     for (const p of this.all) { p.home = { x: p.pos.x, y: p.pos.y }; p.facing = p.team === receiver ? (this.dir > 0 ? 0 : Math.PI) : (this.dir > 0 ? Math.PI : 0); p.heading = p.facing; }
     this.qb = null;
     this.ball.attachTo(returner);
@@ -325,6 +327,7 @@ export class LivePlayState implements GameState {
     this.offense = buildOffense(this.offensePlay, this.offenseTeamId, m.losX, this.dir);
     this.defense = buildDefense(defTeamId, m.losX, this.dir);
     this.all = [...this.offense, ...this.defense];
+    for (let i = 0; i < this.all.length; i++) this.all[i].simIndex = i;
     this.qb = this.offense.find((p) => p.role === "QB") ?? null;
 
     // Ball starts with the QB.
@@ -561,11 +564,19 @@ export class LivePlayState implements GameState {
 
     // A tackle in progress wraps up over the contact beat, then the whistle blows.
     if (this.pendingTackle) {
-      this.pendingTackleTimer -= dt;
-      if (this.pendingTackleTimer <= 0) {
-        const pt = this.pendingTackle;
+      // Forward progress during the wrap-up can still break the plane (TD) or carry across a sideline
+      // (out of bounds) — checkBoundaries was skipped here, so a runner wrapped at the 1 who slid in
+      // got whistled down short. Re-check; if it ended the play, drop the scheduled whistle.
+      this.checkBoundaries();
+      if (this.phase !== "live") {
         this.pendingTackle = null;
-        this.endPlay(pt.type, pt.spot);
+      } else {
+        this.pendingTackleTimer -= dt;
+        if (this.pendingTackleTimer <= 0) {
+          const pt = this.pendingTackle;
+          this.pendingTackle = null;
+          this.endPlay(pt.type, pt.spot);
+        }
       }
     } else if (this.looseBall) {
       this.checkLooseBall();
@@ -1524,11 +1535,13 @@ export class LivePlayState implements GameState {
         if (a === carrier || b === carrier) continue;
         const dx = b.pos.x - a.pos.x;
         const dy = b.pos.y - a.pos.y;
-        const d = Math.hypot(dx, dy);
         // Pack a touch tighter than the full radii so bodies actually make contact (the collision
         // radius is larger than the visible model), instead of hovering with a gap.
         const min = (a.radius + b.radius) * 0.84;
-        if (d > 0 && d < min) {
+        const d2 = dx * dx + dy * dy;
+        // Reject the ~95% of non-overlapping pairs with a squared compare — only sqrt when they touch.
+        if (d2 > 0 && d2 < min * min) {
+          const d = Math.sqrt(d2);
           const overlap = min - d;
           if (overlap < 0.4) continue; // slop: ignore micro-overlaps to avoid buzzing
           const nx = dx / d;
@@ -1570,19 +1583,24 @@ export class LivePlayState implements GameState {
     // none / whiff / stumble / broken: the engine already applied any effects; play continues.
   }
 
-  /** Bundle the live-play context the tackling engine needs. */
-  private tackleQuery(carrier: Player) {
-    return {
-      carrier,
-      defense: this.defense,
-      dir: this.dir,
-      isReturn: this.isReturn,
-      controlled: this.controlled,
-      struggleReady: this.struggleCd <= 0,
-      playTime: this.playTime,
-      indexOf: (p: Player) => this.all.indexOf(p),
-    };
+  /** Bundle the live-play context the tackling engine needs. Mutates one reused object (the engine
+   *  consumes it synchronously and doesn't retain it) so the per-frame contact check allocates
+   *  nothing, and resolves player→sim-index in O(1) via the cached simIndex. */
+  private tackleQuery(carrier: Player): TackleQuery {
+    const q = this._tackleQuery;
+    q.carrier = carrier;
+    q.defense = this.defense;
+    q.dir = this.dir;
+    q.isReturn = this.isReturn;
+    q.controlled = this.controlled;
+    q.struggleReady = this.struggleCd <= 0;
+    q.playTime = this.playTime;
+    return q;
   }
+  private readonly _tackleQuery: TackleQuery = {
+    carrier: null as unknown as Player, defense: [], dir: 1, isReturn: false, controlled: null,
+    struggleReady: false, playTime: 0, indexOf: (p: Player) => p.simIndex,
+  };
 
   /** Finish a committed (gang) tackle: pop a fumble loose, or schedule the whistle, and hold the
    *  camera for the ragdoll pile. */

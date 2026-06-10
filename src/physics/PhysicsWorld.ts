@@ -19,6 +19,21 @@ export class PhysicsWorld {
    * and reduces tunneling/jitter without changing the tuned fall behavior. It only runs while a
    * ragdoll is active (during tackles), so the extra cost is brief. */
   substeps = 4;
+  private readonly baseSubsteps = 4;
+  private highSubstepRefs = 0;
+
+  /** Ragdolls need tighter joints (8 substeps). Refcounted: each active ragdoll acquires, and the
+   *  baseline is only restored once ALL release. Previously each ragdoll saved/restored a snapshot of
+   *  the shared `substeps`, so overlapping tackles clobbered each other and left it stuck at 8 forever
+   *  (2x physics cost for the rest of the game). */
+  acquireHighSubsteps(): void {
+    this.highSubstepRefs++;
+    this.substeps = 8;
+  }
+  releaseHighSubsteps(): void {
+    this.highSubstepRefs = Math.max(0, this.highSubstepRefs - 1);
+    if (this.highSubstepRefs === 0) this.substeps = this.baseSubsteps;
+  }
 
   private constructor(world: RAPIER.World) {
     this.world = world;

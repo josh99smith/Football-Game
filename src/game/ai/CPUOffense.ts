@@ -64,7 +64,10 @@ export function steerCarrier(carrier: Player, ctx: PlayContext): void {
   steer.x += ctx.dir * 0.9;
   carrier.desired = steer;
   keepInbounds(carrier);
-  carrier.turbo = near > 34;
+  // Turbo for daylight — but only when a defender actually exists/closes. `near` starts at Infinity,
+  // so with no upright defenders this used to force turbo permanently on (draining it on a player the
+  // human may take over next frame, e.g. the auto-steered superstar receiver).
+  carrier.turbo = near !== Infinity && near > 34;
 }
 
 /**
