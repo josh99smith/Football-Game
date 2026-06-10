@@ -31,6 +31,7 @@ const RAG_CALM_NEEDED = 0.25;    // brief beat on the ground before scrambling u
 const RAG_MAX_FALL = 2;          // safety: stand up even if it never fully settles (s) — no lying around
 const RAG_GETUP_DUR = 0.55;      // seconds to rise to standing (procedural fallback; pop up fast)
 const GETUP_CLIP_DUR = 1.35;     // seconds for the real get-up CLIP to play (sped up so recovery stays quick)
+const SIDELINE_PLAYERS_PER_SIDE = 9; // skinned bench players per sideline (capped for mobile perf)
 const _getQ = new THREE.Quaternion(); // scratch for the settled-pose -> clip crossfade
 const _rgp = new THREE.Vector3();
 const _rhip = new THREE.Vector3();
@@ -1340,6 +1341,13 @@ export class Scene3D {
   private readonly benchMatAway = new THREE.MeshStandardMaterial({ color: 0x8f3030, roughness: 0.85 });
   /** Bench/coach figures that idle-bob each frame. */
   private readonly sidelineFigures: { o: THREE.Object3D; ph: number }[] = [];
+  /** Placeholder box bench players (hidden once the real skinned models stream in). */
+  private readonly sidelineBoxPlayers: THREE.Object3D[] = [];
+  /** Real skinned sideline players (built when the char model + team colors are both ready). */
+  private sidelinePlayerObjs: THREE.Object3D[] = [];
+  private charAsset: CharacterAsset | null = null;
+  private sidelineTeamHome: TeamConfig | null = null;
+  private sidelineTeamAway: TeamConfig | null = null;
   private chainDown?: THREE.Object3D; // down marker (rides the LOS)
   private chainFirst?: THREE.Object3D; // first-down marker (rides the first-down line)
   private chainLink?: THREE.Mesh; // the chain stretched between them
@@ -1549,6 +1557,72 @@ export class Scene3D {
     // Dress the benches in the matchup's colors.
     this.benchMatHome.color.set(home.colors.jersey);
     this.benchMatAway.color.set(away.colors.jersey);
+    this.sidelineTeamHome = home;
+    this.sidelineTeamAway = away;
+    this.rebuildSidelinePlayers();
+  }
+
+  /** Swap the placeholder box bench figures for real skinned, team-colored player models (once both
+   *  the character model and the matchup colors are known). Capped + shadow-free + static-pose for
+   *  mobile perf — they're background dressing, so no per-frame mixer. */
+  private rebuildSidelinePlayers(): void {
+    const asset = this.charAsset, home = this.sidelineTeamHome, away = this.sidelineTeamAway;
+    if (!asset || !home || !away) return;
+    // Clear any previous skinned set (a new matchup re-colors them).
+    for (const o of this.sidelinePlayerObjs) {
+      this.scene.remove(o);
+      const i = this.sidelineFigures.findIndex((f) => f.o === o);
+      if (i >= 0) this.sidelineFigures.splice(i, 1);
+    }
+    this.sidelinePlayerObjs = [];
+    for (const o of this.sidelineBoxPlayers) o.visible = false; // hide the placeholders
+
+    for (const side of [-1, 1] as const) {
+      const team = side < 0 ? home : away;
+      const jersey = new THREE.Color(team.colors.jersey).getHex();
+      const accent = new THREE.Color(team.colors.accent).getHex();
+      const trim = new THREE.Color(team.colors.trim).getHex();
+      // A few shared jersey textures per side (random numbers), reused across figures (one canvas
+      // each instead of per-player — keeps texture memory + uploads low).
+      const texes = [0, 0, 0].map(() => jerseyTexture(jersey, accent, trim, 1 + ((Math.random() * 98) | 0)));
+      const baseZ = side < 0 ? -2.6 : FIELD_WID_U + 2.6;
+      const faceY = side < 0 ? 0 : Math.PI;
+      const x0 = FIELD_LEN_U * 0.32, x1 = FIELD_LEN_U * 0.68, n = SIDELINE_PLAYERS_PER_SIDE;
+      for (let i = 0; i < n; i++) {
+        const o = this.makeSidelinePlayer(asset, texes[(Math.random() * texes.length) | 0], trim);
+        o.position.set(x0 + (x1 - x0) * (i / (n - 1)) + (Math.random() * 0.5 - 0.25), 0, baseZ + (Math.random() * 0.7 - 0.35));
+        o.rotation.y = faceY;
+        this.scene.add(o);
+        this.sidelinePlayerObjs.push(o);
+        this.sidelineFigures.push({ o, ph: Math.random() });
+      }
+    }
+  }
+
+  /** One static skinned sideline player: a skeleton clone of the real model in its stance pose,
+   *  jersey-textured for the team, no shadow/mixer (background dressing). */
+  private makeSidelinePlayer(asset: CharacterAsset, tex: THREE.CanvasTexture, trim: number): THREE.Object3D {
+    const inner = skeletonClone(asset.template);
+    inner.scale.setScalar(asset.scale);
+    inner.position.y = asset.groundOffset * asset.scale;
+    inner.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.castShadow = false; // background — skip the shadow pass cost
+      const isJersey = /body/i.test(m.name);
+      const isHelmet = /helmet/i.test(m.name);
+      const apply = (mat: THREE.Material): THREE.Material => {
+        const clone = mat.clone() as THREE.MeshStandardMaterial;
+        if (isJersey) { clone.map = tex; clone.color.setHex(0xffffff); }
+        else if (isHelmet) clone.color.setHex(trim);
+        else clone.color.setHex(SKIN);
+        return clone;
+      };
+      m.material = Array.isArray(m.material) ? m.material.map(apply) : apply(m.material);
+    });
+    const g = new THREE.Group();
+    g.add(inner);
+    return g;
   }
 
   private buildField(field: Field): void {
@@ -1617,6 +1691,7 @@ export class Scene3D {
         o.rotation.y = faceY;
         this.scene.add(o);
         this.sidelineFigures.push({ o, ph: Math.random() });
+        this.sidelineBoxPlayers.push(o); // placeholder until the real skinned model upgrades it
       }
       for (const cx of [FIELD_LEN_U * 0.44, FIELD_LEN_U * 0.56]) {
         const o = figure(coachMat, 1.06);
@@ -2015,6 +2090,8 @@ export class Scene3D {
   charInfo: { skinned: boolean; clips: number } = { skinned: false, clips: 0 };
 
   setCharacter(asset: CharacterAsset): void {
+    this.charAsset = asset;
+    this.rebuildSidelinePlayers(); // upgrade the box bench figures to real skinned models
     const c = asset.clips;
     this.charInfo = {
       skinned: true,
