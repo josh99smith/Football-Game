@@ -384,6 +384,37 @@ const _jerseyCache = new Map<string, THREE.CanvasTexture>();
 const JERSEY_SKIN_OVERRIDES: Record<number, string> = {
   0x0a1c3f: "skins/dal_home_jersey.webp", // Dallas Outlaws — home
 };
+
+/** Mean luminance (0..1) of a drawable, sampled small (cheap, one-time per skin load). */
+function meanLuma(src: CanvasImageSource, w: number, h: number): number {
+  const s = document.createElement("canvas");
+  s.width = s.height = 32;
+  const sx = s.getContext("2d")!;
+  sx.drawImage(src, 0, 0, w, h, 0, 0, 32, 32);
+  const d = sx.getImageData(0, 0, 32, 32).data;
+  let sum = 0;
+  for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+  return sum / (d.length / 4) / 255;
+}
+
+/** AI-upgraded skins arrive with shading baked into the albedo (deep colors + lighting gradients),
+ *  so under the game's lights they render much darker than the procedural texture they replace.
+ *  Brightness-match the image to the procedural reference's mean luminance so it sits in the same
+ *  exposure — the detail (weave/stitching) survives, the "unlit" look goes away. */
+function lumaMatched(img: HTMLImageElement, ref: HTMLCanvasElement): HTMLCanvasElement {
+  const out = document.createElement("canvas");
+  out.width = img.naturalWidth;
+  out.height = img.naturalHeight;
+  const ox = out.getContext("2d")!;
+  const refL = meanLuma(ref, ref.width, ref.height);
+  const imgL = meanLuma(img, img.naturalWidth, img.naturalHeight);
+  const ratio = imgL > 0.01 ? Math.min(2.2, Math.max(0.6, refL / imgL)) : 1;
+  ox.filter = `brightness(${ratio.toFixed(3)})`;
+  ox.drawImage(img, 0, 0);
+  ox.filter = "none";
+  return out;
+}
+
 function hexCss(n: number): string {
   return `#${(n & 0xffffff).toString(16).padStart(6, "0")}`;
 }
@@ -515,7 +546,7 @@ function jerseyTexture(jersey: number, accent: number, trim: number, num: number
   const skin = JERSEY_SKIN_OVERRIDES[jersey];
   if (skin && typeof Image !== "undefined") {
     const img = new Image();
-    img.onload = () => { tex.image = img; tex.needsUpdate = true; };
+    img.onload = () => { tex.image = lumaMatched(img, c); tex.needsUpdate = true; };
     img.src = (import.meta.env.BASE_URL || "/") + skin;
   }
   _jerseyCache.set(key, tex);
@@ -568,7 +599,7 @@ function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THRE
   const skin = HELMET_SKIN_OVERRIDES[helmet];
   if (skin && typeof Image !== "undefined") {
     const img = new Image();
-    img.onload = () => { tex.image = img; tex.needsUpdate = true; };
+    img.onload = () => { tex.image = lumaMatched(img, c); tex.needsUpdate = true; };
     img.src = (import.meta.env.BASE_URL || "/") + skin;
   }
   _helmetCache.set(key, tex);
