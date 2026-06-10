@@ -1419,11 +1419,11 @@ export class LivePlayState implements GameState {
    *  the player mid-dive leaves him non-active, so we don't double-resolve. */
   private landDive(p: Player): void {
     if (p.state !== "active") return; // contact/tackle already took over
-    if (p === this.ball.carrier && this.phase === "live" && !this.pendingTackle) {
-      this.endPlay("tackle", { x: p.pos.x, y: p.pos.y });
-      return;
+    const isCarrier = p === this.ball.carrier;
+    p.goProne(0.8); // hit the deck where the dive landed (lie, then auto-scramble up)
+    if (isCarrier && this.phase === "live" && !this.pendingTackle) {
+      this.endPlay("tackle", { x: p.pos.x, y: p.pos.y }); // down where he gave himself up
     }
-    p.goProne(0.8);
   }
 
   /** Switch to the defender best placed to make a play: nearest to the carrier, or to
