@@ -1063,7 +1063,7 @@ class FbxAvatar implements Avatar {
     // When the tackle clip is the active one-shot, IT drives the fall, so skip the
     // procedural pitch (otherwise the body would double-tip).
     const tackleClip = this.oneShot != null && this.oneShot === this.tackleAction;
-    const fallTarget = this.suppressFall ? 0 : tackleClip ? 0 : lo.down ? 1 : lo.contact ? 0.55 : 0;
+    const fallTarget = this.suppressFall ? 0 : tackleClip ? 0 : lo.down ? 1 : lo.contact ? 0.18 : 0;
     this.fallT = moveToward(this.fallT, fallTarget, (fallTarget > this.fallT ? 1 / 0.25 : 1 / 0.4) * dt);
 
     // Procedural fall pose (applies whether or not locomotion is muted).
@@ -1128,9 +1128,10 @@ class FbxAvatar implements Avatar {
       const accelPitch = clamp(aFwd * ANIM.LEAN_ACCEL_GAIN, -ANIM.LEAN_PITCH_MAX, ANIM.LEAN_PITCH_MAX);
       const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.42 + aLat * ANIM.BANK_ACCEL_GAIN, -0.62, 0.62);
       this.bankSmooth += (bankTarget - this.bankSmooth) * Math.min(1, dt * 9);
-      // Forward lean while running ahead (more at speed), slight backward lean when backpedaling
-      // (added on top of the fall pitch, which is ~0 while upright), plus the accel weight pitch.
-      this.lean.rotation.x += ((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01 + accelPitch;
+      // Forward lean while running ahead (more at speed), slight backward lean when backpedaling,
+      // plus the accel weight pitch — all FADED OUT as the body falls (1 - fallT) so a tackled /
+      // wrapped-up player doesn't pile a running+decel lean on top of the fall and plank backward.
+      this.lean.rotation.x += (((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01 + accelPitch) * (1 - this.fallT);
       // Half-frequency weight-shift roll (once per stride) on top of the turn/accel bank.
       const hipRoll = ANIM.PROC_HIP ? Math.sin(this.phase * 3.5) * ANIM.HIP_ROLL_AMP * moving01 * fwd : 0;
       this.lean.rotation.z = this.bankSmooth + hipRoll;
