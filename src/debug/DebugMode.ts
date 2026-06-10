@@ -4,7 +4,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { GameApp } from "../engine/Game";
 import type { GameState } from "../engine/GameState";
 import type { Player } from "../game/entities/Player";
-import { ANIM } from "../game/anim/tuning";
+import { ANIM, CLIP_TIMING } from "../game/anim/tuning";
 
 const _fwd = new THREE.Vector3();
 
@@ -93,6 +93,40 @@ export class DebugMode {
     ik.add(ANIM, "FOOT_IK_WEIGHT", 0, 1, 0.05);
     ik.add(ANIM, "FOOT_PLANT_LO", 0, 0.5, 0.005);
     ik.add(ANIM, "FOOT_PLANT_HI", 0, 1, 0.01);
+
+    // Locomotion blend bands, plant warps + crossfade/envelope timings (start collapsed — used less
+    // often than the lean/hip/IK knobs, but here so the whole blend can be perfected on-device).
+    const blend = this.gui.addFolder("Locomotion blend");
+    blend.close();
+    blend.add(ANIM, "TURN_RATE", 4, 30, 0.5).name("Turn rate (rad/s)");
+    blend.add(ANIM, "IDLE_OUT", 0, 0.3, 0.005).name("Idle→move out");
+    blend.add(ANIM, "MOVE_FULL", 0.05, 0.5, 0.005).name("Move full");
+    blend.add(ANIM, "WALK_TO_RUN_LO", 0.05, 0.6, 0.01).name("Walk→run lo");
+    blend.add(ANIM, "WALK_TO_RUN_HI", 0.3, 1, 0.01).name("Walk→run hi");
+    blend.add(ANIM, "BLEND_TIME", 0.04, 0.4, 0.01).name("Crossfade (s)");
+    const plant = blend.addFolder("Foot-plant warps");
+    plant.close();
+    plant.add(ANIM, "PLANT_RUN", 0.004, 0.03, 0.0002).name("Run K");
+    plant.add(ANIM, "PLANT_WALK", 0.01, 0.06, 0.0005).name("Walk K");
+    plant.add(ANIM, "PLANT_BACK", 0.005, 0.04, 0.0002).name("Back K");
+    plant.add(ANIM, "PLANT_STRAFE", 0.005, 0.04, 0.0002).name("Strafe K");
+
+    const env = this.gui.addFolder("One-shot envelope");
+    env.close();
+    env.add(ANIM, "ONESHOT_IN", 0.02, 0.4, 0.01).name("Ramp in (s)");
+    env.add(ANIM, "ONESHOT_OUT", 0.04, 0.5, 0.01).name("Ramp out (s)");
+    env.add(ANIM, "THROW_DUR", 0.2, 1, 0.02).name("Proc throw (s)");
+
+    // Per-clip slice (start) / duration / rate — the heart of "slice to perfection".
+    const slices = this.gui.addFolder("Clip slices");
+    slices.close();
+    for (const key of Object.keys(CLIP_TIMING)) {
+      const cf = slices.addFolder(key);
+      cf.close();
+      cf.add(CLIP_TIMING[key], "start", 0, 6, 0.05).name("Slice start (s)");
+      cf.add(CLIP_TIMING[key], "dur", 0.2, 3, 0.05).name("Duration (s)");
+      cf.add(CLIP_TIMING[key], "rate", 0.5, 2.5, 0.05).name("Play rate");
+    }
 
     const ro = this.gui.addFolder("Readouts");
     ro.add(this.out, "fps").listen().disable();
@@ -215,9 +249,9 @@ export class DebugMode {
   }
 
   private copyTuning(): void {
-    const json = JSON.stringify(ANIM, null, 2);
+    const json = JSON.stringify({ ANIM, CLIP_TIMING }, null, 2);
     void navigator.clipboard?.writeText(json).catch(() => {});
-    console.log("[DEBUG] ANIM tuning —\n" + json);
+    console.log("[DEBUG] animation tuning —\n" + json);
   }
 
   dispose(): void {

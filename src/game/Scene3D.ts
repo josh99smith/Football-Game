@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { solveTwoBone } from "./anim/FootIK";
-import { ANIM } from "./anim/tuning";
+import { ANIM, CLIP_TIMING } from "./anim/tuning";
 import { deriveAvatarState, type AvatarState } from "./anim/AvatarState";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
@@ -312,23 +312,12 @@ function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: numb
 /** Facing offset so the model's front points along its movement direction. */
 const MODEL_FORWARD = 0;
 
-// Render-side feel constants.
-const TURN_RATE_RAD = 14; // rendered yaw slew (rad/s), scaled by speed
-// Foot-plant warps: timeScale = speed(px/s) * K, calibrated from each clip's measured
-// authored stride speed so the feet grip the ground (no skating) at any pace.
-const FOOT_PLANT_K = 0.0124; // run clip strides ~4.6 yd/s (only ~10% ease now, so feet don't skate at speed)
-const WALK_PLANT_K = 0.0369; // walk clip strides ~1.7 yd/s
-const BACK_PLANT_K = 0.0194; // backpedal clip ~3.2 yd/s
-const STRAFE_PLANT_K = 0.0163; // strafe clip ~3.8 yd/s
-const IDLE_OUT = 0.06; // speed01 below this is idle
-const MOVE_FULL = 0.18; // speed01 above this is fully in locomotion (idle faded out)
-// Procedural-locomotion tuning (accel lean, hip motion, foot IK) lives in one mutable object so the
-// in-game DEBUG panel can adjust it live — see src/game/anim/tuning.ts. Read as ANIM.* below.
+// Render-side feel constants. The locomotion-blend bands, plant warps, crossfade times and per-clip
+// slice points all live in the live-tunable ANIM / CLIP_TIMING surface now (src/game/anim/tuning.ts)
+// so they can be perfected on-device via the DEBUG panel; read as ANIM.* / CLIP_TIMING.* below.
 /** Fraction into the stance clip held for a neutral/idle player: a relaxed UPRIGHT stand
  *  (the clip ends in a deep 3-point crouch, which looks wrong for players just milling). */
 const IDLE_POSE = 0.13;
-const WALK_TO_RUN_LO = 0.3; // below this, forward motion is the walk cycle
-const WALK_TO_RUN_HI = 0.6; // above this, forward motion is the run cycle
 
 function wrapAngle(a: number): number {
   while (a > Math.PI) a -= Math.PI * 2;
@@ -336,7 +325,6 @@ function wrapAngle(a: number): number {
   return a;
 }
 /** Convert a standard heading (atan2(y,x)) to the model's yaw convention. */
-const THROW_DUR = 0.5; // seconds of the procedural QB throw motion
 function toModelYaw(h: number): number {
   return Math.atan2(Math.cos(h), Math.sin(h));
 }
@@ -614,10 +602,10 @@ function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THRE
   return tex;
 }
 
-/** Lerp an action's weight toward a target (~0.12s to fully change) for smooth crossfades. */
+/** Lerp an action's weight toward a target over ANIM.BLEND_TIME seconds, for smooth crossfades. */
 function blendW(a: THREE.AnimationAction | null, target: number, dt: number): void {
   if (!a) return;
-  a.setEffectiveWeight(moveToward(a.getEffectiveWeight(), target, dt / 0.16));
+  a.setEffectiveWeight(moveToward(a.getEffectiveWeight(), target, dt / Math.max(0.02, ANIM.BLEND_TIME)));
 }
 
 /** A skinned, animated player using the rigged model's own textured uniform. */
@@ -1034,7 +1022,19 @@ class FbxAvatar implements Avatar {
    *  procedural arm-aim. The ball is launched by game logic, so this only drives the body motion. */
   private startThrow(p: Player, clip: THREE.AnimationAction | null, startAt: number, maxDur: number, rate: number): void {
     if (clip) this.triggerOneShot(clip, maxDur, rate, startAt);
-    else { this.throwT = THROW_DUR; this.throwHeading = p.loco.heading; }
+    else { this.throwT = ANIM.THROW_DUR; this.throwHeading = p.loco.heading; }
+  }
+
+  /** Fire an action overlay using its live-tunable slice (start) / duration / rate from CLIP_TIMING. */
+  private fireClip(action: THREE.AnimationAction | null, key: keyof typeof CLIP_TIMING, ownsFall = false): void {
+    const t = CLIP_TIMING[key];
+    this.triggerOneShot(action, t.dur, t.rate, t.start, ownsFall);
+  }
+
+  /** Fire the QB throw (mocap clip if present, else the procedural arm) using CLIP_TIMING timing. */
+  private fireThrow(p: Player, clip: THREE.AnimationAction | null, key: keyof typeof CLIP_TIMING): void {
+    const t = CLIP_TIMING[key];
+    this.startThrow(p, clip, t.start, t.dur, t.rate);
   }
 
   /**
@@ -1297,7 +1297,7 @@ class FbxAvatar implements Avatar {
     this.mixer.update(dt);
     if (this.throwT > 0) {
       this.throwT -= dt;
-      this.applyThrow(clamp(1 - this.throwT / THROW_DUR, 0, 1));
+      this.applyThrow(clamp(1 - this.throwT / ANIM.THROW_DUR, 0, 1));
     }
     // Foot IK runs on the fully-posed skeleton (after the mixer + throw). Suppressed during one-shot
     // overlays (tackle/juke/spin) where the legs do non-locomotion things. Default-off (see FOOT_IK).
@@ -1330,39 +1330,28 @@ class FbxAvatar implements Avatar {
 
     // Fire one-shot overlays on game events: throw, catch, the change-of-direction juke,
     // the spin move, the carrier's getting-tackled reaction, the defender's tackle + ball-swat
-    // attempts, and a celebration. Each ramps in/out (below) so it crossfades with locomotion.
-    // QB throw uses the older rig_pass clip. Start the slice right at the forward WHIP (release
-    // ~5.45s) so the arm release lands ~0.2s after the throw event — synced with the ball leaving —
-    // instead of a long wind-up that finishes well after the ball's already gone.
-    if (p.animEvent === "pass") this.startThrow(p, this.passAction, 5.4, 0.85, 1.45);
-    else if (p.animEvent === "hailMary") this.startThrow(p, this.passAction, 5.3, 1.0, 1.25);
-    // Catch (rig_catch, 4.17s): the arms extend ~0.95s and the hands clamp the ball ~1.58s into the
-    // mocap. Start the slice right at the reach so the hands are already out the instant the ball
-    // arrives (the catch event fires when the ball attaches), then run fast through the secure — not
-    // a wind-up that has him reach AFTER he's already holding it.
-    else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.85, 1.5, 0.85);
-    else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.55, 1.25, 0);
-    else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
-    else if (p.animEvent === "stiffArm") this.triggerOneShot(this.jukeAction ?? this.spinAction, 0.5, 1.3, 0);
-    else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0, true);
-    // def_tackle is a 5s mocap take whose forward wrap/drive is ~1.0-2.5s in — slice to the lunge so
-    // the defender actually tackles ON contact (the first 1.5s is just the slow run-in).
-    else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.15, 1.3, 1.05);
-    else if (p.animEvent === "swat") this.triggerOneShot(this.defSwatAction, 0.95, 1.2, 0.3);
-    // kick (Soccer penalty) is a 28s take — slice to the plant→swing (~3.4s in).
-    else if (p.animEvent === "kick") this.triggerOneShot(this.kickAction, 1.2, 1.2, 2.6);
-    // dive (Run_To_Dive, 1.18s): the launch is at the very start — play it fast for the runner dive
-    // / defender dive-tackle. Falls back to the canned tackle clip until the dive clip streams in.
-    else if (p.animEvent === "dive") this.triggerOneShot(this.diveAction ?? this.tackleAction, 1.0, 1.45, 0.0, true);
-    // pickup (Pick_Up_Item, 1.2s): bend-down + scoop — play the whole bend/grab/rise for a recovery.
-    else if (p.animEvent === "pickup") this.triggerOneShot(this.pickupAction ?? this.catchAction, 1.0, 1.3, 0.05);
-    // turnRun (Turn_To_Running, 1.68s): the plant-and-turn is up front — play it fast for a hard
-    // direction reversal; falls back to the juke clip until it streams in.
-    else if (p.animEvent === "turnRun") this.triggerOneShot(this.turnRunAction ?? this.jukeAction, 0.7, 1.5, 0.0);
+    // attempts, and a celebration. Each ramps in/out (below) so it crossfades with locomotion. All
+    // slice points / durations / rates come from CLIP_TIMING.* so they're tunable on-device (see
+    // tuning.ts for the per-clip rationale: pass/catch are calibrated to the ball moment; juke / spin
+    // / dive are pushed snappier for arcade punch). `fireClip` reads its timing from CLIP_TIMING.
+    if (p.animEvent === "pass") this.fireThrow(p, this.passAction, "pass");
+    else if (p.animEvent === "hailMary") this.fireThrow(p, this.passAction, "hailMary");
+    else if (p.animEvent === "catch") this.fireClip(this.catchAction, "catch");
+    else if (p.animEvent === "juke") this.fireClip(this.jukeAction, "juke");
+    else if (p.animEvent === "spin") this.fireClip(this.spinAction ?? this.jukeAction, "spin");
+    else if (p.animEvent === "stiffArm") this.fireClip(this.jukeAction ?? this.spinAction, "stiffArm");
+    else if (p.animEvent === "tackle") this.fireClip(this.tackleAction, "tackle", true);
+    else if (p.animEvent === "tackleMade") this.fireClip(this.defTackleAction, "tackleMade");
+    else if (p.animEvent === "swat") this.fireClip(this.defSwatAction, "swat");
+    else if (p.animEvent === "kick") this.fireClip(this.kickAction, "kick");
+    else if (p.animEvent === "dive") this.fireClip(this.diveAction ?? this.tackleAction, "dive", true);
+    else if (p.animEvent === "pickup") this.fireClip(this.pickupAction ?? this.catchAction, "pickup");
+    else if (p.animEvent === "turnRun") this.fireClip(this.turnRunAction ?? this.jukeAction, "turnRun");
     else if (p.animEvent === "celebrate") {
       const v = this.celebVariants;
       const pick = v.length ? v[(Math.random() * v.length) | 0] : null;
-      this.triggerOneShot(pick ? pick.a : this.celebrateAction, 2.6, 1.0, pick ? pick.s : 0);
+      const t = CLIP_TIMING.celebrate;
+      this.triggerOneShot(pick ? pick.a : this.celebrateAction, t.dur, t.rate, pick ? pick.s : t.start);
     }
     p.animEvent = null;
 
@@ -1374,7 +1363,7 @@ class FbxAvatar implements Avatar {
 
     // Smooth, rate-limited yaw toward the heading the sim already smoothed (carve, no snap).
     const targetYaw = toModelYaw(lo.heading) + MODEL_FORWARD;
-    const turnCap = TURN_RATE_RAD * (0.55 + 0.9 * (1 - lo.speed01)) * dt;
+    const turnCap = ANIM.TURN_RATE * (0.55 + 0.9 * (1 - lo.speed01)) * dt;
     this.yaw += clamp(wrapAngle(targetYaw - this.yaw), -turnCap, turnCap);
     g.rotation.y = this.yaw;
 
@@ -1382,8 +1371,11 @@ class FbxAvatar implements Avatar {
     let osW = 0;
     if (this.oneShot) {
       this.oneShotTime += dt;
-      const inT = 0.14;
-      const outT = 0.32;
+      // Cap the ramps to a fraction of the clip's own length so even a very short overlay still
+      // reaches full weight and fades symmetrically (a clip shorter than IN+OUT would otherwise
+      // never plateau and read as a weak half-blend).
+      const inT = Math.min(ANIM.ONESHOT_IN, this.oneShotDur * 0.3);
+      const outT = Math.min(ANIM.ONESHOT_OUT, this.oneShotDur * 0.45);
       if (this.oneShotTime < inT) osW = this.oneShotTime / inT;
       else if (this.oneShotTime > this.oneShotDur - outT) osW = Math.max(0, (this.oneShotDur - this.oneShotTime) / outT);
       else osW = 1;
@@ -1427,10 +1419,10 @@ class FbxAvatar implements Avatar {
     } else {
       // Directional blend: split locomotion among forward/backpedal/strafe by the
       // movement direction relative to facing (so backpedals & shuffles read right).
-      const moving01 = smoothstep(IDLE_OUT, MOVE_FULL, lo.speed01);
+      const moving01 = smoothstep(ANIM.IDLE_OUT, ANIM.MOVE_FULL, lo.speed01);
       // Forward motion crossfades walk -> run with speed (true walk cycle at a stroll,
       // run when hustling), each foot-planted to ground speed by its own warp.
-      const runMix = smoothstep(WALK_TO_RUN_LO, WALK_TO_RUN_HI, lo.speed01);
+      const runMix = smoothstep(ANIM.WALK_TO_RUN_LO, ANIM.WALK_TO_RUN_HI, lo.speed01);
       // Split locomotion by movement-vs-facing angle, but sharpened so a mild turn
       // (small moveRel from the heading slew) stays a forward run instead of bleeding
       // into a shuffle/backpedal. Shuffle only dominates past ~50deg, backpedal past ~130.
@@ -1447,11 +1439,11 @@ class FbxAvatar implements Avatar {
       tStrafe = strafe * moving01;
       tIdle = 1 - moving01; // everyone settles into the football ready stance
       // Each cycle is warped to its own measured stride so feet grip the ground.
-      this.walkAction?.setEffectiveTimeScale(clamp(lo.speed * WALK_PLANT_K, 0.7, 3.6));
-      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 3.0));
-      this.backAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
-      this.backDiagAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
-      this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * STRAFE_PLANT_K, 0.7, 3.0));
+      this.walkAction?.setEffectiveTimeScale(clamp(lo.speed * ANIM.PLANT_WALK, 0.7, 3.6));
+      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * ANIM.PLANT_RUN, 0.7, 3.0));
+      this.backAction?.setEffectiveTimeScale(clamp(lo.speed * ANIM.PLANT_BACK, 0.7, 3.0));
+      this.backDiagAction?.setEffectiveTimeScale(clamp(lo.speed * ANIM.PLANT_BACK, 0.7, 3.0));
+      this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * ANIM.PLANT_STRAFE, 0.7, 3.0));
       // Bank hard into turns/cuts so a change of direction reads as a dynamic lean (plus the
       // juke lean). Smoothed so it carves in rather than snapping, but quick enough to feel sharp.
       // A gentle breathing bob when idle keeps a standing player from reading as a frozen statue.
