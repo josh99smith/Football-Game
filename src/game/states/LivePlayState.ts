@@ -1244,6 +1244,7 @@ export class LivePlayState implements GameState {
     if (this.defenderInTackleRange(c)) {
       c.diveTimer = 0.3;
       c.bigHitArmed = true;
+      c.animEvent = "dive"; // diving tackle lunge
       c.leanTarget = 0.7; // shoulder dips into the hit (the avatar banks)
       const burst = 165;
       c.vel.x += Math.cos(c.facing) * burst;
@@ -1281,6 +1282,7 @@ export class LivePlayState implements GameState {
       d.heading = f;
       d.diveTimer = 0.3;
       d.bigHitArmed = true;
+      d.animEvent = "dive"; // CPU diving tackle lunge
       d.leanTarget = 0.7;
       d.vel.x += Math.cos(f) * 165;
       d.vel.y += Math.sin(f) * 165;
@@ -1340,6 +1342,7 @@ export class LivePlayState implements GameState {
     if (!onTouch && this.looseTimer < 2.6) return; // still scrambling for it
     this.looseBall = false;
     this.looseTimer = 0;
+    rec.animEvent = "pickup"; // scoop the loose ball
     this.app.particles.burst(rec.pos.x, rec.pos.y, "#ffffff", 8, 90);
     if (rec.team === this.offenseTeamId) {
       // Offense fell on its own fumble — keep the ball, play on.
@@ -1379,6 +1382,7 @@ export class LivePlayState implements GameState {
 
   private startDive(c: Player): void {
     c.diveTimer = 0.34;
+    c.animEvent = "dive"; // runner dive for the spot
     c.vel.x += Math.cos(c.facing) * 85;
     c.vel.y += Math.sin(c.facing) * 85;
     this.app.particles.burst(c.pos.x, c.pos.y, "#cfe8d4", 6, 70);

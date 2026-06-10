@@ -570,6 +570,8 @@ class FbxAvatar implements Avatar {
   private readonly qbThrowAction: THREE.AnimationAction | null;
   private readonly pitchAction: THREE.AnimationAction | null;
   private readonly kickAction: THREE.AnimationAction | null;
+  private readonly diveAction: THREE.AnimationAction | null;
+  private readonly pickupAction: THREE.AnimationAction | null;
   /** Touchdown-celebration clips (base + sports variants) with each one's slice point, picked at random. */
   private readonly celebVariants: { a: THREE.AnimationAction; s: number }[];
   private oneShot: THREE.AnimationAction | null = null;
@@ -676,6 +678,8 @@ class FbxAvatar implements Avatar {
     this.qbThrowAction = clips.qbThrow ? this.mixer.clipAction(clips.qbThrow) : null;
     this.pitchAction = clips.pitch ? this.mixer.clipAction(clips.pitch) : null;
     this.kickAction = clips.kick ? this.mixer.clipAction(clips.kick) : null;
+    this.diveAction = clips.dive ? this.mixer.clipAction(clips.dive) : null;
+    this.pickupAction = clips.pickup ? this.mixer.clipAction(clips.pickup) : null;
     // Each celebration with its slice point (the sports takes are 20-32s; the swing is buried inside).
     const ca = (c: THREE.AnimationClip | null) => (c ? this.mixer.clipAction(c) : null);
     this.celebVariants = ([
@@ -691,7 +695,7 @@ class FbxAvatar implements Avatar {
       a?.play();
       a?.setEffectiveWeight(0);
     }
-    for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction, this.qbThrowAction, this.pitchAction, this.kickAction, ...this.celebVariants.map((v) => v.a)]) {
+    for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction, this.qbThrowAction, this.pitchAction, this.kickAction, this.diveAction, this.pickupAction, ...this.celebVariants.map((v) => v.a)]) {
       a?.setLoop(THREE.LoopOnce, 1);
       if (a) a.clampWhenFinished = true;
     }
@@ -1073,6 +1077,11 @@ class FbxAvatar implements Avatar {
     else if (p.animEvent === "swat") this.triggerOneShot(this.defSwatAction, 0.95, 1.2, 0.3);
     // kick (Soccer penalty) is a 28s take — slice to the plant→swing (~3.4s in).
     else if (p.animEvent === "kick") this.triggerOneShot(this.kickAction, 1.2, 1.2, 2.6);
+    // dive (Run_To_Dive, 1.18s): the launch is at the very start — play it fast for the runner dive
+    // / defender dive-tackle. Falls back to the canned tackle clip until the dive clip streams in.
+    else if (p.animEvent === "dive") this.triggerOneShot(this.diveAction ?? this.tackleAction, 1.0, 1.45, 0.0);
+    // pickup (Pick_Up_Item, 1.2s): bend-down + scoop — play the whole bend/grab/rise for a recovery.
+    else if (p.animEvent === "pickup") this.triggerOneShot(this.pickupAction ?? this.catchAction, 1.0, 1.3, 0.05);
     else if (p.animEvent === "celebrate") {
       const v = this.celebVariants;
       const pick = v.length ? v[(Math.random() * v.length) | 0] : null;

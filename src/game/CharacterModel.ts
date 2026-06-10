@@ -39,6 +39,10 @@ export interface CharacterClips {
   celebGolf: THREE.AnimationClip | null;
   celebBat: THREE.AnimationClip | null;
   celebTennis: THREE.AnimationClip | null;
+  /** One-shot diving lunge (runner dive for the spot / defender dive-tackle). */
+  dive: THREE.AnimationClip | null;
+  /** One-shot loose-ball scoop (recovering a fumble). */
+  pickup: THREE.AnimationClip | null;
 }
 
 export interface CharacterAsset {
@@ -72,6 +76,8 @@ export interface CharacterUrls {
   celebGolf?: string;
   celebBat?: string;
   celebTennis?: string;
+  dive?: string;
+  pickup?: string;
 }
 
 /**
@@ -199,7 +205,8 @@ function buildAsset(model: THREE.Group, clips: CharacterClips): CharacterAsset {
 function emptyClips(idle: THREE.AnimationClip | null): CharacterClips {
   return { idle, run: null, runBack: null, strafe: null, pass: null, catch: null, juke: null,
     walk: null, tackle: null, spin: null, defTackle: null, defSwat: null, celebrate: null,
-    qbThrow: null, pitch: null, kick: null, celebGolf: null, celebBat: null, celebTennis: null };
+    qbThrow: null, pitch: null, kick: null, celebGolf: null, celebBat: null, celebTennis: null,
+    dive: null, pickup: null };
 }
 
 /**
@@ -223,15 +230,16 @@ export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
 const CLIP_KEYS: Array<Exclude<keyof CharacterClips, "idle">> = [
   "run", "walk", "runBack", "strafe", "spin", "juke", "catch", "pass", "tackle", "defTackle", "defSwat", "celebrate",
   // Sports-mocap one-shots load last (lowest priority — locomotion + core one-shots come first).
-  "qbThrow", "pitch", "kick", "celebGolf", "celebBat", "celebTennis",
+  "qbThrow", "pitch", "kick", "celebGolf", "celebBat", "celebTennis", "dive", "pickup",
 ];
 const CLIP_URL_KEY: Record<Exclude<keyof CharacterClips, "idle">, keyof CharacterUrls> = {
   run: "run", runBack: "runBack", strafe: "strafe", pass: "pass", catch: "catch", juke: "juke",
   walk: "walk", tackle: "tackle", spin: "spin", defTackle: "defTackle", defSwat: "defSwat", celebrate: "celebrate",
   qbThrow: "qbThrow", pitch: "pitch", kick: "kick", celebGolf: "celebGolf", celebBat: "celebBat", celebTennis: "celebTennis",
+  dive: "dive", pickup: "pickup",
 };
 /** Clips authored on a different skeleton — retarget rotation-only to preserve our proportions. */
-const SPORTS_RETARGET = new Set<Exclude<keyof CharacterClips, "idle">>(["qbThrow", "pitch", "kick", "celebGolf", "celebBat", "celebTennis"]);
+const SPORTS_RETARGET = new Set<Exclude<keyof CharacterClips, "idle">>(["qbThrow", "pitch", "kick", "celebGolf", "celebBat", "celebTennis", "dive", "pickup"]);
 
 /** True once every animation clip (not just idle) is loaded — i.e. nothing left to retry. */
 export function clipsComplete(asset: CharacterAsset): boolean {

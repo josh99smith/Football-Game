@@ -105,6 +105,8 @@ export class GameApp {
       celebGolf: `${base}celeb_golf.fbx`,
       celebBat: `${base}celeb_bat.fbx`,
       celebTennis: `${base}celeb_tennis.fbx`,
+      dive: `${base}dive.fbx`,
+      pickup: `${base}pickup.fbx`,
     };
     // Two-stage load so the skinned model appears ASAP: (1) the ~1MB rig swaps box avatars for the
     // model immediately (idle only); (2) the animation clips stream in and upgrade it. A slow or
