@@ -2010,7 +2010,8 @@ export class Scene3D {
       // QB looking downfield and a defender facing the play), pulled back a bit so you see more. As a
       // passing QB it pans toward the receiver you're aiming at.
       const ch = this._ssFwdX, sh = this._ssFwdZ;
-      outPos.set(fx - ch * 8.6, 6.4, fz - sh * 8.6);
+      const back = this.superstarBack;
+      outPos.set(fx - ch * back, 6.4 + (back - 8.6) * 0.28, fz - sh * back);
       outLook.set(fx + ch * 9, 1.3, fz + sh * 9);
       if (this._ssHasLook) outLook.lerp(this._ssLook, 0.55); // tilt/pan toward the targeted receiver
       return;
@@ -2153,7 +2154,8 @@ export class Scene3D {
 
     // Cinematic hit push-in. Advance `cine` on REAL time (fixed 1/60 step) so it snaps in even
     // while bullet-time slows the sim dt to a crawl: fast ease-in, slower ease-out.
-    const wantCine = this.cineHold > 0 ? 1 : 0;
+    // Defensive superstar holds the locked cam through contact — never cut to the hit-cam.
+    const wantCine = this.cineHold > 0 && !this.holdSuperstarThroughHit ? 1 : 0;
     if (this.cineHold > 0) this.cineHold -= STEP;
     this.cine = moveToward(this.cine, wantCine, STEP / (wantCine > this.cine ? 0.09 : 0.5));
     if (this.cine > 0.001) {
@@ -2162,8 +2164,10 @@ export class Scene3D {
       const fz = opts.focusY * U;
       // Tight 3/4 angle pushed in on the collision, aimed down at the bodies so the pile sits
       // centered in frame (the chase cam looks downfield & high, which drops a hit to the floor).
-      _cinePos.set(fx - opts.dir * 2.6, 3.3, fz + 3.0);
-      _cineLook.set(fx, 0.5, fz);
+      // Kept a touch higher + the look-point off the dirt so a big hit's heavy shake can't tip the
+      // frame below the turf (field collapsing to a sliver with void above).
+      _cinePos.set(fx - opts.dir * 2.6, 3.7, fz + 3.0);
+      _cineLook.set(fx, 1.0, fz);
       tp.lerp(_cinePos, e);
       tl.lerp(_cineLook, e);
     }
@@ -2192,6 +2196,11 @@ export class Scene3D {
   freeCam = false;
   /** Superstar camera: tighter, lower chase cam locked on the controlled player (set per-frame). */
   superstarCam = false;
+  /** How far the superstar cam sits behind the player (world units), set per-frame per side. */
+  superstarBack = 8.6;
+  /** When true (defensive superstar), keep the locked cam through a tackle — suppress the cinematic
+   *  hit-cam push-in so it doesn't cut away from your defender on contact. */
+  holdSuperstarThroughHit = false;
   // Smoothed superstar aim: the behind-cam forward (world x,z) + the receiver look point, both eased
   // each frame so the cam pans/rotates toward who you're looking at instead of snapping.
   private _ssFwdX = 1;

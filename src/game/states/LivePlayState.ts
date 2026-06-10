@@ -47,6 +47,10 @@ const PRESNAP_CINE_DUR = 2.1;
 const PRESNAP_LOS_MARGIN = 2;
 /** Hard cap on the post-play beat so it can't hang if the player never taps. */
 const POSTPLAY_MAX = 9;
+/** Superstar camera pull-back behind the controlled player (world units): defense sits further back
+ *  so you read the whole play developing; offense (QB) stays a touch tighter. */
+const SS_BACK_DEF = 10.8;
+const SS_BACK_OFF = 8.6;
 /** Minimum post-play beat before a tap can skip to the play call (guarantees a post-play). */
 const MIN_DEAD_LINGER = 0.7;
 /** Farthest a pass can travel (yards) — a deep ball, not a 90-yard heave. */
@@ -610,24 +614,32 @@ export class LivePlayState implements GameState {
     let starFocus: Vec2 | null = null;
     let ssHeading: number | undefined;
     let ssLook: Vec2 | null = null;
-    // Engage the superstar lock pre-snap too, so you're already behind your guy as the play starts
-    // (and on defense the cam is settled looking at the line before the hike).
-    if (superstar && (this.phase === "live" || this.phase === "presnap") && this.controlled && !this.controlled.isDown) {
-      const c = this.controlled;
+    // DEFENSE superstar engages pre-snap AND holds through contact — it stays locked behind your
+    // defender (no cut to the hit-cam when the carrier is tackled) and sits pulled back a bit more.
+    // OFFENSE superstar is live-only, so the pre-snap stays the natural broadcast establish, and it
+    // releases once your guy is down.
+    const ssDefense = superstar && !this.humanIsOffense && !!this.controlled &&
+      (this.phase === "live" || this.phase === "presnap");
+    const ssOffense = superstar && this.humanIsOffense && !!this.controlled && !this.controlled.isDown &&
+      this.phase === "live";
+    this.app.scene3d.holdSuperstarThroughHit = ssDefense;
+    if (ssDefense) {
+      const c = this.controlled!;
+      this.app.scene3d.superstarBack = SS_BACK_DEF;
+      // Lock BEHIND the selected defender, framing the play. His own facing thrashes (backpedal,
+      // react, pursue, juke), so orient by the steadier defender→ball vector instead. Held even while
+      // he's in contact/down so the view doesn't cut on a tackle.
+      starFocus = c.pos;
+      const bx = this.ball.carrier ? this.ball.carrier.pos.x : this.ball.pos.x;
+      const by = this.ball.carrier ? this.ball.carrier.pos.y : this.ball.pos.y;
+      const dx = bx - c.pos.x, dy = by - c.pos.y;
+      if (Math.hypot(dx, dy) > 14) { ssHeading = Math.atan2(dy, dx); ssLook = { x: bx, y: by }; }
+      // else: too close to derive a stable heading — leave ssHeading undefined so Scene3D holds it.
+    } else if (ssOffense) {
+      const c = this.controlled!;
+      this.app.scene3d.superstarBack = SS_BACK_OFF;
       const threw = this.passThrown && this.ball.thrownBy === c;
-      if (!this.humanIsOffense) {
-        // DEFENSE: lock the camera BEHIND the selected defender, framing the play. The defender's
-        // own facing thrashes (backpedal, react, pursue, juke), which whipped the old cam all over —
-        // so orient it by the much steadier defender→ball vector instead. The cam ends up on the
-        // defender's back side with the ball / offense framed ahead (the reference look).
-        starFocus = c.pos;
-        const bx = this.ball.carrier ? this.ball.carrier.pos.x : this.ball.pos.x;
-        const by = this.ball.carrier ? this.ball.carrier.pos.y : this.ball.pos.y;
-        const dx = bx - c.pos.x, dy = by - c.pos.y;
-        if (Math.hypot(dx, dy) > 14) { ssHeading = Math.atan2(dy, dx); ssLook = { x: bx, y: by }; }
-        // else: too close to derive a stable heading — leave ssHeading undefined so Scene3D holds the
-        // eased value, and let the contact hit-cam take over.
-      } else if (threw) {
+      if (threw) {
         // You're locked to the QB but watch the throw: ride behind the receiver once he catches it,
         // else look downfield at the ball in flight.
         ssHeading = c.heading;
@@ -635,9 +647,7 @@ export class LivePlayState implements GameState {
         if (carrier && !carrier.isDown) { starFocus = carrier.pos; ssHeading = carrier.heading; }
         else { starFocus = this.ball.pos; ssLook = { x: this.ball.pos.x, y: this.ball.pos.y }; }
       } else {
-        // Cam behind the QB looking downfield. Pre-snap his movement heading is stale (huddle walk),
-        // so anchor it to the attack direction until he actually moves.
-        ssHeading = this.phase === "presnap" ? (this.dir > 0 ? 0 : Math.PI) : c.heading;
+        ssHeading = c.heading; // cam behind the QB looking downfield
         starFocus = c.pos;
         if (this.canThrow(c)) {
           const rcv = this.aimedReceiver(c); // QB: pan toward the receiver you're aiming at
@@ -824,11 +834,17 @@ export class LivePlayState implements GameState {
       this.app.match.tickClock(dt);
       this.applyTwoMinuteWarning();
     }
+    // If the clock ran out while waiting to snap, end the period NOW — don't start another down at
+    // 0:00. quarterBeat advances + resets the clock the same frame it expires (idempotent no-op
+    // otherwise), so the next snap is in the fresh quarter rather than at a stale 0:00.
+    this.quarterBeat();
 
     this.syncScene(dt); // sets superstarCam from the device orientation
-    // In superstar (portrait) the lock cam from syncScene owns the camera — skip the broadcast orbit
-    // sweep so it doesn't fight/override it. Landscape keeps the cinematic pre-snap establish.
-    if (!this.app.scene3d.superstarCam) this.updatePresnapCine(dt);
+    // Run the broadcast pre-snap establish EXCEPT in defensive superstar, where the lock cam owns the
+    // pre-snap (already settled behind your defender). Offensive superstar keeps the natural establish
+    // until the snap, then hands off to the QB lock.
+    const defenseSuperstar = this.app.scene3d.superstarCam && !this.humanIsOffense;
+    if (!defenseSuperstar) this.updatePresnapCine(dt);
   }
 
   /** A broadcast pre-snap sweep: the camera orbits in from a low side angle and settles behind the
@@ -2513,8 +2529,9 @@ export class LivePlayState implements GameState {
       this.renderResultBanner(r);
       this.renderReplayButton(r);
     } else if (this.phase === "playcall") {
-      // Broadcast-style call over the live field (players jogging back to the huddle behind it).
-      this.renderResultBanner(r, false);
+      // Broadcast-style call over the live field (players jogging back to the huddle behind it). The
+      // result banner is NOT drawn here — it already held for the whole dead beat, and drawing it
+      // under the "CALL IT" header stacked the two on top of each other (unreadable). Cards only.
       this.renderReplayButton(r);
       this.playCall.render(r, { alpha: this.playCallT });
       if (this.app.match.practice) {

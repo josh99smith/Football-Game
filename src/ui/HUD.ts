@@ -48,8 +48,11 @@ export class HUD {
     this.teamChip(r, 10, 6, home.config, home.score, home.onFire, "left", match.possession === "HOME", this.flashAmt(this.homeFlashAt));
     this.teamChip(r, w - 10, 6, away.config, away.score, away.onFire, "right", match.possession === "AWAY", this.flashAmt(this.awayFlashAt));
 
-    const mins = Math.floor(match.clock / 60);
-    const secs = Math.floor(match.clock % 60);
+    // Ceil to whole seconds so the clock reads 0:00 only at TRUE expiry (clock <= 0), matching
+    // match.clockExpired — flooring showed 0:00 for the whole final second while time remained.
+    const total = Math.max(0, Math.ceil(match.clock));
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
     r.text(`Q${match.quarter}`, w / 2, minimal ? 5 : 7, { size: 12, align: "center", color: COLORS.blood, baseline: "top", font: FONT.display });
     r.text(`${mins}:${secs.toString().padStart(2, "0")}`, w / 2, minimal ? 16 : 20, { size: minimal ? 20 : 22, align: "center", color: COLORS.bone, baseline: "top", font: FONT.display });
 
