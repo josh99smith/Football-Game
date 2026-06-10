@@ -953,14 +953,17 @@ export class LivePlayState implements GameState {
     }
 
     if (this.humanIsOffense) {
-      // The one ACTION button is contextual: the QB (a legal passer behind the line)
-      // charges a throw (tap = lob, hold = bullet); any ball carrier jukes/dives.
+      // Right "action stick": directional carrier evasion (flick L/R = juke, forward = truck,
+      // back = spin) — works for ANY ball carrier, including the QB behind the line.
+      if (this.ball.carrier === c) this.handleCarrierMoves(c);
+      // The ACTION button is contextual: the QB (a legal passer behind the line) charges a throw
+      // (tap = lob, hold = bullet); any other ball carrier holds it to dive for the spot.
       if (this.canThrow(c)) {
         this.updateThrowCharge(c, dt);
       } else {
         this.throwCharging = false;
         this.throwCharge = 0;
-        if (this.ball.carrier === c) this.updateCarrierAction(c, dt);
+        if (this.ball.carrier === c) this.updateCarrierDive(c, dt);
       }
     } else {
       this.handleDefenseAction(c);
@@ -1033,21 +1036,33 @@ export class LivePlayState implements GameState {
     this.jukeAnimCd = 0.7;
   }
 
-  /** Ball-carrier ACTION: a quick tap spins (spin move), holding past a beat dives. */
-  private updateCarrierAction(c: Player, dt: number): void {
-    const input = this.app.input;
-    // Swipe moves: flick sideways to JUKE that way, flick forward (downfield) to lower the head and
-    // TRUCK. Decompose the flick (mapped to field space like the stick) against the run direction.
-    const sw = input.consumeSwipe();
-    if (sw && c.state === "active" && c.animEvent === null && c.jukeTimer <= 0 && c.diveTimer <= 0) {
-      const fx = -sw.y * this.dir;
-      const fy = sw.x * this.dir;
-      const fwd = Math.cos(c.facing) * fx + Math.sin(c.facing) * fy; // along the run direction
-      const lat = Math.cos(c.facing) * fy - Math.sin(c.facing) * fx; // sideways component
-      if (fwd > Math.abs(lat) && fwd > 0.3) this.doTruck(c);
-      else this.doJuke(c, fx, fy);
-      return;
+  /** Right-stick carrier evasion: a directional flick is the move. Sideways = JUKE that way;
+   *  forward (downfield) = TRUCK, or STIFF-ARM a defender squared up in front; back = SPIN off. The
+   *  stick fires axis-aligned flicks, so each push reads as a clean direction. */
+  private handleCarrierMoves(c: Player): void {
+    const sw = this.app.input.consumeSwipe();
+    if (!sw) return;
+    if (c.state !== "active" || c.animEvent !== null || c.jukeTimer > 0 || c.diveTimer > 0) return;
+    // Map the flick into field space (like the move stick), then split along / across the run.
+    const fx = -sw.y * this.dir;
+    const fy = sw.x * this.dir;
+    const fwd = Math.cos(c.facing) * fx + Math.sin(c.facing) * fy; // along the run direction
+    const lat = Math.cos(c.facing) * fy - Math.sin(c.facing) * fx; // sideways component
+    if (fwd < -0.35 && Math.abs(fwd) > Math.abs(lat)) {
+      this.doSpin(c); // flick BACK → spin off the tackle
+    } else if (fwd > 0.3 && fwd > Math.abs(lat)) {
+      const d = this.nearestTackler(c, 72); // flick FORWARD → truck, or stiff-arm a man in front
+      if (d && this.isAhead(c, d)) this.doStiffArm(c, d);
+      else this.doTruck(c);
+    } else {
+      this.doJuke(c, fx, fy); // flick L/R → juke that way
     }
+  }
+
+  /** Ball-carrier ACTION button: hold past a beat to DIVE for the spot (the directional evasion
+   *  moves live on the right stick now). */
+  private updateCarrierDive(c: Player, dt: number): void {
+    const input = this.app.input;
     if (input.actionPressed) {
       this.carrierHeld = 0;
       this.carrierFired = false;
@@ -1058,13 +1073,6 @@ export class LivePlayState implements GameState {
         this.startDive(c);
         this.carrierFired = true;
       }
-    }
-    if (input.actionReleased && !this.carrierFired) {
-      // Context move: fend off a defender squared up in front (STIFF ARM); otherwise SPIN.
-      const d = this.nearestTackler(c, 72);
-      if (d && this.isAhead(c, d)) this.doStiffArm(c, d);
-      else this.doSpin(c);
-      this.carrierFired = true;
     }
   }
 
