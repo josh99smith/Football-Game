@@ -528,6 +528,11 @@ function jerseyTexture(jersey: number, accent: number, trim: number, num: number
 // the shell color there, a front-to-back center stripe (accent between white pinstripes), and a
 // team decal on each side, then cache per (helmet,accent,decal).
 const _helmetCache = new Map<string, THREE.CanvasTexture>();
+// Optional realistic helmet image skins, keyed by shell color (same in-place swap + fallback as the
+// jersey override above). Drop a 256² PNG at /public/<file>.
+const HELMET_SKIN_OVERRIDES: Record<number, string> = {
+  0xc9ced6: "skins/dal_helmet.png", // Dallas Outlaws — silver shell
+};
 function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THREE.CanvasTexture {
   const key = `${helmet.toString(16)}-${accent.toString(16)}-${decal ?? "none"}`;
   const cached = _helmetCache.get(key);
@@ -560,6 +565,12 @@ function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THRE
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
+  const skin = HELMET_SKIN_OVERRIDES[helmet];
+  if (skin && typeof Image !== "undefined") {
+    const img = new Image();
+    img.onload = () => { tex.image = img; tex.needsUpdate = true; };
+    img.src = (import.meta.env.BASE_URL || "/") + skin;
+  }
   _helmetCache.set(key, tex);
   return tex;
 }
