@@ -1044,7 +1044,11 @@ class FbxAvatar implements Avatar {
     // instead of a long wind-up that finishes well after the ball's already gone.
     if (p.animEvent === "pass") this.startThrow(p, this.passAction, 5.4, 0.85, 1.45);
     else if (p.animEvent === "hailMary") this.startThrow(p, this.passAction, 5.3, 1.0, 1.25);
-    else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 1.0, 1.25, 0.5);
+    // Catch (rig_catch, 4.17s): the arms extend ~0.95s and the hands clamp the ball ~1.58s into the
+    // mocap. Start the slice right at the reach so the hands are already out the instant the ball
+    // arrives (the catch event fires when the ball attaches), then run fast through the secure — not
+    // a wind-up that has him reach AFTER he's already holding it.
+    else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.85, 1.5, 0.85);
     else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.55, 1.25, 0);
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
     else if (p.animEvent === "stiffArm") this.triggerOneShot(this.jukeAction ?? this.spinAction, 0.5, 1.3, 0);
