@@ -169,7 +169,7 @@ export class TackleEngine {
     const beat = clamp(0.2 + gangSize * 0.035 + (big ? 0.08 : 0), 0.2, 0.42);
 
     // Fumble: a committed strip, a big hit, or extra arrivals raking at the ball. Never on returns.
-    const fumbleChance = isReturn ? 0 : clamp((hitStick ? 0.26 : big ? 0.07 : 0.02) + (gangSize - 1) * 0.045, 0, 0.42);
+    const fumbleChance = isReturn ? 0 : clamp((hitStick ? 0.2 : big ? 0.06 : 0.02) + (gangSize - 1) * 0.04, 0, 0.36);
     const fumble = chance(fumbleChance);
     const fumbleVel = { x: (dirX / dl) * 120 + (Math.random() * 80 - 40), y: (dirY / dl) * 120 + (Math.random() * 80 - 40), up: 220 };
 
@@ -297,11 +297,14 @@ export class TackleEngine {
   private tryBreak(carrier: Player, pile: Player[], big: boolean, playTime: number): boolean {
     if (playTime - this.lastBreak < 0.55) return false;
     const speed = Math.hypot(carrier.vel.x, carrier.vel.y);
-    let p = big ? (carrier.turbo ? 0.22 : 0.05) : carrier.turbo ? 0.55 : 0.34;
+    let p = big ? (carrier.turbo ? 0.22 : 0.05) : carrier.turbo ? 0.52 : 0.34;
     const carrierPower = carrier.strength * (1 + speed / 320) * (carrier.turbo ? 1.2 : 1);
     let gangStr = 0;
     for (const t of pile) gangStr += t.strength;
-    p *= clamp(carrierPower / (gangStr * 0.9), 0.3, 1.8);
+    // A fast, strong turbo back almost ALWAYS pinned this to the old 1.8 ceiling vs a lone defender
+    // (≈99% break) — solo tackles were meaningless. Tighten the ceiling so a single defender stops a
+    // turbo back ~1 in 3 (and a non-turbo back ~1 in 2); a gang still reliably brings the carrier down.
+    p *= clamp(carrierPower / (gangStr * 0.9), 0.3, 1.25);
     if (pile.length >= 2) p *= 0.45; // a gang is hard to slip
     if (pile.length >= 3) p *= 0.5;
     if (Math.random() >= p) return false;
