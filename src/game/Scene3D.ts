@@ -268,7 +268,7 @@ class BoxAvatar implements Avatar {
       this.torsoMat.emissiveIntensity = 0;
       this.padsMat.emissiveIntensity = 0;
     }
-    this.nub.visible = p.hasBall && !p.isDown;
+    this.nub.visible = p.hasBall; // keep the ball in hand when down too (only a fumble clears hasBall)
   }
 
   present(alpha: number, _dt: number): void {
@@ -691,6 +691,9 @@ class FbxAvatar implements Avatar {
    *  planted foot frame-to-frame at high stride rates — that was the open-field run "stutter" — and
    *  the stride-warp already keeps fast feet from skating, so we fade IK out as speed climbs. */
   private footIKScale = 1;
+  /** Whether this player currently carries the ball (refreshed every tick, even while ragdolling, so
+   *  the hand nub stays gripped through a tackle instead of vanishing). */
+  private carriesBall = false;
   private ragdoll: TackleRagdoll | null = null;
   private rPhase: "anim" | "fall" | "getup" = "anim";
   /** Formal animation state, derived each frame (observability now; drives transition-enforced
@@ -932,13 +935,18 @@ class FbxAvatar implements Avatar {
     this.group.position.y = 0;                 // so the get-up later stands with feet on the ground
     this.ragdoll.spawn(carry, hitDir, hitSpeed, hitLow, bit, variant);
     this.rPhase = "fall"; this.fallTime = 0; this.settleTimer = 0; this.suppressFall = false;
-    this.ring.visible = false; this.chevron.visible = false; this.nub.visible = false;
+    this.ring.visible = false; this.chevron.visible = false;
+    // Keep the ball gripped if THIS player is the carrier (a clean tackle, not a fumble); only a real
+    // fumble clears hasBall and takes it out of his hands.
+    this.nub.visible = this.carriesBall;
   }
 
   applyRagdollLimits(dt: number): void { this.ragdoll?.applyLimits(dt); }
 
   advanceRagdoll(dt: number): void {
     if (!this.ragdoll) return;
+    // The carried ball rides the (physics- or get-up-driven) hand so a non-fumble stays gripped.
+    this.nub.visible = this.carriesBall;
     if (this.rPhase === "fall") {
       this.ragdoll.drive(); // bodies drive the skinned-mesh bones in world space
       this.fallTime += dt;
@@ -951,6 +959,7 @@ class FbxAvatar implements Avatar {
       else this.blendGetup(Math.min(1, this.getupT));
       if (this.getupT >= 1) this.finishGetup();
     }
+    this.updateCarriedBall(); // keep the gripped ball on the hand through the fall + stand-up
   }
 
   ragdollHipsPx(): { x: number; y: number } | null {
@@ -1227,19 +1236,25 @@ class FbxAvatar implements Avatar {
     // Foot IK runs on the fully-posed skeleton (after the mixer + throw). Suppressed during one-shot
     // overlays (tackle/juke/spin) where the legs do non-locomotion things. Default-off (see FOOT_IK).
     if (ANIM.FOOT_IK && !this.oneShot && this.footIKScale > 0.02) this.applyFootIK();
-    if (this.nub.visible) {
-      const hand = this.handBone ?? this.foreBone;
-      if (hand) {
-        hand.getWorldPosition(_handPos);
-        this.group.worldToLocal(_handPos);
-        this.nub.position.set(_handPos.x, _handPos.y, _handPos.z);
-      }
-    }
+    this.updateCarriedBall();
+  }
+
+  /** Glue the carried-ball nub to the carrier's hand. Runs in present() for upright play AND from
+   *  advanceRagdoll() during a tackle (present() stands down while ragdolling), so a non-fumble keeps
+   *  the ball gripped through the hit instead of dropping it. */
+  private updateCarriedBall(): void {
+    if (!this.nub.visible) return;
+    const hand = this.handBone ?? this.foreBone;
+    if (!hand) return;
+    hand.getWorldPosition(_handPos);
+    this.group.worldToLocal(_handPos);
+    this.nub.position.set(_handPos.x, _handPos.y, _handPos.z);
   }
 
   update(p: Player, jersey: number, trim: number, accent: number, helmet: number, decal: EmblemIcon | undefined, onFire: boolean, dt: number, isDefense: boolean): void {
     const g = this.group;
     g.visible = true;
+    this.carriesBall = p.hasBall; // tracked even through the ragdoll early-return below
     // While a physics ragdoll owns the body, it's stepped/driven in advanceRagdoll(); the
     // normal animation + position pipeline stands down so it doesn't fight the bones. Drop any
     // queued one-shot (e.g. the canned "tackle") so it can't fire when we hand back to anim.
@@ -1451,8 +1466,9 @@ class FbxAvatar implements Avatar {
       m.color.setHex(0xffffff);
       m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
     }
-    // Carried ball visibility (its position is placed in present(), after the mixer poses the hand).
-    this.nub.visible = p.hasBall && !p.isDown;
+    // Carried ball visibility (position placed in present()/advanceRagdoll). Stays gripped while the
+    // carrier is down or being tackled — only a real fumble (hasBall=false) takes it out of his hands.
+    this.nub.visible = p.hasBall;
   }
 
   hide(): void {
@@ -2372,18 +2388,9 @@ export class Scene3D {
       for (const a of active) a.advanceRagdoll(opts.dt);
     }
 
-    if (ball.state === "held" && ball.carrier && ball.carrier.isDown) {
-      // Tackled but still holding the ball: the carried hand-nub is hidden while down and can't track
-      // anyway (present() pauses during a ragdoll), so the ball would otherwise vanish for the whole
-      // down beat. Show the free ball tucked at the down spot so it's never missing from the field.
-      this.ballGroup.visible = true;
-      this.ballCur.set(ball.pos.x * U, 0.35, ball.pos.y * U);
-      this.ballPrev.copy(this.ballCur);
-      this.ballPrimed = true;
-      const shadow = this.ballGroup.getObjectByName("shadow");
-      if (shadow) shadow.position.y = 0.02 - 0.35;
-      this.ballMesh.rotation.set(this.ballRoll * 0.2, Math.atan2(ball.vel.x, ball.vel.y), 0);
-    } else if (ball.state === "held") {
+    if (ball.state === "held") {
+      // Held = carried in the player's hands (drawn as the hand nub on the carrier, which now stays
+      // gripped through a tackle); the free ball mesh is only for in-air / loose (fumble) balls.
       this.ballGroup.visible = false;
       this.ballPrimed = false; // snap when it next appears (no slide from a stale spot)
     } else {
