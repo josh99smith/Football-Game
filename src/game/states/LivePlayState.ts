@@ -1003,20 +1003,26 @@ export class LivePlayState implements GameState {
     }
   }
 
-  /** Play the change-of-direction "juke" animation whenever a ball carrier (human or CPU) cuts
-   * hard while running. `loco.turnRate` is the body's heading-change rate; a sharp cut spikes it,
-   * a gentle curve barely moves it. Gated by a short cooldown so the one-shot plays once per cut
-   * rather than re-triggering every frame, and skipped if a bigger move (spin/dive) already fired. */
+  /** Play the change-of-direction animation when a ball carrier cuts hard while running. Triggered
+   * off STEERING INTENT — the angle between current velocity and the desired (input/AI) direction —
+   * not the smoothed body turn-rate. This decouples the trigger from the heading-slew tuning
+   * (HEADING_TURN_RAD/agility) so retuning the turn feel can't silently change how often the juke
+   * fires, and it leads the body: the plant clip fires the frame the cut is commanded. Gated by a
+   * short cooldown so it plays once per cut, and skipped if a bigger move already fired. */
   private checkJukeAnim(dt: number): void {
     if (this.jukeAnimCd > 0) this.jukeAnimCd -= dt;
     const c = this.ball.carrier;
     if (!c || this.jukeAnimCd > 0) return;
     if (c.state !== "active" || c.animEvent !== null || c.jukeTimer > 0) return;
-    if (c.loco.speed01 > 0.4 && Math.abs(c.loco.turnRate) > 6.5) {
-      // A hard pivot (near a reversal) plays the plant-and-turn-upfield; a moderate cut is a juke.
-      c.animEvent = Math.abs(c.loco.turnRate) > 11 ? "turnRun" : "juke";
-      this.jukeAnimCd = 0.7;
-    }
+    const speed = Math.hypot(c.vel.x, c.vel.y);
+    const dlen = Math.hypot(c.desired.x, c.desired.y);
+    if (c.loco.speed01 <= 0.4 || speed < 1 || dlen < 0.5) return;
+    // cos of the angle between where he's MOVING and where he's STEERING.
+    const cosA = (c.vel.x * c.desired.x + c.vel.y * c.desired.y) / (speed * dlen);
+    if (cosA < -0.42) c.animEvent = "turnRun";      // > ~115deg: a true reversal → plant-and-turn
+    else if (cosA < 0.64) c.animEvent = "juke";     // > ~50deg:  a hard cut → juke
+    else return;
+    this.jukeAnimCd = 0.7;
   }
 
   /** Ball-carrier ACTION: a quick tap spins (spin move), holding past a beat dives. */
