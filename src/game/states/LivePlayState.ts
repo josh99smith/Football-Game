@@ -596,7 +596,9 @@ export class LivePlayState implements GameState {
     let starFocus: Vec2 | null = null;
     let ssHeading: number | undefined;
     let ssLook: Vec2 | null = null;
-    if (superstar && this.phase === "live" && this.controlled && !this.controlled.isDown) {
+    // Engage the superstar lock pre-snap too, so you're already behind your guy as the play starts
+    // (and on defense the cam is settled looking at the line before the hike).
+    if (superstar && (this.phase === "live" || this.phase === "presnap") && this.controlled && !this.controlled.isDown) {
       const c = this.controlled;
       const threw = this.passThrown && this.ball.thrownBy === c;
       if (!this.humanIsOffense) {
@@ -619,7 +621,9 @@ export class LivePlayState implements GameState {
         if (carrier && !carrier.isDown) { starFocus = carrier.pos; ssHeading = carrier.heading; }
         else { starFocus = this.ball.pos; ssLook = { x: this.ball.pos.x, y: this.ball.pos.y }; }
       } else {
-        ssHeading = c.heading; // cam behind the QB looking downfield
+        // Cam behind the QB looking downfield. Pre-snap his movement heading is stale (huddle walk),
+        // so anchor it to the attack direction until he actually moves.
+        ssHeading = this.phase === "presnap" ? (this.dir > 0 ? 0 : Math.PI) : c.heading;
         starFocus = c.pos;
         if (this.canThrow(c)) {
           const rcv = this.aimedReceiver(c); // QB: pan toward the receiver you're aiming at
@@ -807,8 +811,10 @@ export class LivePlayState implements GameState {
       this.applyTwoMinuteWarning();
     }
 
-    this.syncScene(dt);
-    this.updatePresnapCine(dt);
+    this.syncScene(dt); // sets superstarCam from the device orientation
+    // In superstar (portrait) the lock cam from syncScene owns the camera — skip the broadcast orbit
+    // sweep so it doesn't fight/override it. Landscape keeps the cinematic pre-snap establish.
+    if (!this.app.scene3d.superstarCam) this.updatePresnapCine(dt);
   }
 
   /** A broadcast pre-snap sweep: the camera orbits in from a low side angle and settles behind the
@@ -857,6 +863,17 @@ export class LivePlayState implements GameState {
    *  (x=right, y=down) 90° and flip by `dir`: stick-up is always downfield-on-screen. */
   private stickToField(): Vec2 {
     const m = this.app.input.move;
+    // Superstar DEFENSE: the cam sits BEHIND the defender looking back at the play (≈ opposite the
+    // attack direction), so the dir-based map reads inverted. Map the stick relative to the camera's
+    // actual eased forward instead — "up" always drives toward what you're looking at. (Broadcast and
+    // the QB-superstar cam keep the stable dir-based map; their forward is already ≈ +dir.)
+    if (this.app.scene3d.superstarCam && !this.humanIsOffense) {
+      const fx = this.app.scene3d.superstarFwdX;
+      const fy = this.app.scene3d.superstarFwdY;
+      // field = (-m.y)·F + (m.x)·R, with screen-right R = (-Fy, Fx). Reduces to the dir-map when
+      // F = (dir, 0), so this is the same construction generalized to any camera forward.
+      return { x: -m.y * fx - m.x * fy, y: -m.y * fy + m.x * fx };
+    }
     return { x: -m.y * this.dir, y: m.x * this.dir };
   }
 

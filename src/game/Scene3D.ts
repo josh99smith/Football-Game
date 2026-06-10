@@ -2173,6 +2173,11 @@ export class Scene3D {
   private _ssFwdZ = 0;
   private readonly _ssLook = new THREE.Vector3(0, 1.3, 0);
   private _ssHasLook = false;
+  /** The superstar camera's current (eased) forward on the field as field x/y (world x == field x,
+   *  world z == field y). Input maps relative to this so "up" on the stick always drives toward what
+   *  the camera is looking at — needed because the defense cam looks back against the attack dir. */
+  get superstarFwdX(): number { return this._ssFwdX; }
+  get superstarFwdY(): number { return this._ssFwdZ; }
   /** DEBUG pause: when true, advance the skinned animation by dt=0 so the pose freezes too (the sim
    *  is frozen by GameApp); the scene still renders so the frozen moment can be orbited. */
   paused = false;
