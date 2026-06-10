@@ -2078,10 +2078,9 @@ export class LivePlayState implements GameState {
       case "safety":
       case "interception":
       case "fumbleLost":
-        return true;
-      case "tackle":
-      case "sack":
-        return this.lastBigHit; // a highlight-reel hit-stick / gang tackle
+        return true; // real highlights — worth the hands-off replay
+      // Big-hit tackles/sacks no longer force a replay (they happen most plays and killed the tempo);
+      // they still get the live hit-cam. The replay button is always there to roll one on demand.
       default:
         return false;
     }

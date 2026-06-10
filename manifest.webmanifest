@@ -4,7 +4,7 @@
   "description": "A mobile-first arcade American football game. Fast, loud, and over-the-top.",
   "start_url": "./",
   "display": "fullscreen",
-  "orientation": "landscape",
+  "orientation": "any",
   "background_color": "#06210e",
   "theme_color": "#0b3d18",
   "icons": [

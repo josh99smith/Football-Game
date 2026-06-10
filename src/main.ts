@@ -9,6 +9,16 @@ if (!canvas || !canvas3d) throw new Error("missing game canvases");
 const app = new GameApp(canvas, canvas3d);
 app.start(new MenuState(app));
 
+// Reclaim the browser URL/status bar on phones: request fullscreen on the first touch (browsers
+// require a user gesture). Best-effort — ignored where unsupported/blocked (e.g. iOS Safari).
+if (window.matchMedia("(pointer: coarse)").matches) {
+  window.addEventListener(
+    "pointerdown",
+    () => { document.documentElement.requestFullscreen?.().catch(() => {}); },
+    { once: true },
+  );
+}
+
 // Dev-only handle for headless/scripted testing (stripped from production builds).
 if (import.meta.env.DEV) {
   (window as unknown as { __app: GameApp }).__app = app;
