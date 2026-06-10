@@ -4,7 +4,9 @@ import { drawButton, drawPanel, tappedIn, type Rect } from "../../ui/widgets";
 import { drawCrest } from "../../ui/Emblems";
 import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveHighScore } from "../storage";
+import { advanceWeek, recordPlayoffResult, saveSeason } from "../season";
 import { MenuState } from "./MenuState";
+import { SeasonHubState } from "./SeasonHubState";
 
 /** Final whistle: shows the score, records a high score, returns to the menu. */
 export class GameOverState implements GameState {
@@ -31,6 +33,14 @@ export class GameOverState implements GameState {
       opponentPoints: m.away.score,
       date: Date.now(),
     });
+    // Season: record this result (the user is always HOME in a season game), sim the rest of the
+    // week / playoff round, and persist — the hub screen shows the updated standings/bracket.
+    const s = this.app.season;
+    if (s) {
+      if (s.phase === "regular") advanceWeek(s, m.home.score, m.away.score);
+      else if (s.phase === "playoff") recordPlayoffResult(s, m.home.score, m.away.score);
+      saveSeason(s);
+    }
     this.app.audio.score();
     this.app.input.consumeTaps();
   }
@@ -40,7 +50,7 @@ export class GameOverState implements GameState {
     const taps = this.app.input.consumeTaps();
     if (this.t > 0.5 && tappedIn(this.playRect, taps)) {
       this.app.audio.uiConfirm();
-      this.app.setState(new MenuState(this.app));
+      this.app.setState(this.app.season ? new SeasonHubState(this.app) : new MenuState(this.app));
     }
   }
 
@@ -97,6 +107,6 @@ export class GameOverState implements GameState {
     });
 
     this.playRect = { x: r.width / 2 - 110, y: y + h - 32, w: 220, h: 50 };
-    drawButton(r, this.playRect, "BACK TO THE STREETS", { fill: COLORS.concrete, accent: COLORS.blood, size: 17 });
+    drawButton(r, this.playRect, this.app.season ? "CONTINUE SEASON" : "BACK TO THE STREETS", { fill: COLORS.concrete, accent: COLORS.blood, size: 17 });
   }
 }

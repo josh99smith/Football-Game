@@ -5,7 +5,9 @@ import { drawButton, tappedIn, type Rect } from "../../ui/widgets";
 import { drawCrest, drawHardcoreBadge } from "../../ui/Emblems";
 import { COLORS, FONT, grungeBackground } from "../../ui/Theme";
 import { saveSettings, loadSettings } from "../storage";
+import { makeSeason, loadSeason, saveSeason } from "../season";
 import { MatchupIntroState } from "./MatchupIntroState";
+import { SeasonHubState } from "./SeasonHubState";
 import { PlaySelectState } from "./PlaySelectState";
 import { versionLabel, buildDate } from "../buildInfo";
 
@@ -20,6 +22,8 @@ export class MenuState implements GameState {
   private readonly app: GameApp;
   private rects: Record<string, Rect> = {};
   private t = 0;
+  /** True if a saved, still-in-progress season can be resumed (computed once on enter). */
+  private resumable = false;
 
   // Layout values shared between layout() and render().
   private crestR = 40;
@@ -44,6 +48,8 @@ export class MenuState implements GameState {
     this.app.input.consumeTaps();
     this.layout();
     this.app.audio.setMuted(this.app.config.muted);
+    const saved = loadSeason();
+    this.resumable = !!saved && saved.phase !== "done";
     // Returning to the menu ends any debug session (tears down the overlay next tick).
     if (this.app.match) this.app.match.debugMode = false;
   }
@@ -103,11 +109,12 @@ export class MenuState implements GameState {
       oppNext: arrow(this.cxR, 1),
       diff: { x: cx - optW - 6, y: optY, w: optW, h: optH },
       mute: { x: cx + 6, y: optY, w: optW, h: optH },
-      // Play row split into the primary PLAY button + a PRACTICE button beside it.
-      play: { x: cx - playW / 2, y: playY, w: playW * 0.6 - 5, h: playH },
-      practice: { x: cx - playW / 2 + playW * 0.6 + 5, y: playY, w: playW * 0.4 - 5, h: playH },
-      // Small DEBUG entry, tucked in the bottom-left safe area (dev/tuning sandbox).
+      // Play row: the two hero buttons — PLAY (exhibition) + SEASON.
+      play: { x: cx - playW / 2, y: playY, w: playW * 0.5 - 5, h: playH },
+      season: { x: cx - playW / 2 + playW * 0.5 + 5, y: playY, w: playW * 0.5 - 5, h: playH },
+      // Small sandbox entries, tucked in the bottom-left safe area.
       debug: { x: 10, y: H - 34 - clamp(H * 0.02, 4, 12), w: 84, h: 34 },
+      practice: { x: 100, y: H - 34 - clamp(H * 0.02, 4, 12), w: 96, h: 34 },
     };
   }
 
@@ -130,6 +137,9 @@ export class MenuState implements GameState {
     } else if (tappedIn(this.rects.play, taps)) {
       this.startGame();
       return;
+    } else if (tappedIn(this.rects.season, taps)) {
+      this.startSeason();
+      return;
     } else if (tappedIn(this.rects.practice, taps)) {
       this.startPractice();
       return;
@@ -147,8 +157,24 @@ export class MenuState implements GameState {
 
   private startGame(): void {
     this.app.audio.uiConfirm();
+    this.app.season = null; // exhibition — not a season game
     this.app.newMatch();
     this.app.setState(new MatchupIntroState(this.app));
+  }
+
+  /** Enter season mode: resume a saved season if one exists, else start a fresh 8-game season with
+   *  the franchise currently selected as YOUR CREW. */
+  private startSeason(): void {
+    this.app.audio.uiConfirm();
+    const c = this.app.config;
+    let s = loadSeason();
+    // Resume an in-progress season; a finished (or missing) one starts fresh with the picked crew.
+    if (!s || s.phase === "done") {
+      s = makeSeason(c.homeTeamIndex, c.difficulty, c.quarterLength);
+      saveSeason(s);
+    }
+    this.app.season = s;
+    this.app.setState(new SeasonHubState(this.app));
   }
 
   /** Sandbox: the real game loop with full mechanics + controls, but the clock is frozen and the
@@ -225,13 +251,16 @@ export class MenuState implements GameState {
     drawButton(r, this.rects.play, "PLAY", {
       fill: COLORS.blood,
       accent: COLORS.hazard,
-      size: clamp(this.rects.play.h * 0.4, 18, 28),
+      size: clamp(this.rects.play.h * 0.36, 16, 26),
     });
-    drawButton(r, this.rects.practice, "PRACTICE", {
+    drawButton(r, this.rects.season, this.resumable ? "RESUME" : "SEASON", {
       fill: COLORS.concrete,
-      size: clamp(this.rects.practice.h * 0.26, 12, 18),
+      accent: COLORS.hazard,
+      size: clamp(this.rects.season.h * 0.32, 14, 22),
+      sub: this.resumable ? "SEASON" : "8 GAMES + PLAYOFF",
     });
     drawButton(r, this.rects.debug, "DEBUG", { fill: COLORS.steel, size: 13 });
+    drawButton(r, this.rects.practice, "PRACTICE", { fill: COLORS.steel, size: 13 });
 
     // Build stamp: version + last-updated date/time (bumped automatically on every build/push).
     ctx.save();

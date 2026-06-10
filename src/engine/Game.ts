@@ -15,6 +15,7 @@ import { loadBaseRig, loadAnimationClips, clipsComplete, loadedClipCount, locomo
 import { Match } from "../game/Match";
 import { TEAMS } from "../game/Team";
 import { loadHighScores, type HighScore } from "../game/storage";
+import type { SeasonData } from "../game/season";
 import { DebugMode } from "../debug/DebugMode";
 
 export interface SessionConfig {
@@ -68,6 +69,8 @@ export class GameApp {
   /** The live match (created when a game starts). */
   match!: Match;
   highScores: HighScore[] = loadHighScores();
+  /** The active season, or null in exhibition (one-off) play. Set when a season game is launched. */
+  season: SeasonData | null = null;
 
   /** Asset-load state surfaced by the optional #diag overlay (remote debugging on phones). */
   diag = { rig: "loading", lastErr: "" };
