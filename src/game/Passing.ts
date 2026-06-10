@@ -10,8 +10,11 @@ export interface CatchResult {
   swatBy?: Player;
 }
 
-const CATCH_RADIUS = 48; // generous so well-thrown balls are actually caught
-const CATCH_HEIGHT = 72; // ball must be low enough to be catchable
+// Catching is resolved by the ball's real 3D proximity to a PLAYER (not its target spot): the ball
+// has to actually arrive in a player's reach and be at a catchable height before anything triggers.
+const CATCH_REACH = 28;       // horizontal px a player can reach to the ball (~2 yd; +arm)
+const CATCH_REACH_INTENDED = 42; // the targeted receiver reaches a bit further (benefit of the doubt)
+const CATCH_HEIGHT = 70;      // ball must have descended below this height to be catchable
 
 /**
  * Pick the receiver to throw to. If the QB is "aiming" (joystick deflected), choose
@@ -53,8 +56,11 @@ export function chooseTarget(
   }
   if (!best) return null;
 
-  // Lead the receiver based on its velocity so the ball arrives where it's headed.
-  const lead: Vec2 = { x: best.pos.x + best.vel.x * 0.42, y: best.pos.y + best.vel.y * 0.42 };
+  // Lead the receiver by roughly the ball's flight time (farther = more lead), so with the tighter
+  // proximity catch the ball arrives right where the receiver is running, not behind him.
+  const reach = Math.hypot(best.pos.x - qb.pos.x, best.pos.y - qb.pos.y);
+  const leadT = Math.min(0.95, Math.max(0.32, reach / 620));
+  const lead: Vec2 = { x: best.pos.x + best.vel.x * leadT, y: best.pos.y + best.vel.y * leadT };
   return { receiver: best, point: lead };
 }
 
@@ -92,56 +98,52 @@ export function resolveAir(
 ): CatchResult | null {
   if (ball.state !== "inAir") return null;
 
-  // Resolve the pass ONLY once the ball actually arrives at the catch point — near its
-  // target spot, or on the ground — and is low enough to be caught. Resolving mid-flight
-  // (the old flightProgress>0.5 check) let a trailing defender by the QB force an
-  // incomplete on flat passes before the receiver ever got there.
-  const atCatchPoint = ball.distToTarget < CATCH_RADIUS || landed;
-  if (!atCatchPoint || ball.z >= CATCH_HEIGHT) {
-    return landed ? { incomplete: true } : null;
+  // The ball can only be caught once it has DESCENDED into the catchable height band — until then it
+  // sails over everyone (no early magnet catches while it's still up at its apex).
+  const ballLow = ball.z < CATCH_HEIGHT;
+
+  // Who can actually reach the ball right now (real proximity to the PLAYER, not the target spot)?
+  // The targeted receiver reaches a little further. Nobody in reach + still airborne ⇒ keep flying.
+  let rcv: Player | null = null;
+  let dRcv = Infinity;
+  if (ballLow) {
+    if (intended && !intended.isDown && intended.job !== "block") {
+      const d = dist(ball.pos, intended.pos);
+      if (d < CATCH_REACH_INTENDED) { rcv = intended; dRcv = d; }
+    }
+    if (!rcv) {
+      rcv = nearestInRange(ball.pos, offense.filter((p) => p !== ball.thrownBy && p.job !== "block"), CATCH_REACH);
+      if (rcv) dRcv = dist(ball.pos, rcv.pos);
+    }
+  }
+  let def: Player | null = null;
+  let dDef = Infinity;
+  if (ballLow) {
+    def = nearestInRange(ball.pos, defense, CATCH_REACH);
+    if (def) dDef = dist(ball.pos, def.pos);
   }
 
-  // A ball arriving out of bounds (past a sideline or the back of an end zone) can't be
-  // caught or picked — it's incomplete. Stops back-of-the-end-zone passes scoring TDs.
+  // Nobody can reach it yet: let it keep traveling; only an actual landing is incomplete.
+  if (!rcv && !def) return landed ? { incomplete: true } : null;
+
+  // A ball arriving out of bounds can't be caught or picked — it's incomplete (no back-of-end-zone TDs).
   if (
-    ball.pos.x < bounds.minX ||
-    ball.pos.x > bounds.maxX ||
-    ball.pos.y < bounds.minY ||
-    ball.pos.y > bounds.maxY
+    ball.pos.x < bounds.minX || ball.pos.x > bounds.maxX ||
+    ball.pos.y < bounds.minY || ball.pos.y > bounds.maxY
   ) {
     return { incomplete: true };
   }
 
-  // Find the catcher and nearest defender around the arrival point. Receivers are led
-  // to the target, so search generously; the targeted man gets the most benefit.
-  const def = nearestInRange(ball.pos, defense, CATCH_RADIUS);
-  let rcv: Player | null = null;
-  if (intended && !intended.isDown && dist(ball.pos, intended.pos) < CATCH_RADIUS * 1.6) {
-    rcv = intended;
-  } else {
-    rcv = nearestInRange(
-      ball.pos,
-      offense.filter((p) => p !== ball.thrownBy && p.job !== "block"),
-      CATCH_RADIUS * 1.2,
-    );
-  }
-
   if (def && rcv) {
-    const dDef = dist(ball.pos, def.pos);
-    const dRcv = dist(ball.pos, rcv.pos);
-    // The defender must clearly beat the receiver to the ball; the targeted man
-    // gets extra benefit of the doubt on contested balls.
-    const margin = rcv === intended ? 18 : 4;
+    // The defender must clearly beat the receiver to the ball; the targeted man gets the benefit.
+    const margin = rcv === intended ? 14 : 3;
     if (dDef < dRcv - margin) {
       return Math.random() < pickChance ? { intercepted: def } : { incomplete: true, swatBy: def };
     }
     return Math.random() < pickChance * 0.2 ? { intercepted: def } : { caught: rcv };
   }
   if (rcv) return { caught: rcv };
-  if (def) return Math.random() < pickChance ? { intercepted: def } : { incomplete: true, swatBy: def };
-
-  // Nobody's there yet — let the ball keep traveling; only an actual landing is incomplete.
-  return landed ? { incomplete: true } : null;
+  return Math.random() < pickChance ? { intercepted: def! } : { incomplete: true, swatBy: def! };
 }
 
 function nearestInRange(point: Vec2, players: Player[], radius: number): Player | null {
