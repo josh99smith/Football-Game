@@ -1044,7 +1044,7 @@ export class LivePlayState implements GameState {
   private handleActionStick(c: Player): void {
     const sw = this.app.input.consumeSwipe();
     if (!sw) return;
-    if (sw.y >= -0.45) return; // only an UP flick is an action; other directions are reserved
+    if (sw.y > -0.35) return; // any predominantly-UP flick is the action; other directions reserved
     if (this.ball.carrier === c) this.diveToGround(c);
     else if (c.team !== this.offenseTeamId) this.defenderDive(c);
   }
@@ -1053,7 +1053,7 @@ export class LivePlayState implements GameState {
    *  He's then DOWN IF TOUCHED by a defender (checkGroundedCarrier); if untouched, the prone beat
    *  elapses and he scrambles back up to keep running (the prone timer in Player.step). */
   private diveToGround(c: Player): void {
-    if (c.state !== "active" || c.animEvent !== null || c.diveTimer > 0) return;
+    if (c.state !== "active" || c.diveTimer > 0) return; // a transient run-cut anim must not block the dive
     c.diveTimer = 0.34;
     c.animEvent = "dive";
     const sp = Math.hypot(c.vel.x, c.vel.y);

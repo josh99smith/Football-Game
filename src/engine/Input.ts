@@ -170,8 +170,9 @@ export class Input {
     // A swipe is a quick directional flick: a right-side flick (role "tap") OR a hard flick of the
     // movement stick (role "joystick", needs a bigger throw so a normal nudge isn't a juke). Holding
     // the stick to run has a long dt, so it never counts.
-    const minDist = ptr.role === "joystick" ? 52 : 34;
-    if ((ptr.role === "tap" || ptr.role === "joystick") && dt < 300 && sdist > minDist) {
+    const minDist = ptr.role === "joystick" ? 52 : 30;
+    // Include "rstick": a quick flick that lifts before update() samples the deflection still fires.
+    if ((ptr.role === "tap" || ptr.role === "joystick" || ptr.role === "rstick") && dt < 320 && sdist > minDist) {
       this.pendingSwipe = { x: sdx / sdist, y: sdy / sdist };
     }
     if (this.joystickPointerId === e.pointerId) {
@@ -258,11 +259,11 @@ export class Input {
         this.rightStickKnob.y = this.rightStickOrigin.y + dy * cl;
         this.rightStick.x = (dx * cl) / RR;
         this.rightStick.y = (dy * cl) / RR;
-        if (!this.rstickFiredMove && d > RR * 0.6) {
-          this.pendingSwipe = Math.abs(dx) >= Math.abs(dy)
-            ? { x: Math.sign(dx), y: 0 }
-            : { x: 0, y: Math.sign(dy) };
-          this.rstickFiredMove = true; // fired this push's move (once)
+        if (!this.rstickFiredMove && d > RR * 0.5) {
+          // Emit the RAW flick direction (not axis-snapped): the action stick only needs "up" now,
+          // and snapping a slightly-diagonal up-flick to the horizontal axis was eating dives.
+          this.pendingSwipe = { x: dx / d, y: dy / d };
+          this.rstickFiredMove = true; // fired this push's action (once)
         }
       }
     }
