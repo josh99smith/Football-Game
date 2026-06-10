@@ -109,6 +109,7 @@ export class GameApp {
       dive: `${base}dive.fbx`,
       pickup: `${base}pickup.fbx`,
       turnRun: `${base}turn_run.fbx`,
+      getup: `${base}getup_c.fbx`,
     };
     // Two-stage load so the skinned model appears ASAP: (1) the ~1MB rig swaps box avatars for the
     // model immediately (idle only); (2) the animation clips stream in and upgrade it. A slow or

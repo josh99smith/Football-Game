@@ -29,7 +29,9 @@ const RAG_SETTLE_RESIDUAL = 0.8; // total body speed below which it counts as "c
 const RAG_MIN_FALL = 0.22;       // don't check for calm until the fall is underway (s)
 const RAG_CALM_NEEDED = 0.25;    // brief beat on the ground before scrambling up (snappy, esp. mid-play)
 const RAG_MAX_FALL = 2;          // safety: stand up even if it never fully settles (s) — no lying around
-const RAG_GETUP_DUR = 0.55;      // seconds to rise to standing (was 1.1; pop up fast to rejoin the play)
+const RAG_GETUP_DUR = 0.55;      // seconds to rise to standing (procedural fallback; pop up fast)
+const GETUP_CLIP_DUR = 1.35;     // seconds for the real get-up CLIP to play (sped up so recovery stays quick)
+const _getQ = new THREE.Quaternion(); // scratch for the settled-pose -> clip crossfade
 const _rgp = new THREE.Vector3();
 const _rhip = new THREE.Vector3();
 const _handPos = new THREE.Vector3();
@@ -574,6 +576,8 @@ class FbxAvatar implements Avatar {
   private readonly diveAction: THREE.AnimationAction | null;
   private readonly pickupAction: THREE.AnimationAction | null;
   private readonly turnRunAction: THREE.AnimationAction | null;
+  private readonly getupAction: THREE.AnimationAction | null;
+  private getupViaClip = false; // true while a real get-up CLIP is driving the stand-up (vs procedural)
   /** Touchdown-celebration clips (base + sports variants) with each one's slice point, picked at random. */
   private readonly celebVariants: { a: THREE.AnimationAction; s: number }[];
   private oneShot: THREE.AnimationAction | null = null;
@@ -684,6 +688,7 @@ class FbxAvatar implements Avatar {
     this.diveAction = clips.dive ? this.mixer.clipAction(clips.dive) : null;
     this.pickupAction = clips.pickup ? this.mixer.clipAction(clips.pickup) : null;
     this.turnRunAction = clips.turnRun ? this.mixer.clipAction(clips.turnRun) : null;
+    this.getupAction = clips.getup ? this.mixer.clipAction(clips.getup) : null;
     // Each celebration with its slice point (the sports takes are 20-32s; the swing is buried inside).
     const ca = (c: THREE.AnimationClip | null) => (c ? this.mixer.clipAction(c) : null);
     this.celebVariants = ([
@@ -861,8 +866,9 @@ class FbxAvatar implements Avatar {
       else this.settleTimer = 0;
       if (this.settleTimer > RAG_CALM_NEEDED || this.fallTime > RAG_MAX_FALL) this.startGetup();
     } else if (this.rPhase === "getup") {
-      this.getupT += dt / RAG_GETUP_DUR;
-      this.blendGetup(Math.min(1, this.getupT));
+      this.getupT += dt / (this.getupViaClip ? GETUP_CLIP_DUR : RAG_GETUP_DUR);
+      if (this.getupViaClip) this.advanceGetupClip(Math.min(1, this.getupT), dt);
+      else this.blendGetup(Math.min(1, this.getupT));
       if (this.getupT >= 1) this.finishGetup();
     }
   }
@@ -934,8 +940,44 @@ class FbxAvatar implements Avatar {
   private startGetup(): void {
     this.getupFrom.clear();
     for (const [bone] of this.restPose) this.getupFrom.set(bone, { p: bone.position.clone(), q: bone.quaternion.clone() });
-    this.ragdoll!.dispose(); // hand off from physics to the procedural stand-up blend
+    this.ragdoll!.dispose(); // hand off from physics to the stand-up
     this.rPhase = "getup"; this.getupT = 0;
+    // Drive the stand-up with the real get-up CLIP when we have it (crossfaded from the settled pose
+    // so it doesn't pop); otherwise the procedural blend back to the rest stance.
+    this.getupViaClip = this.getupAction != null;
+    if (this.getupAction) {
+      // Only the get-up clip drives during the stand-up — silence locomotion/one-shots so the mixer
+      // blend can't corrupt the pose.
+      for (const a of [this.idleAction, this.runAction, this.backAction, this.backDiagAction, this.strafeAction, this.walkAction]) a?.setEffectiveWeight(0);
+      this.oneShot?.stop(); this.oneShot = null;
+      const clipDur = this.getupAction.getClip().duration || GETUP_CLIP_DUR;
+      this.getupAction.reset();
+      this.getupAction.setLoop(THREE.LoopOnce, 1);
+      this.getupAction.clampWhenFinished = true;
+      this.getupAction.setEffectiveTimeScale(clipDur / GETUP_CLIP_DUR); // fit the whole clip into GETUP_CLIP_DUR
+      this.getupAction.setEffectiveWeight(1);
+      this.getupAction.play();
+    }
+  }
+
+  /** Drive the stand-up from a real get-up clip: advance it on the mixer (present() is paused while
+   *  ragdolling/getting up), crossfade out of the settled ragdoll pose so it doesn't pop, and raise
+   *  the hips from the ground to standing (the clip is rotation-only, so it carries no root rise). */
+  private advanceGetupClip(t: number, dt: number): void {
+    this.mixer.update(dt);
+    const blend = clamp(t / 0.3, 0, 1);
+    if (blend < 1) {
+      const e = ragEase(blend);
+      for (const [bone, from] of this.getupFrom) {
+        _getQ.copy(bone.quaternion); // the pose the clip just set
+        bone.quaternion.copy(from.q).slerp(_getQ, e);
+      }
+    }
+    const hips = this.bone("Hips");
+    const from = hips ? this.getupFrom.get(hips) : null;
+    const to = hips ? this.restPose.get(hips) : null;
+    if (hips && from && to) hips.position.set(from.p.x, THREE.MathUtils.lerp(from.p.y, to.p.y, ragEase(t)), from.p.z);
+    this.inner.updateWorldMatrix(true, true);
   }
 
   private blendGetup(t: number): void {
@@ -958,6 +1000,8 @@ class FbxAvatar implements Avatar {
   /** Reconcile back to the game's convention (body placed by the group, bones at rest) so the
    *  idle animation can resume seamlessly: move the group to where the body stood up. */
   private finishGetup(): void {
+    this.getupAction?.stop();
+    this.getupViaClip = false;
     const h = this.bone("Hips");
     if (h) h.getWorldPosition(_rhip); else _rhip.set(this.group.position.x, 0, this.group.position.z);
     for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
@@ -997,6 +1041,7 @@ class FbxAvatar implements Avatar {
   resetPose(): void {
     // Tear down any ragdoll and restore the bind pose so the new play starts clean.
     if (this.ragdoll?.active) this.ragdoll.dispose();
+    this.getupAction?.stop(); this.getupViaClip = false;
     this.rPhase = "anim";
     this.suppressFall = false;
     for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
