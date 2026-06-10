@@ -11,8 +11,8 @@ export const ANIM = {
   // Decompose a player's low-passed acceleration into fore/aft + lateral and lean the body into it:
   // decelerate ⇒ lean back, accelerate ⇒ lean in, hard cut ⇒ bank. Sells weight & momentum.
   ACCEL_LEAN: true, // master toggle (A/B); off ⇒ exactly the prior turn-rate lean
-  LEAN_ACCEL_GAIN: 0.00012, // rad per px/s^2 of fore/aft accel
-  LEAN_PITCH_MAX: 0.2, // clamp on the accel pitch contribution
+  LEAN_ACCEL_GAIN: 0.00015, // rad per px/s^2 of fore/aft accel (tilt in on a burst reads clearly)
+  LEAN_PITCH_MAX: 0.24, // clamp on the accel pitch contribution
   BANK_ACCEL_GAIN: 0.0001, // rad per px/s^2 of lateral accel (added to the turn bank)
 
   // --- procedural hip motion ----------------------------------------------------------------------

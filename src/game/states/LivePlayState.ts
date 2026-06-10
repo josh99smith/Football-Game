@@ -1836,7 +1836,9 @@ export class LivePlayState implements GameState {
     }
     if (line) {
       const s = this.ballSpot();
-      this.app.floating.add(line, s.x, s.y - 30, { size: 22, color, life: 1.2 });
+      // Float the street call-out well above the pile (h) so it never sits on the ball/runner. The
+      // formal result still reads in the dead-ball panel — this in-world line is a deliberate extra.
+      this.app.floating.add(line, s.x, s.y, { size: 22, color, life: 1.2, h: 58 });
     }
     if (big) this.app.audio.stinger();
   }

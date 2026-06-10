@@ -2,6 +2,7 @@ import type { GameApp } from "../engine/Game";
 import type { Player } from "./entities/Player";
 import { dist, clamp, type Vec2 } from "../engine/math/Vec2";
 import { chance } from "../engine/math/random";
+import type { HitVariant } from "../physics/TackleRagdoll";
 
 /**
  * The tackling engine. It owns the whole contact decision — whiffs, glancing stumbles, broken
@@ -186,11 +187,16 @@ export class TackleEngine {
       t.leanTarget = i % 2 === 0 ? 0.4 : -0.4; // lean into the pile
     }
 
+    // Pick the carrier's fall reaction from the contact so pile-ups don't all read identical: a
+    // committed hit-stick spins him backward, a gang twists him down, a fast side-on hit blasts him
+    // sideways, and ordinary tackles mix knock-back / leg-cut / side for variety.
+    const variant = this.pickVariant(big, hitStick, gangSize, closing, dirX, dirY);
+
     // Ragdoll the carrier + the closest couple of tacklers (cap for physics); the rest just wrap.
     const ragdollIdx: number[] = [];
     const ci = indexOf(carrier);
     if (ci >= 0 && this.app.scene3d.startRagdoll(ci, {
-      hitDirX: dirX, hitDirY: dirY, closingPx: closing, carryVx: carrier.vel.x, carryVy: carrier.vel.y, big, bit: 0x0002,
+      hitDirX: dirX, hitDirY: dirY, closingPx: closing, carryVx: carrier.vel.x, carryVy: carrier.vel.y, big, bit: 0x0002, variant,
     })) ragdollIdx.push(ci);
     const ragTacklers = Math.min(pile.length, RAGDOLL_MAX - 1);
     for (let i = 0; i < ragTacklers; i++) {
@@ -198,6 +204,7 @@ export class TackleEngine {
       const ti = indexOf(t);
       if (ti >= 0 && this.app.scene3d.startRagdoll(ti, {
         hitDirX: -dirX, hitDirY: -dirY, closingPx: closing * 0.55, carryVx: t.vel.x, carryVy: t.vel.y, big, bit: BODY_BITS[i] ?? 0x0004,
+        variant: i === 0 ? "highKnock" : "sideSwipe", // tacklers recoil; vary so a pile isn't a mirror
       })) ragdollIdx.push(ti);
     }
 
@@ -207,6 +214,16 @@ export class TackleEngine {
     const spot = { x: carrier.pos.x + pvx * beat * 0.6, y: carrier.pos.y + pvy * beat * 0.6 };
 
     return { lead, pile, spot, big, fumble, fumbleVel, beat, ragdollIdx, focus: carrier };
+  }
+
+  /** Choose the carrier's ragdoll fall reaction from the contact. Special hits are deterministic;
+   *  ordinary tackles mix three reactions so repeated stops don't look like the same flat fall. */
+  private pickVariant(big: boolean, hitStick: boolean, gangSize: number, closing: number, dirX: number, dirY: number): HitVariant {
+    if (hitStick) return "angledBack";                                  // a big stick spins him off
+    if (big && gangSize >= 2) return "twist";                           // gang swarm twists him down
+    if (closing > 160 && Math.abs(dirX) > Math.abs(dirY) * 1.2) return "sideSwipe"; // fast side-on hit
+    const r = Math.random();
+    return r < 0.4 ? "highKnock" : r < 0.72 ? "lowCut" : "sideSwipe";
   }
 
   private impactFx(hx: number, hy: number, dirX: number, dirY: number, big: boolean, hitStick: boolean, gangSize: number, closing: number, fumble: boolean, _team: string): void {

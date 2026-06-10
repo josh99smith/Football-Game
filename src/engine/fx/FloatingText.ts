@@ -26,7 +26,7 @@ export class FloatingText {
     text: string,
     x: number,
     y: number,
-    opts: { size?: number; color?: string; life?: number; outline?: string } = {},
+    opts: { size?: number; color?: string; life?: number; outline?: string; h?: number } = {},
   ): void {
     // Drop an identical popup that's still fresh on screen (avoids the same word doubling up).
     if (this.items.some((it) => it.text === text && it.life > it.maxLife * 0.5)) return;
@@ -37,7 +37,7 @@ export class FloatingText {
       text,
       x,
       y,
-      h: 28,
+      h: opts.h ?? 28, // start height (px above the field); raise it to clear players/the pile
       riseSpeed: 70,
       life,
       maxLife: life,

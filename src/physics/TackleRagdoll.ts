@@ -82,6 +82,10 @@ const _wp = new THREE.Vector3();
 const _wp2 = new THREE.Vector3();
 const _upVel = new THREE.Vector3();
 const _midVel = new THREE.Vector3();
+const _sideDir = new THREE.Vector3();
+const _sideVel = new THREE.Vector3();
+const _angVel = new THREE.Vector3();
+const _twistVel = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
 // scratch for applyLimits (per-substep, kept separate from spawn/drive temps)
 const _lpQ = new THREE.Quaternion();
@@ -95,6 +99,10 @@ const _lrest = new THREE.Quaternion();
 const _ltorque = new THREE.Vector3();
 
 const LOWER = new Set(["thighL", "shinL", "footL", "thighR", "shinR", "footR"]);
+
+/** Distinct tackle reactions so pile-ups don't all read as the same flat prone fall. Each picks which
+ *  body segments take the hit impulse (and adds a lateral/spin component) — selected by hit type. */
+export type HitVariant = "highKnock" | "lowCut" | "sideSwipe" | "angledBack" | "twist";
 const MAX_SPIN = 10; // rad/s — clamp so a body can never spin up into a contorted blur
 
 export class TackleRagdoll {
@@ -150,7 +158,7 @@ export class TackleRagdoll {
    *  - high hit (default): upper body takes it -> knocked backward/down off the legs;
    *  - low hit (`hitLow`): the legs take it -> they're cut out and the torso flips forward.
    */
-  spawn(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow = false, collisionBit = 0x0002): void {
+  spawn(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow = false, collisionBit = 0x0002, variant?: HitVariant): void {
     if (this.active) this.dispose();
     // Membership = this ragdoll's bit; it collides with the ground (0x0001) and its OWN bit
     // (self-collision stops limbs melting through the torso) but NOT other ragdolls' bits, so
@@ -164,8 +172,15 @@ export class TackleRagdoll {
     // overlapping pile ragdolls don't clobber the shared baseline.
     this.physics.acquireHighSubsteps();
     this.highSub = true;
+    const vnt: HitVariant = variant ?? (hitLow ? "lowCut" : "highKnock");
     const hitVel = _upVel.copy(hitDir).multiplyScalar(hitSpeed).add(carryVel); // tier that's hit
     const midVel = _midVel.copy(hitDir).multiplyScalar(hitSpeed * 0.45).add(carryVel); // pelvis
+    // Perpendicular ground-plane axis for the lateral / spin reactions.
+    _sideDir.set(-hitDir.z, 0, hitDir.x);
+    if (_sideDir.lengthSq() > 1e-6) _sideDir.normalize();
+    const sideVel = _sideVel.copy(_sideDir).multiplyScalar(hitSpeed * 0.6).add(carryVel);       // blasted sideways
+    const angVel = _angVel.copy(hitDir).multiplyScalar(hitSpeed * 0.8).addScaledVector(_sideDir, hitSpeed * 0.35).add(carryVel); // back + spin
+    const twistVel = _twistVel.copy(carryVel).addScaledVector(_sideDir, hitSpeed * 0.5);          // legs swept across
 
     for (const def of SEGS) {
       const top = this.bone(def.top);
@@ -178,11 +193,19 @@ export class TackleRagdoll {
       _dir.divideScalar(len);
       _q.setFromUnitVectors(_UP, _dir); // capsule local +Y -> bone direction
 
-      // Velocity tiers: the hit tier gets the full hit, pelvis half, the other tier just the
-      // carry. A high hit drives the upper body; a low hit drives the legs (cuts them out).
+      // Velocity tiers per variant: the pelvis always gets the attenuated drive; the rest are split
+      // upper-vs-legs so each variant topples differently (knock back high, cut the legs out, blast
+      // sideways, spin off-axis, or sweep the legs across for a twisting fall).
       const isLeg = LOWER.has(def.name);
       const isPelvis = def.name === "pelvis";
-      const v = isPelvis ? midVel : (isLeg === hitLow ? hitVel : carryVel);
+      let v: THREE.Vector3;
+      switch (vnt) {
+        case "lowCut":     v = isPelvis ? midVel : (isLeg ? hitVel : carryVel); break;
+        case "sideSwipe":  v = isPelvis ? midVel : (isLeg ? carryVel : sideVel); break;
+        case "angledBack": v = isPelvis ? midVel : (isLeg ? carryVel : angVel); break;
+        case "twist":      v = isPelvis ? midVel : (isLeg ? twistVel : hitVel); break;
+        default:           v = isPelvis ? midVel : (isLeg ? carryVel : hitVel); break; // highKnock
+      }
       const bodyDesc = R.RigidBodyDesc.dynamic()
         .setTranslation(_c.x, _c.y, _c.z)
         .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })

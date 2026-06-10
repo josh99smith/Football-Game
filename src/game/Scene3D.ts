@@ -15,7 +15,7 @@ import { Field, FIELD_LENGTH, FIELD_WIDTH, PX_PER_YARD, type FieldBrand } from "
 import type { TeamConfig } from "./Team";
 import { drawIcon, type EmblemIcon } from "../ui/Emblems";
 import type { PhysicsWorld } from "../physics/PhysicsWorld";
-import { TackleRagdoll } from "../physics/TackleRagdoll";
+import { TackleRagdoll, type HitVariant } from "../physics/TackleRagdoll";
 
 /** Units per field-pixel (1 yard = 1 world unit in 3D). */
 const U = 1 / PX_PER_YARD;
@@ -68,6 +68,7 @@ export interface RagdollHit {
   carryVx: number; carryVy: number; // the player's own momentum (px/s), carried into the fall
   big: boolean;                     // a big hit blows the upper body up; else more low hits
   bit: number;                      // collision membership bit (distinct per body in a pile)
+  variant?: HitVariant;             // distinct fall reaction (knock-back / cut-out / side / spin / twist)
 }
 
 /** A swappable on-field player representation (box fallback or skinned FBX). */
@@ -304,7 +305,7 @@ const MODEL_FORWARD = 0;
 const TURN_RATE_RAD = 14; // rendered yaw slew (rad/s), scaled by speed
 // Foot-plant warps: timeScale = speed(px/s) * K, calibrated from each clip's measured
 // authored stride speed so the feet grip the ground (no skating) at any pace.
-const FOOT_PLANT_K = 0.0109; // run clip strides ~4.6 yd/s (eased ~20% for a calmer stride)
+const FOOT_PLANT_K = 0.0124; // run clip strides ~4.6 yd/s (only ~10% ease now, so feet don't skate at speed)
 const WALK_PLANT_K = 0.0369; // walk clip strides ~1.7 yd/s
 const BACK_PLANT_K = 0.0194; // backpedal clip ~3.2 yd/s
 const STRAFE_PLANT_K = 0.0163; // strafe clip ~3.8 yd/s
@@ -832,11 +833,11 @@ class FbxAvatar implements Avatar {
   ragdollActive(): boolean { return this.rPhase !== "anim"; }
 
   /** Snapshot the current animated pose and hand the body to physics for a real tackle fall. */
-  startRagdoll(physics: PhysicsWorld, carry: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow: boolean, bit: number): void {
+  startRagdoll(physics: PhysicsWorld, carry: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow: boolean, bit: number, variant?: HitVariant): void {
     if (!this.ragdoll) { this.ragdoll = new TackleRagdoll(physics); this.ragdoll.bind(this.inner); }
     this.group.updateWorldMatrix(true, true); // freeze the live pose in world space
     this.group.position.y = 0;                 // so the get-up later stands with feet on the ground
-    this.ragdoll.spawn(carry, hitDir, hitSpeed, hitLow, bit);
+    this.ragdoll.spawn(carry, hitDir, hitSpeed, hitLow, bit, variant);
     this.rPhase = "fall"; this.fallTime = 0; this.settleTimer = 0; this.suppressFall = false;
     this.ring.visible = false; this.chevron.visible = false; this.nub.visible = false;
   }
@@ -1157,7 +1158,7 @@ class FbxAvatar implements Avatar {
       tIdle = 1 - moving01; // everyone settles into the football ready stance
       // Each cycle is warped to its own measured stride so feet grip the ground.
       this.walkAction?.setEffectiveTimeScale(clamp(lo.speed * WALK_PLANT_K, 0.7, 3.6));
-      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 2.6));
+      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 3.0));
       this.backAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
       this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * STRAFE_PLANT_K, 0.7, 3.0));
       // Bank hard into turns/cuts so a change of direction reads as a dynamic lean (plus the
@@ -1173,7 +1174,7 @@ class FbxAvatar implements Avatar {
       const aFwd = ANIM.ACCEL_LEAN ? lo.accelX * ch + lo.accelY * sh : 0;
       const aLat = ANIM.ACCEL_LEAN ? -lo.accelX * sh + lo.accelY * ch : 0;
       const accelPitch = clamp(aFwd * ANIM.LEAN_ACCEL_GAIN, -ANIM.LEAN_PITCH_MAX, ANIM.LEAN_PITCH_MAX);
-      const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.42 + aLat * ANIM.BANK_ACCEL_GAIN, -0.62, 0.62);
+      const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.52 + aLat * ANIM.BANK_ACCEL_GAIN, -0.62, 0.62);
       this.bankSmooth += (bankTarget - this.bankSmooth) * Math.min(1, dt * 9);
       // Forward lean while running ahead (more at speed), slight backward lean when backpedaling,
       // plus the accel weight pitch — all FADED OUT as the body falls (1 - fallT) so a tackled /
@@ -1426,7 +1427,7 @@ export class Scene3D {
     const carry = _ragCarry.set(hit.carryVx * U, 0, hit.carryVy * U).multiplyScalar(0.7);
     if (carry.length() > 5) carry.setLength(5);
     const hitLow = hit.big ? Math.random() < 0.2 : Math.random() < 0.5; // big hits mostly blow up high
-    av.startRagdoll(this.physics, carry, dir, hitSpeed, hitLow, hit.bit);
+    av.startRagdoll(this.physics, carry, dir, hitSpeed, hitLow, hit.bit, hit.variant);
     return true;
   }
 
