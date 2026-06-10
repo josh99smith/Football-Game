@@ -294,7 +294,7 @@ export class SpecialTeamsState implements GameState {
     if (this.blocked) { this.headline = "BLOCKED!"; this.detail = ""; }
     else if (this.good) { this.headline = "IT'S GOOD!"; this.detail = k === "fg" ? "FIELD GOAL" : "EXTRA POINT"; }
     else { this.headline = "NO GOOD"; this.detail = Math.abs(this.ball.pos.y - CENTER_Y) >= UPRIGHT_HALF_PX ? "WIDE" : "SHORT"; }
-    if (this.good) { this.app.audio.score(); this.app.audio.crowdCheer(); } else { this.app.audio.crowdGroan(); }
+    if (this.good) { this.app.audio.score(); this.app.audio.crowdCheer(); this.app.scene3d.cheerSideline(); } else { this.app.audio.crowdGroan(); }
   }
 
   private settlePlayers(dt: number): void {

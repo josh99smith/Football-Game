@@ -1939,6 +1939,7 @@ export class LivePlayState implements GameState {
     }
     this.app.shake.add(0.6);
     this.app.particles.confetti(carrier.pos.x, carrier.pos.y, 50);
+    this.app.scene3d.cheerSideline(); // the whole sideline leaps for the score
     // No floating tag or screen banner here — the dead-ball score celebration panel is the headline.
     this.app.time.slow(0.4, 0.5);
     // The whole scoring unit breaks into a celebration during the post-play beat.

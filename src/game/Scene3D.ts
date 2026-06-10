@@ -32,7 +32,7 @@ const RAG_CALM_NEEDED = 0.25;    // brief beat on the ground before scrambling u
 const RAG_MAX_FALL = 2;          // safety: stand up even if it never fully settles (s) — no lying around
 const RAG_GETUP_DUR = 0.55;      // seconds to rise to standing (procedural fallback; pop up fast)
 const GETUP_CLIP_DUR = 1.35;     // seconds for the real get-up CLIP to play (sped up so recovery stays quick)
-const SIDELINE_PLAYERS_PER_SIDE = 9; // skinned bench players per sideline (capped for mobile perf)
+const SIDELINE_PLAYERS_PER_SIDE = 12; // skinned front-rank bench players per sideline (mobile-capped)
 const _getQ = new THREE.Quaternion(); // scratch for the settled-pose -> clip crossfade
 const _rgp = new THREE.Vector3();
 const _rhip = new THREE.Vector3();
@@ -1510,8 +1510,13 @@ export class Scene3D {
   /** Per-side jersey materials for the benched players (recolored to the matchup in setFieldTeams). */
   private readonly benchMatHome = new THREE.MeshStandardMaterial({ color: 0x2a4f8f, roughness: 0.85 });
   private readonly benchMatAway = new THREE.MeshStandardMaterial({ color: 0x8f3030, roughness: 0.85 });
-  /** Bench/coach figures that idle-bob each frame. */
-  private readonly sidelineFigures: { o: THREE.Object3D; ph: number }[] = [];
+  /** Bench/coach figures with a varied idle behavior, animated each frame. `kind`: 0 bob, 1 weight-
+   *  shift sway, 2 turn-to-chat, 3 clap/bounce. Base transform captured so the motion offsets it. */
+  private readonly sidelineFigures: {
+    o: THREE.Object3D; ph: number; bx: number; bz: number; ry: number; kind: number; amp: number; spd: number;
+  }[] = [];
+  /** Seconds of boosted sideline celebration remaining (set on a score). */
+  private sidelineCheerT = 0;
   /** Placeholder box bench players (hidden once the real skinned models stream in). */
   private readonly sidelineBoxPlayers: THREE.Object3D[] = [];
   /** Real skinned sideline players (built when the char model + team colors are both ready). */
@@ -1751,7 +1756,9 @@ export class Scene3D {
       if (i >= 0) this.sidelineFigures.splice(i, 1);
     }
     this.sidelinePlayerObjs = [];
-    for (const o of this.sidelineBoxPlayers) o.visible = false; // hide the placeholders
+    // Keep the cheap box figures visible as the BACK rank behind the skinned front row (they used to
+    // be hidden on upgrade, which left the sideline sparser than before the models streamed in).
+    for (const o of this.sidelineBoxPlayers) o.visible = true;
 
     for (const side of [-1, 1] as const) {
       const team = side < 0 ? home : away;
@@ -1760,19 +1767,36 @@ export class Scene3D {
       const trim = new THREE.Color(team.colors.trim).getHex();
       // A few shared jersey textures per side (random numbers), reused across figures (one canvas
       // each instead of per-player — keeps texture memory + uploads low).
-      const texes = [0, 0, 0].map(() => jerseyTexture(jersey, accent, trim, 1 + ((Math.random() * 98) | 0)));
-      const baseZ = side < 0 ? -2.6 : FIELD_WID_U + 2.6;
+      const texes = [0, 0, 0, 0].map(() => jerseyTexture(jersey, accent, trim, 1 + ((Math.random() * 98) | 0)));
+      const baseZ = side < 0 ? -2.4 : FIELD_WID_U + 2.4;
       const faceY = side < 0 ? 0 : Math.PI;
-      const x0 = FIELD_LEN_U * 0.32, x1 = FIELD_LEN_U * 0.68, n = SIDELINE_PLAYERS_PER_SIDE;
+      // Pack a denser front rank spanning more of the sideline length.
+      const x0 = FIELD_LEN_U * 0.22, x1 = FIELD_LEN_U * 0.78, n = SIDELINE_PLAYERS_PER_SIDE;
       for (let i = 0; i < n; i++) {
         const o = this.makeSidelinePlayer(asset, texes[(Math.random() * texes.length) | 0], trim);
-        o.position.set(x0 + (x1 - x0) * (i / (n - 1)) + (Math.random() * 0.5 - 0.25), 0, baseZ + (Math.random() * 0.7 - 0.35));
-        o.rotation.y = faceY;
+        o.position.set(x0 + (x1 - x0) * (i / (n - 1)) + (Math.random() * 0.6 - 0.3), 0, baseZ + (Math.random() * 0.7 - 0.35));
+        o.rotation.y = faceY + (Math.random() * 0.5 - 0.25); // not a perfectly straight line
         this.scene.add(o);
         this.sidelinePlayerObjs.push(o);
-        this.sidelineFigures.push({ o, ph: Math.random() });
+        this.addSidelineFigure(o);
       }
     }
+  }
+
+  /** Make the whole sideline erupt (leap + clap) for a beat — called on a score. */
+  cheerSideline(): void {
+    this.sidelineCheerT = 1.8;
+  }
+
+  /** Register a sideline figure with a randomized idle behavior (captures its base transform). */
+  private addSidelineFigure(o: THREE.Object3D): void {
+    this.sidelineFigures.push({
+      o, ph: Math.random() * 10,
+      bx: o.position.x, bz: o.position.z, ry: o.rotation.y,
+      kind: (Math.random() * 4) | 0,
+      amp: 0.035 + Math.random() * 0.05,
+      spd: 0.8 + Math.random() * 0.8,
+    });
   }
 
   /** One static skinned sideline player: a skeleton clone of the real model in its stance pose,
@@ -1855,26 +1879,29 @@ export class Scene3D {
     };
     const coachMat = new THREE.MeshStandardMaterial({ color: 0x2a2e33, roughness: 0.95 });
 
-    // A bench of players + two coaches on each sideline, between the field and the stands (z = ±4).
+    // Two ranks of box bench players + coaches on each sideline, between the field and the stands.
+    // The boxes start as the only dressing, then become the BACK rank once skinned models stream in
+    // (front rank ~z±2.3), so the sideline reads two-deep and packed.
     for (const side of [-1, 1] as const) {
       const jersey = side < 0 ? this.benchMatHome : this.benchMatAway;
-      const baseZ = side < 0 ? -2.6 : FIELD_WID_U + 2.6;
+      const backZ = side < 0 ? -3.9 : FIELD_WID_U + 3.9;
       const faceY = side < 0 ? 0 : Math.PI;
-      const x0 = FIELD_LEN_U * 0.32, x1 = FIELD_LEN_U * 0.68, n = 14;
+      const x0 = FIELD_LEN_U * 0.2, x1 = FIELD_LEN_U * 0.8, n = 20;
       for (let i = 0; i < n; i++) {
         const o = figure(jersey, 0.94 + Math.random() * 0.12);
-        o.position.set(x0 + (x1 - x0) * (i / (n - 1)) + (Math.random() * 0.5 - 0.25), 0, baseZ + (Math.random() * 0.7 - 0.35));
-        o.rotation.y = faceY;
+        o.position.set(x0 + (x1 - x0) * (i / (n - 1)) + (Math.random() * 0.6 - 0.3), 0, backZ + (Math.random() * 1.1 - 0.55));
+        o.rotation.y = faceY + (Math.random() * 0.5 - 0.25);
         this.scene.add(o);
-        this.sidelineFigures.push({ o, ph: Math.random() });
-        this.sidelineBoxPlayers.push(o); // placeholder until the real skinned model upgrades it
+        this.addSidelineFigure(o);
+        this.sidelineBoxPlayers.push(o); // becomes the back rank once skinned models upgrade the front
       }
-      for (const cx of [FIELD_LEN_U * 0.44, FIELD_LEN_U * 0.56]) {
+      // Coaches stand a touch closer to the field, between the ranks.
+      for (const cx of [FIELD_LEN_U * 0.4, FIELD_LEN_U * 0.52, FIELD_LEN_U * 0.62]) {
         const o = figure(coachMat, 1.06);
-        o.position.set(cx, 0, side < 0 ? -1.7 : FIELD_WID_U + 1.7);
+        o.position.set(cx, 0, side < 0 ? -1.6 : FIELD_WID_U + 1.6);
         o.rotation.y = faceY;
         this.scene.add(o);
-        this.sidelineFigures.push({ o, ph: Math.random() });
+        this.addSidelineFigure(o);
       }
     }
 
@@ -2437,9 +2464,37 @@ export class Scene3D {
       this.chainLink.position.x = (losU + fdU) / 2;
       this.chainLink.scale.x = Math.max(0.1, Math.abs(fdU - losU));
     }
-    // Idle bob for the benched players + coaches (gives the sideline life).
+    // Living sideline: each figure runs one of a few idle behaviors (bob / weight-shift sway / turn
+    // to talk to a neighbor / clap) out of phase, so the bench reads as a crowd of individuals. On a
+    // score the whole sideline erupts — everyone leaps and claps for a beat (sidelineCheerT).
+    if (this.sidelineCheerT > 0) this.sidelineCheerT = Math.max(0, this.sidelineCheerT - opts.dt);
+    const cheer = this.sidelineCheerT > 0 ? smoothstep(0, 0.5, this.sidelineCheerT) : 0;
+    const st = this.markerT;
     for (const f of this.sidelineFigures) {
-      f.o.position.y = Math.abs(Math.sin((this.markerT * 1.5 + f.ph) * Math.PI)) * 0.05;
+      const p = st * f.spd + f.ph;
+      let y = Math.abs(Math.sin(p * Math.PI)) * f.amp;
+      let rz = 0;
+      let ry = f.ry;
+      let x = f.bx;
+      switch (f.kind) {
+        case 1: // weight-shift sway
+          rz = Math.sin(p * 1.1) * 0.05;
+          x = f.bx + Math.sin(p * 0.9) * 0.05;
+          break;
+        case 2: // turn to chat with a neighbor
+          ry = f.ry + Math.sin(p * 0.35) * 0.35;
+          break;
+        case 3: // clap / quicker bounce
+          y = Math.abs(Math.sin(p * 2.1)) * f.amp * 1.7;
+          break;
+      }
+      if (cheer > 0) {
+        // Erupt: a big synchronized leap (offset by phase so it's not a robotic single jump).
+        y += Math.abs(Math.sin((st * 5 + f.ph) * Math.PI)) * 0.42 * cheer;
+        rz += Math.sin(st * 13 + f.ph) * 0.16 * cheer; // arms-up rock
+      }
+      f.o.position.set(x, y, f.bz);
+      f.o.rotation.set(0, ry, rz);
     }
 
     // Smooth camera follow (per-tick); the final placement is interpolated in render().
