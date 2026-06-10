@@ -64,7 +64,7 @@ const ROLE_STATS: Record<Role, { speed: number; accel: number; radius: number; s
 
 export const TURBO_MULT = 1.4;
 /** Global pace dial: scales every player's top speed (and eases accel) to slow the game down. */
-const SPEED_SCALE = 0.86;
+const SPEED_SCALE = 0.78;
 
 export class Player {
   pos: Vec2;

@@ -1024,10 +1024,11 @@ class FbxAvatar implements Avatar {
     // Fire one-shot overlays on game events: throw, catch, the change-of-direction juke,
     // the spin move, the carrier's getting-tackled reaction, the defender's tackle + ball-swat
     // attempts, and a celebration. Each ramps in/out (below) so it crossfades with locomotion.
-    // QB throw uses the older rig_pass clip (the new mocap takes are 25-36s and don't slice cleanly),
-    // sliced to the cock→whip→release window (~5.4s in). Catch is sliced to the reach (~1s in).
-    if (p.animEvent === "pass") this.startThrow(p, this.passAction, 4.35, 1.45, 1.35);
-    else if (p.animEvent === "hailMary") this.startThrow(p, this.passAction, 4.35, 1.55, 1.15);
+    // QB throw uses the older rig_pass clip. Start the slice right at the forward WHIP (release
+    // ~5.45s) so the arm release lands ~0.2s after the throw event — synced with the ball leaving —
+    // instead of a long wind-up that finishes well after the ball's already gone.
+    if (p.animEvent === "pass") this.startThrow(p, this.passAction, 5.2, 0.9, 1.4);
+    else if (p.animEvent === "hailMary") this.startThrow(p, this.passAction, 5.1, 1.05, 1.2);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 1.0, 1.25, 0.5);
     else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.55, 1.25, 0);
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
