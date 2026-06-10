@@ -14,6 +14,8 @@ export interface ControlLayout {
   action2: CircleRegion;
   /** Fixed d-pad base — the joystick deflects from this anchor. */
   joystick: CircleRegion;
+  /** The right action stick: push = carrier moves, tap/hold = the contextual action (snap/throw/etc). */
+  rightStick: CircleRegion;
   /** Pointers starting left of this screen X drive the joystick. */
   joystickZoneRight: number;
 }
@@ -25,7 +27,7 @@ interface Pointer {
   startX: number;
   startY: number;
   startTime: number;
-  role: "joystick" | "turbo" | "action" | "action2" | "tap";
+  role: "joystick" | "rstick" | "turbo" | "action" | "action2" | "tap";
   moved: boolean;
 }
 
@@ -44,6 +46,7 @@ export class Input {
     action: { x: 0, y: 0, r: 0 },
     action2: { x: 0, y: 0, r: 0 },
     joystick: { x: 0, y: 0, r: 56 },
+    rightStick: { x: 0, y: 0, r: 56 },
     joystickZoneRight: 0,
   };
 
@@ -52,6 +55,15 @@ export class Input {
   joystickActive = false;
   readonly joystickOrigin: Vec2 = { x: 0, y: 0 };
   readonly joystickKnob: Vec2 = { x: 0, y: 0 };
+
+  // Right action stick (for rendering): live deflection + knob.
+  rightStickActive = false;
+  readonly rightStick: Vec2 = { x: 0, y: 0 };
+  readonly rightStickKnob: Vec2 = { x: 0, y: 0 };
+  private readonly rightStickOrigin: Vec2 = { x: 0, y: 0 };
+  private rightStickPointerId: number | null = null;
+  /** True once a press has pushed past the move threshold (so it's a move, not a tap action). */
+  private rstickFiredMove = false;
 
   turbo = false;
   action = false;
@@ -109,7 +121,13 @@ export class Input {
     if (this.inCircle(p, this.layout.turbo)) role = "turbo";
     else if (this.inCircle(p, this.layout.action)) role = "action";
     else if (this.inCircle(p, this.layout.action2)) role = "action2";
-    else if (p.x <= this.layout.joystickZoneRight && this.joystickPointerId === null) {
+    else if (this.inCircle(p, this.layout.rightStick) && this.rightStickPointerId === null) {
+      role = "rstick";
+      this.rightStickPointerId = e.pointerId;
+      this.rightStickOrigin.x = this.layout.rightStick.x; // fixed-base: push from the anchor
+      this.rightStickOrigin.y = this.layout.rightStick.y;
+      this.rstickFiredMove = false;
+    } else if (p.x <= this.layout.joystickZoneRight && this.joystickPointerId === null) {
       role = "joystick";
       this.joystickPointerId = e.pointerId;
       // Fixed-base d-pad: deflect from the anchor, not the touch point.
@@ -160,6 +178,10 @@ export class Input {
     if (this.joystickPointerId === e.pointerId) {
       this.joystickPointerId = null;
       this.joystickActive = false;
+    }
+    if (this.rightStickPointerId === e.pointerId) {
+      this.rightStickPointerId = null;
+      this.rightStickActive = false;
     }
     this.pointers.delete(e.pointerId);
   };
@@ -220,9 +242,38 @@ export class Input {
     this.move.x = clamp(mx, -1, 1);
     this.move.y = clamp(my, -1, 1);
 
+    // --- right action stick: a directional PUSH fires a one-shot carrier move (up=truck, L/R=juke,
+    // down=back-juke); a tap/hold WITHOUT a push is the contextual action (snap / throw / stiff-arm /
+    // tackle). The same thumb either moves or acts, never both — and turbo is its own button.
+    let rstickActionDown = false;
+    this.rightStickActive = false;
+    if (this.rightStickPointerId !== null) {
+      const ptr = this.pointers.get(this.rightStickPointerId);
+      if (ptr) {
+        this.rightStickActive = true;
+        const RR = this.layout.rightStick.r || 56;
+        const dx = ptr.x - this.rightStickOrigin.x;
+        const dy = ptr.y - this.rightStickOrigin.y;
+        const d = Math.hypot(dx, dy);
+        const cl = d > RR ? RR / d : 1;
+        this.rightStickKnob.x = this.rightStickOrigin.x + dx * cl;
+        this.rightStickKnob.y = this.rightStickOrigin.y + dy * cl;
+        this.rightStick.x = (dx * cl) / RR;
+        this.rightStick.y = (dy * cl) / RR;
+        if (!this.rstickFiredMove && d > RR * 0.6) {
+          this.pendingSwipe = Math.abs(dx) >= Math.abs(dy)
+            ? { x: Math.sign(dx), y: 0 }
+            : { x: 0, y: Math.sign(dy) };
+          this.rstickFiredMove = true; // committed to a move — this press won't also fire the action
+        }
+        rstickActionDown = !this.rstickFiredMove;
+      }
+    }
+    if (!this.rightStickActive) { this.rightStick.x = 0; this.rightStick.y = 0; }
+
     // --- buttons ---
     let turboDown = this.keys.has("shift");
-    let actionDown = this.keys.has(" ") || this.keys.has("j");
+    let actionDown = this.keys.has(" ") || this.keys.has("j") || rstickActionDown;
     let action2Down = this.keys.has("k");
     for (const ptr of this.pointers.values()) {
       if (ptr.role === "turbo") turboDown = true;

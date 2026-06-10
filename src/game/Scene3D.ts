@@ -1027,8 +1027,8 @@ class FbxAvatar implements Avatar {
     // QB throw uses the older rig_pass clip. Start the slice right at the forward WHIP (release
     // ~5.45s) so the arm release lands ~0.2s after the throw event — synced with the ball leaving —
     // instead of a long wind-up that finishes well after the ball's already gone.
-    if (p.animEvent === "pass") this.startThrow(p, this.passAction, 5.2, 0.9, 1.4);
-    else if (p.animEvent === "hailMary") this.startThrow(p, this.passAction, 5.1, 1.05, 1.2);
+    if (p.animEvent === "pass") this.startThrow(p, this.passAction, 5.4, 0.85, 1.45);
+    else if (p.animEvent === "hailMary") this.startThrow(p, this.passAction, 5.3, 1.0, 1.25);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 1.0, 1.25, 0.5);
     else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.55, 1.25, 0);
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);

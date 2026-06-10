@@ -20,6 +20,7 @@ export class TouchControls {
     action: { x: 0, y: 0, r: 0 },
     action2: { x: 0, y: 0, r: 0 },
     joystick: { x: 0, y: 0, r: 56 },
+    rightStick: { x: 0, y: 0, r: 56 },
     joystickZoneRight: 0,
   };
 
@@ -36,27 +37,30 @@ export class TouchControls {
     const jx = mL + 64;
     const jy = r.height - mB - 64;
     if (debug) {
-      // DEBUG layout: stack ACTION + TURBO on the LEFT, directly above the joystick, so the whole
+      // DEBUG layout: stack the ACTION STICK + TURBO on the LEFT, above the joystick, so the whole
       // game can be driven with the left thumb while the right hand works the camera / tuning panel.
-      const ay = jy - jr - 12 - big;
-      const ty = ay - big - 10 - small;
+      const sy = jy - jr - 12 - jr;
+      const ty = sy - jr - 8 - small;
       this.layout = {
-        action: { x: jx, y: ay, r: big },
+        rightStick: { x: jx, y: sy, r: jr },
         turbo: { x: jx, y: ty, r: small },
+        action: { x: 0, y: 0, r: 0 },
         action2: { x: 0, y: 0, r: 0 },
         joystick: { x: jx, y: jy, r: jr },
         joystickZoneRight: r.width * 0.5,
       };
       return this.layout;
     }
-    // Right-hand cluster: the big ACTION button sits in the corner (primary thumb
-    // position) with TURBO up and to its left.
-    const ax = r.width - mR - big;
-    const ay = r.height - mB - big;
+    // Right hand: the ACTION STICK in the corner (push = juke/truck/back, tap = snap/throw/action),
+    // with TURBO as a SEPARATE button directly ABOVE it — sharing the thumb, so you can't easily
+    // hold turbo and work the stick at the same time.
+    const rsx = r.width - mR - 64;
+    const rsy = r.height - mB - 64;
     this.layout = {
-      action: { x: ax, y: ay, r: big },
-      turbo: { x: ax - big * 1.7, y: ay - big * 0.5, r: small },
-      action2: { x: 0, y: 0, r: 0 }, // unused in the two-button setup (never hit-tests)
+      rightStick: { x: rsx, y: rsy, r: jr },
+      turbo: { x: rsx, y: rsy - jr - small - 14, r: small },
+      action: { x: 0, y: 0, r: 0 }, // replaced by the action stick (never hit-tests)
+      action2: { x: 0, y: 0, r: 0 },
       joystick: { x: jx, y: jy, r: jr },
       joystickZoneRight: r.width * 0.5,
     };
@@ -67,7 +71,49 @@ export class TouchControls {
     if (!this.visible) return;
     this.dpad(r, input);
     this.button(r, this.layout.turbo, "TURBO", "turbo", "#e23b3b", input.turbo);
-    this.button(r, this.layout.action, labels.action.text, labels.action.icon, labels.action.color, input.action);
+    this.rightStickPad(r, input, labels);
+  }
+
+  /** The right action stick: a "clutch" cross you push for moves (juke/truck/back) and tap for the
+   *  contextual action. The knob deflects with the push; the context glyph/label rides on it. */
+  private rightStickPad(r: Renderer, input: Input, labels: ControlLabels): void {
+    const ctx = r.ctx;
+    const s = this.layout.rightStick;
+    const col = labels.action.color;
+    // Base ring, tinted by the action color.
+    ctx.globalAlpha = 0.34;
+    ctx.fillStyle = "#0b1726";
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.6; ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
+    // 4-way plus arrows (the clutch cross).
+    ctx.globalAlpha = 0.7; ctx.fillStyle = "rgba(255,255,255,0.6)";
+    for (let i = 0; i < 4; i++) {
+      const a = (Math.PI / 2) * i;
+      ctx.save();
+      ctx.translate(s.x + Math.cos(a) * (s.r - 12), s.y + Math.sin(a) * (s.r - 12));
+      ctx.rotate(a);
+      ctx.beginPath(); ctx.moveTo(7, 0); ctx.lineTo(-3, -6); ctx.lineTo(-3, 6); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    // Knob (deflects with the push), with the context action glyph + label on it.
+    const kx = input.rightStickActive ? input.rightStickKnob.x : s.x;
+    const ky = input.rightStickActive ? input.rightStickKnob.y : s.y;
+    const kr = s.r * 0.54;
+    const grad = ctx.createRadialGradient(kx - kr * 0.3, ky - kr * 0.4, kr * 0.2, kx, ky, kr);
+    grad.addColorStop(0, lighten(col, 0.28)); grad.addColorStop(1, col);
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = 8; ctx.shadowOffsetY = 3;
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(kx, ky, kr, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowColor = "transparent";
+    ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.stroke();
+    drawActionGlyph(ctx, kx, ky - kr * 0.12, kr * 0.5, labels.action.icon);
+    ctx.fillStyle = "#fff";
+    ctx.font = `900 ${Math.round(kr * 0.32)}px "Trebuchet MS", system-ui, sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(labels.action.text, kx, ky + kr * 0.58);
+    ctx.restore();
   }
 
   private dpad(r: Renderer, input: Input): void {
