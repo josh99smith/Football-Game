@@ -50,6 +50,9 @@ export class SpecialTeamsState implements GameState {
   private readonly holdX: number;
 
   private players: Player[] = [];
+  /** Lone deep returner on a punt — stands back to field the kick (visual; the live return spawns
+   *  its own returner once the ball lands). Null for FG/PAT (no return). */
+  private returner: Player | null = null;
   private blockers: Player[] = [];
   private rushers: Player[] = [];
   private kicker!: Player;
@@ -130,6 +133,15 @@ export class SpecialTeamsState implements GameState {
       this.mk(defense, i < 5 ? "DL" : "LB", 90 + i, spotX + dir * fx * PX_PER_YARD, CENTER_Y + yd(lat), dir > 0 ? 0 : Math.PI));
 
     this.players = [...this.blockers, this.holder, this.kicker, ...this.rushers];
+
+    // A punt has a single deep returner waiting downfield to field the kick (FG/PAT have no return).
+    // Parked roughly where a solid punt lands; he tracks the ball in flight (settlePlayers).
+    if (this.opts.kind === "punt") {
+      const landGuess = clampX(spotX + dir * yd(42));
+      this.returner = this.mk(defense, "HB", 28, landGuess, CENTER_Y, dir > 0 ? Math.PI : 0);
+      this.players.push(this.returner);
+    }
+
     this.ball.attachTo(this.holder);
   }
 
@@ -286,7 +298,20 @@ export class SpecialTeamsState implements GameState {
   }
 
   private settlePlayers(dt: number): void {
-    for (const p of this.players) p.step(dt, 0);
+    // The deep returner drifts under the descending punt so it looks like he's fielding it.
+    if (this.returner && this.phase === "flight") {
+      const r = this.returner;
+      const dx = this.ball.pos.x - r.pos.x;
+      const dy = this.ball.pos.y - r.pos.y;
+      const dl = Math.hypot(dx, dy) || 1;
+      r.desired.x = dx / dl;
+      r.desired.y = dy / dl;
+      r.step(dt, dl > 8 ? r.baseSpeed * 0.9 : 0);
+    }
+    for (const p of this.players) {
+      if (p === this.returner) continue;
+      p.step(dt, 0);
+    }
   }
 
   /** Push the formation + ball into the 3D scene each frame. */

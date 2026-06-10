@@ -685,6 +685,8 @@ class FbxAvatar implements Avatar {
   private throwHeading = 0;
   /** Bind-pose local transforms, the target the get-up blends back to. */
   private readonly restPose = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
+  /** Extremity bones sampled to keep the body on the turf during the get-up (lazy-cached). */
+  private contactBones: THREE.Bone[] | null = null;
   private ragdoll: TackleRagdoll | null = null;
   private rPhase: "anim" | "fall" | "getup" = "anim";
   /** Formal animation state, derived each frame (observability now; drives transition-enforced
@@ -1050,6 +1052,7 @@ class FbxAvatar implements Avatar {
     const to = hips ? this.restPose.get(hips) : null;
     if (hips && from && to) hips.position.set(from.p.x, THREE.MathUtils.lerp(from.p.y, to.p.y, ragEase(t)), from.p.z);
     this.inner.updateWorldMatrix(true, true);
+    this.groundBody(); // keep the rising body planted on the turf, never clipping under it
   }
 
   private blendGetup(t: number): void {
@@ -1067,6 +1070,25 @@ class FbxAvatar implements Avatar {
       }
     }
     this.inner.updateWorldMatrix(true, true);
+    this.groundBody(); // keep the rising body planted on the turf, never clipping under it
+  }
+
+  /** Lift the group so the body's lowest contact point sits on the turf (world y ≥ 0). A ragdoll can
+   *  settle with the torso clipping under the field; without this the get-up rises from there and the
+   *  player ends up half-sunk. Deterministic: zero the group's Y, measure, then lift by the dip. */
+  private groundBody(): void {
+    if (!this.contactBones) {
+      this.contactBones = [];
+      for (const n of ["Hips", "Spine2", "Head", "LeftHand", "RightHand", "LeftFoot", "RightFoot", "LeftToeBase", "RightToeBase"]) {
+        const b = this.bone(n);
+        if (b) this.contactBones.push(b);
+      }
+    }
+    this.group.position.y = 0;
+    this.inner.updateWorldMatrix(true, true);
+    let minY = Infinity;
+    for (const b of this.contactBones) { b.getWorldPosition(_rhip); if (_rhip.y < minY) minY = _rhip.y; }
+    if (minY < 0) this.group.position.y = -minY;
   }
 
   /** Reconcile back to the game's convention (body placed by the group, bones at rest) so the
@@ -1078,6 +1100,7 @@ class FbxAvatar implements Avatar {
     if (h) h.getWorldPosition(_rhip); else _rhip.set(this.group.position.x, 0, this.group.position.z);
     for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
     this.group.position.set(_rhip.x, 0, _rhip.z);
+    this.groundBody(); // stand exactly on the turf, never sunk
     this.interp.reset();
     this.interp.push(_rhip.x, _rhip.z); // prime so present() doesn't slide from a stale spot
     this.rPhase = "anim";

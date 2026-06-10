@@ -130,6 +130,8 @@ export class LivePlayState implements GameState {
   private carrierFired = false;
   /** Cooldown so the change-of-direction "juke" animation fires on a hard cut, not every frame. */
   private jukeAnimCd = 0;
+  /** How long the current hard-cut angle has held, so a one-frame steering spike can't fire a juke. */
+  private jukeAngleHold = 0;
   private startLosX = 0;
   private passThrown = false;
   private sackPossible = true;
@@ -1012,16 +1014,22 @@ export class LivePlayState implements GameState {
   private checkJukeAnim(dt: number): void {
     if (this.jukeAnimCd > 0) this.jukeAnimCd -= dt;
     const c = this.ball.carrier;
-    if (!c || this.jukeAnimCd > 0) return;
-    if (c.state !== "active" || c.animEvent !== null || c.jukeTimer > 0) return;
+    if (!c || this.jukeAnimCd > 0) { this.jukeAngleHold = 0; return; }
+    if (c.state !== "active" || c.animEvent !== null || c.jukeTimer > 0) { this.jukeAngleHold = 0; return; }
     const speed = Math.hypot(c.vel.x, c.vel.y);
     const dlen = Math.hypot(c.desired.x, c.desired.y);
-    if (c.loco.speed01 <= 0.4 || speed < 1 || dlen < 0.5) return;
+    if (c.loco.speed01 <= 0.4 || speed < 1 || dlen < 0.5) { this.jukeAngleHold = 0; return; }
     // cos of the angle between where he's MOVING and where he's STEERING.
     const cosA = (c.vel.x * c.desired.x + c.vel.y * c.desired.y) / (speed * dlen);
-    if (cosA < -0.42) c.animEvent = "turnRun";      // > ~115deg: a true reversal → plant-and-turn
-    else if (cosA < 0.64) c.animEvent = "juke";     // > ~50deg:  a hard cut → juke
-    else return;
+    // Only a SUSTAINED hard cut animates. The old eager threshold (~50deg) fired a juke overlay on the
+    // small frame-to-frame steering jitter of an open-field run (camera-relative stick noise / AI path
+    // wobble), stuttering the run into a juke and back — the "jerky/twitchy" break-away. Require a
+    // sharper angle (~60deg) that holds for a couple frames before committing to the clip.
+    if (cosA >= 0.5) { this.jukeAngleHold = 0; return; }
+    this.jukeAngleHold += dt;
+    if (this.jukeAngleHold < 0.07) return; // debounce a one-frame spike
+    c.animEvent = cosA < -0.42 ? "turnRun" : "juke"; // >~115deg reversal → plant-and-turn, else hard cut
+    this.jukeAngleHold = 0;
     this.jukeAnimCd = 0.7;
   }
 
@@ -1394,7 +1402,20 @@ export class LivePlayState implements GameState {
     c.vel.x += Math.cos(c.facing) * 85;
     c.vel.y += Math.sin(c.facing) * 85;
     this.app.particles.burst(c.pos.x, c.pos.y, "#cfe8d4", 6, 70);
-    // The dive ends the play shortly after, securing the spot.
+    // The dive ends the play shortly after, securing the spot (resolved in landDive).
+  }
+
+  /** A dive lunge has settled (diveTimer hit 0). The ball carrier is DOWN where he landed (he gave
+   *  himself up — end the play at the spot); anyone else (a defender who whiffed a dive-tackle) hits
+   *  the deck and lies prone a beat before scrambling back up. A tackle/ragdoll that already claimed
+   *  the player mid-dive leaves him non-active, so we don't double-resolve. */
+  private landDive(p: Player): void {
+    if (p.state !== "active") return; // contact/tackle already took over
+    if (p === this.ball.carrier && this.phase === "live" && !this.pendingTackle) {
+      this.endPlay("tackle", { x: p.pos.x, y: p.pos.y });
+      return;
+    }
+    p.goProne(0.8);
   }
 
   /** Switch to the defender best placed to make a play: nearest to the carrier, or to
@@ -1526,9 +1547,9 @@ export class LivePlayState implements GameState {
       const accelMul = human ? 3.2 : 1;
       p.agility = human ? 1.8 : 1;
       if (diving) {
-        // Committed dive: coast on the lunge momentum with NO steering or braking (a zero `desired`
-        // used to brake it to a stop via step()'s no-input brake).
+        // Committed dive: coast on the lunge, bleeding momentum (no steering/braking input).
         p.coast(dt);
+        if (p.diveTimer <= 0) this.landDive(p); // dive settled this frame → resolve the landing
       } else {
         p.step(dt, target, accelMul);
       }

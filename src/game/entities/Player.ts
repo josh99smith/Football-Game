@@ -333,15 +333,27 @@ export class Player {
     return true;
   }
 
-  /** Coast on current momentum for `dt`: no steering, no braking — just carry velocity (used by a
-   *  committed dive so a zero `desired` can't brake the lunge to a stop). Timers + loco still tick. */
+  /** Coast on the dive lunge for `dt`: no steering, but momentum BLEEDS OFF (friction) so the dive
+   *  slides out and settles to a stop on the ground instead of carrying on like a powered run.
+   *  Timers + loco still tick. */
   coast(dt: number): void {
     if (this.jukeTimer > 0) this.jukeTimer -= dt;
     if (this.diveTimer > 0) this.diveTimer -= dt;
     if (this.cutTimer > 0) this.cutTimer -= dt;
+    const fr = Math.max(0, 1 - 3.2 * dt); // ground drag on the dive
+    this.vel.x *= fr;
+    this.vel.y *= fr;
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;
     this.updateLoco(dt);
+  }
+
+  /** Hit the deck (whiffed dive / give-up): lie prone for `seconds`, decelerating to a stop, then
+   *  auto-revive via the tackled timer in step(). No-op unless currently active. */
+  goProne(seconds: number): void {
+    if (this.state !== "active") return;
+    this.state = "tackled";
+    this.tackledTimer = seconds;
   }
 
   /** True while staggering from a glancing hit. */
