@@ -2222,6 +2222,8 @@ export class LivePlayState implements GameState {
     const m = this.app.match;
     this.phase = "playcall";
     this.playCallT = 0;
+    // Clear the previous-play result marquee so it doesn't stack on top of the "CALL IT" header.
+    this.app.banner.clear();
     this.computeRegroupTargets();
     this.playCall.layout(this.app.r, m.possession === m.humanTeam);
     const top = 12 + this.app.r.safe.top;

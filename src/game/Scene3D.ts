@@ -2161,7 +2161,10 @@ export class Scene3D {
     if (!this.freeCam) {
       _tmpPos.lerpVectors(this.camPosPrev, this.camPosCur, a);
       _tmpLook.lerpVectors(this.camLookPrev, this.camLookCur, a);
-      this.camera.position.set(_tmpPos.x + this.shakeX * U * 0.5, _tmpPos.y + this.shakeY * U * 0.5, _tmpPos.z);
+      // Never let the camera (incl. shake/hit-zoom overshoot) drop into or under the turf — that
+      // collapsed the field to a sliver and showed the void below it on big hits.
+      const camY = Math.max(1.3, _tmpPos.y + this.shakeY * U * 0.5);
+      this.camera.position.set(_tmpPos.x + this.shakeX * U * 0.5, camY, _tmpPos.z);
       this.camera.lookAt(_tmpLook);
     }
 

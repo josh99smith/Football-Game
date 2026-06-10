@@ -28,6 +28,7 @@ export class PlaySelectState implements GameState {
 
   enter(): void {
     this.app.input.consumeTaps(); // clear stale taps from the prior screen
+    this.app.banner.clear(); // no leftover result marquee stacking on the call screen
     this.overlay.layout(this.app.r, this.humanOffense);
   }
 
