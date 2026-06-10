@@ -995,10 +995,16 @@ export class LivePlayState implements GameState {
       const choice = chooseTarget(qb, receivers, this.defense, this.dir, this.stickToField());
       if (choice) {
         const r = choice.receiver;
-        // Lead the receiver by the resulting flight time so they run onto the ball.
         const speed = throwParams(power).speed;
-        const flight = dist(qb.pos, r.pos) / speed;
-        const lead = { x: r.pos.x + r.vel.x * flight * 0.9, y: r.pos.y + r.vel.y * flight * 0.9 };
+        // Lead the WR to where he'll BE when the ball arrives, not where he is now: the receiver keeps
+        // running during the throw, so iterate the flight time to the led spot until it converges (a
+        // few passes is plenty). The ball is put out in front so a WR within range runs onto it in
+        // stride; throwPass clamps to the QB's max range if the led spot is beyond it.
+        let lead = { x: r.pos.x, y: r.pos.y };
+        for (let i = 0; i < 3; i++) {
+          const flight = dist(qb.pos, lead) / speed;
+          lead = { x: r.pos.x + r.vel.x * flight, y: r.pos.y + r.vel.y * flight };
+        }
         this.throwPass(qb, lead, r, power);
       }
     }

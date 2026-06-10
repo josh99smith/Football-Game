@@ -32,7 +32,7 @@ const RAG_CALM_NEEDED = 0.25;    // brief beat on the ground before scrambling u
 const RAG_MAX_FALL = 2;          // safety: stand up even if it never fully settles (s) — no lying around
 const RAG_GETUP_DUR = 0.55;      // seconds to rise to standing (procedural fallback; pop up fast)
 const GETUP_CLIP_DUR = 1.35;     // seconds for the real get-up CLIP to play (sped up so recovery stays quick)
-const SIDELINE_PLAYERS_PER_SIDE = 12; // skinned front-rank bench players per sideline (mobile-capped)
+const SIDELINE_PLAYERS_PER_SIDE = 9; // skinned front-rank players/sideline (a 2nd rank of n-3 behind)
 const _getQ = new THREE.Quaternion(); // scratch for the settled-pose -> clip crossfade
 const _rgp = new THREE.Vector3();
 const _rhip = new THREE.Vector3();
@@ -1517,8 +1517,6 @@ export class Scene3D {
   }[] = [];
   /** Seconds of boosted sideline celebration remaining (set on a score). */
   private sidelineCheerT = 0;
-  /** Placeholder box bench players (hidden once the real skinned models stream in). */
-  private readonly sidelineBoxPlayers: THREE.Object3D[] = [];
   /** Real skinned sideline players (built when the char model + team colors are both ready). */
   private sidelinePlayerObjs: THREE.Object3D[] = [];
   private charAsset: CharacterAsset | null = null;
@@ -1756,9 +1754,6 @@ export class Scene3D {
       if (i >= 0) this.sidelineFigures.splice(i, 1);
     }
     this.sidelinePlayerObjs = [];
-    // Keep the cheap box figures visible as the BACK rank behind the skinned front row (they used to
-    // be hidden on upgrade, which left the sideline sparser than before the models streamed in).
-    for (const o of this.sidelineBoxPlayers) o.visible = true;
 
     for (const side of [-1, 1] as const) {
       const team = side < 0 ? home : away;
@@ -1768,17 +1763,24 @@ export class Scene3D {
       // A few shared jersey textures per side (random numbers), reused across figures (one canvas
       // each instead of per-player — keeps texture memory + uploads low).
       const texes = [0, 0, 0, 0].map(() => jerseyTexture(jersey, accent, trim, 1 + ((Math.random() * 98) | 0)));
-      const baseZ = side < 0 ? -1.7 : FIELD_WID_U + 1.7; // tight standing line right at the boundary
       const faceY = side < 0 ? 0 : Math.PI;
-      // Pack a denser front rank spanning more of the sideline length.
-      const x0 = FIELD_LEN_U * 0.22, x1 = FIELD_LEN_U * 0.78, n = SIDELINE_PLAYERS_PER_SIDE;
-      for (let i = 0; i < n; i++) {
-        const o = this.makeSidelinePlayer(asset, texes[(Math.random() * texes.length) | 0], trim);
-        o.position.set(x0 + (x1 - x0) * (i / (n - 1)) + (Math.random() * 0.6 - 0.3), 0, baseZ + (Math.random() * 0.7 - 0.35));
-        o.rotation.y = faceY + (Math.random() * 0.5 - 0.25); // not a perfectly straight line
-        this.scene.add(o);
-        this.sidelinePlayerObjs.push(o);
-        this.addSidelineFigure(o);
+      const x0 = FIELD_LEN_U * 0.22, x1 = FIELD_LEN_U * 0.78;
+      // Two skinned ranks — a tight standing line at the boundary plus a fuller rank behind it (real
+      // models only, no box stand-ins). The back rank is offset so it staggers between the front.
+      const ranks: { z: number; n: number; jitter: number }[] = [
+        { z: side < 0 ? -1.7 : FIELD_WID_U + 1.7, n: SIDELINE_PLAYERS_PER_SIDE, jitter: 0.7 },
+        { z: side < 0 ? -3.5 : FIELD_WID_U + 3.5, n: SIDELINE_PLAYERS_PER_SIDE - 3, jitter: 1.0 },
+      ];
+      for (const rank of ranks) {
+        for (let i = 0; i < rank.n; i++) {
+          const o = this.makeSidelinePlayer(asset, texes[(Math.random() * texes.length) | 0], trim);
+          const span = (i + (rank.n < SIDELINE_PLAYERS_PER_SIDE ? 0.5 : 0)) / (SIDELINE_PLAYERS_PER_SIDE - 1);
+          o.position.set(x0 + (x1 - x0) * span + (Math.random() * 0.6 - 0.3), 0, rank.z + (Math.random() * rank.jitter - rank.jitter / 2));
+          o.rotation.y = faceY + (Math.random() * 0.5 - 0.25); // not a perfectly straight line
+          this.scene.add(o);
+          this.sidelinePlayerObjs.push(o);
+          this.addSidelineFigure(o);
+        }
       }
     }
   }
@@ -1879,23 +1881,10 @@ export class Scene3D {
     };
     const coachMat = new THREE.MeshStandardMaterial({ color: 0x2a2e33, roughness: 0.95 });
 
-    // Two ranks of box bench players + coaches on each sideline, between the field and the stands.
-    // The boxes start as the only dressing, then become the BACK rank once skinned models stream in
-    // (front rank ~z±2.3), so the sideline reads two-deep and packed.
+    // Coaches/staff only (the bench PLAYERS are real skinned models, built in rebuildSidelinePlayers
+    // — no blocky stand-ins). Coaches stand behind the player line, in coach attire.
     for (const side of [-1, 1] as const) {
-      const jersey = side < 0 ? this.benchMatHome : this.benchMatAway;
-      const backZ = side < 0 ? -3.9 : FIELD_WID_U + 3.9;
       const faceY = side < 0 ? 0 : Math.PI;
-      const x0 = FIELD_LEN_U * 0.2, x1 = FIELD_LEN_U * 0.8, n = 20;
-      for (let i = 0; i < n; i++) {
-        const o = figure(jersey, 0.94 + Math.random() * 0.12);
-        o.position.set(x0 + (x1 - x0) * (i / (n - 1)) + (Math.random() * 0.6 - 0.3), 0, backZ + (Math.random() * 1.1 - 0.55));
-        o.rotation.y = faceY + (Math.random() * 0.5 - 0.25);
-        this.scene.add(o);
-        this.addSidelineFigure(o);
-        this.sidelineBoxPlayers.push(o); // becomes the back rank once skinned models upgrade the front
-      }
-      // Coaches stand behind the player line, between the ranks.
       for (const cx of [FIELD_LEN_U * 0.4, FIELD_LEN_U * 0.52, FIELD_LEN_U * 0.62]) {
         const o = figure(coachMat, 1.06);
         o.position.set(cx, 0, side < 0 ? -2.9 : FIELD_WID_U + 2.9);
