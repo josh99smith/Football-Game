@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { solveTwoBone } from "./anim/FootIK";
 import { ANIM } from "./anim/tuning";
+import { deriveAvatarState, type AvatarState } from "./anim/AvatarState";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
@@ -686,6 +687,9 @@ class FbxAvatar implements Avatar {
   private readonly restPose = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
   private ragdoll: TackleRagdoll | null = null;
   private rPhase: "anim" | "fall" | "getup" = "anim";
+  /** Formal animation state, derived each frame (observability now; drives transition-enforced
+   *  channel ownership in the next step). */
+  animState: AvatarState = "loco";
   private fallTime = 0;
   private settleTimer = 0;
   private getupT = 0;
@@ -1174,7 +1178,7 @@ class FbxAvatar implements Avatar {
     // While a physics ragdoll owns the body, it's stepped/driven in advanceRagdoll(); the
     // normal animation + position pipeline stands down so it doesn't fight the bones. Drop any
     // queued one-shot (e.g. the canned "tackle") so it can't fire when we hand back to anim.
-    if (this.rPhase !== "anim") { p.animEvent = null; return; }
+    if (this.rPhase !== "anim") { this.animState = this.rPhase === "fall" ? "ragFall" : "getup"; p.animEvent = null; return; }
     this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
     g.position.y = 0;
 
@@ -1326,6 +1330,13 @@ class FbxAvatar implements Avatar {
       this.chevron.visible = p.controlled;
       if (p.controlled) this.chevron.position.y = 2.8 + Math.sin(this.phase * 4) * 0.12;
     }
+
+    // Formal state for this anim frame (observability; drives channel ownership in the next step).
+    this.animState = deriveAvatarState({
+      ragdolling: false, gettingUp: false,
+      overlay: this.oneShot != null || this.throwT > 0,
+      down: lo.down, contact: lo.contact,
+    });
 
     // Smoothly crossfade all locomotion/idle weights toward their targets.
     blendW(this.idleAction, tIdle * loco, dt);
@@ -1588,6 +1599,11 @@ export class Scene3D {
   ragdollsBusy(): boolean {
     for (const a of this.players) if (a.ragdollActive()) return true;
     return false;
+  }
+
+  /** DEBUG/verification: each skinned avatar's current formal animation state. */
+  debugAvatarStates(): AvatarState[] {
+    return this.players.filter((a): a is FbxAvatar => a instanceof FbxAvatar).map((a) => a.animState);
   }
 
   /** Hips position (field px) of the player at `index` while ragdolling, else null. */
