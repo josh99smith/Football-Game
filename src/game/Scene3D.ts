@@ -382,7 +382,7 @@ const _jerseyCache = new Map<string, THREE.CanvasTexture>();
 // the player number is baked into the image, so every player on that team shows it for now; a
 // numberless base + a drawn number is the follow-up once a skin is dialed in.
 const JERSEY_SKIN_OVERRIDES: Record<number, string> = {
-  0x0a1c3f: "skins/dal_home_jersey.png", // Dallas Outlaws — home
+  0x0a1c3f: "skins/dal_home_jersey.webp", // Dallas Outlaws — home
 };
 function hexCss(n: number): string {
   return `#${(n & 0xffffff).toString(16).padStart(6, "0")}`;
@@ -531,7 +531,7 @@ const _helmetCache = new Map<string, THREE.CanvasTexture>();
 // Optional realistic helmet image skins, keyed by shell color (same in-place swap + fallback as the
 // jersey override above). Drop a 256² PNG at /public/<file>.
 const HELMET_SKIN_OVERRIDES: Record<number, string> = {
-  0xc9ced6: "skins/dal_helmet.png", // Dallas Outlaws — silver shell
+  0xc9ced6: "skins/dal_helmet.webp", // Dallas Outlaws — silver shell
 };
 function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THREE.CanvasTexture {
   const key = `${helmet.toString(16)}-${accent.toString(16)}-${decal ?? "none"}`;
