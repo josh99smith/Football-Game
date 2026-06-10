@@ -243,9 +243,8 @@ export class Input {
     this.move.y = clamp(my, -1, 1);
 
     // --- right action stick: a directional PUSH fires a one-shot carrier move (up=truck, L/R=juke,
-    // down=back-juke); a tap/hold WITHOUT a push is the contextual action (snap / throw / stiff-arm /
-    // tackle). The same thumb either moves or acts, never both — and turbo is its own button.
-    let rstickActionDown = false;
+    // down=back-juke). It is MOVES-ONLY now — the contextual action (snap/throw/tackle) lives on its
+    // own dedicated ACTION button so the two never conflict.
     this.rightStickActive = false;
     if (this.rightStickPointerId !== null) {
       const ptr = this.pointers.get(this.rightStickPointerId);
@@ -264,16 +263,15 @@ export class Input {
           this.pendingSwipe = Math.abs(dx) >= Math.abs(dy)
             ? { x: Math.sign(dx), y: 0 }
             : { x: 0, y: Math.sign(dy) };
-          this.rstickFiredMove = true; // committed to a move — this press won't also fire the action
+          this.rstickFiredMove = true; // fired this push's move (once)
         }
-        rstickActionDown = !this.rstickFiredMove;
       }
     }
     if (!this.rightStickActive) { this.rightStick.x = 0; this.rightStick.y = 0; }
 
     // --- buttons ---
     let turboDown = this.keys.has("shift");
-    let actionDown = this.keys.has(" ") || this.keys.has("j") || rstickActionDown;
+    let actionDown = this.keys.has(" ") || this.keys.has("j");
     let action2Down = this.keys.has("k");
     for (const ptr of this.pointers.values()) {
       if (ptr.role === "turbo") turboDown = true;

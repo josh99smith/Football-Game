@@ -44,22 +44,21 @@ export class TouchControls {
       this.layout = {
         rightStick: { x: jx, y: sy, r: jr },
         turbo: { x: jx, y: ty, r: small },
-        action: { x: 0, y: 0, r: 0 },
+        action: { x: jx + jr + big + 12, y: sy, r: big }, // action button right of the move stick
         action2: { x: 0, y: 0, r: 0 },
         joystick: { x: jx, y: jy, r: jr },
         joystickZoneRight: r.width * 0.5,
       };
       return this.layout;
     }
-    // Right hand: the ACTION STICK in the corner (push = juke/truck/back, tap = snap/throw/action),
-    // with TURBO as a SEPARATE button directly ABOVE it — sharing the thumb, so you can't easily
-    // hold turbo and work the stick at the same time.
+    // Right hand: the ACTION STICK in the corner (push = juke/truck/back — MOVES ONLY), with a
+    // dedicated ACTION button to its left (snap/throw/tackle/spin) and TURBO above the stick.
     const rsx = r.width - mR - 64;
     const rsy = r.height - mB - 64;
     this.layout = {
       rightStick: { x: rsx, y: rsy, r: jr },
+      action: { x: rsx - jr - big - 12, y: rsy, r: big },
       turbo: { x: rsx, y: rsy - jr - small - 14, r: small },
-      action: { x: 0, y: 0, r: 0 }, // replaced by the action stick (never hit-tests)
       action2: { x: 0, y: 0, r: 0 },
       joystick: { x: jx, y: jy, r: jr },
       joystickZoneRight: r.width * 0.5,
@@ -71,15 +70,18 @@ export class TouchControls {
     if (!this.visible) return;
     this.dpad(r, input);
     this.button(r, this.layout.turbo, "TURBO", "turbo", "#e23b3b", input.turbo);
-    this.rightStickPad(r, input, labels);
+    this.rightStickPad(r, input);
+    // Dedicated contextual ACTION button (snap / throw / spin / tackle / switch) — separate from the
+    // moves stick so a juke push can never also fire an action.
+    this.button(r, this.layout.action, labels.action.text, labels.action.icon, labels.action.color, input.action);
   }
 
-  /** The right action stick: a "clutch" cross you push for moves (juke/truck/back) and tap for the
-   *  contextual action. The knob deflects with the push; the context glyph/label rides on it. */
-  private rightStickPad(r: Renderer, input: Input, labels: ControlLabels): void {
+  /** The right MOVE stick: a "clutch" cross you push for juke/truck/back. Moves only — the
+   *  contextual action is its own button now. The knob deflects with the push. */
+  private rightStickPad(r: Renderer, input: Input): void {
     const ctx = r.ctx;
     const s = this.layout.rightStick;
-    const col = labels.action.color;
+    const col = "#7f93a8"; // neutral steel — this pad is movement, not the (colored) action button
     // Base ring, tinted by the action color.
     ctx.globalAlpha = 0.34;
     ctx.fillStyle = "#0b1726";
@@ -108,11 +110,11 @@ export class TouchControls {
     ctx.beginPath(); ctx.arc(kx, ky, kr, 0, Math.PI * 2); ctx.fill();
     ctx.shadowColor = "transparent";
     ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.stroke();
-    drawActionGlyph(ctx, kx, ky - kr * 0.12, kr * 0.5, labels.action.icon);
+    // "MOVE" label on the knob (it's a movement pad, not the action button).
     ctx.fillStyle = "#fff";
-    ctx.font = `900 ${Math.round(kr * 0.32)}px "Trebuchet MS", system-ui, sans-serif`;
+    ctx.font = `900 ${Math.round(kr * 0.3)}px "Trebuchet MS", system-ui, sans-serif`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(labels.action.text, kx, ky + kr * 0.58);
+    ctx.fillText("MOVE", kx, ky);
     ctx.restore();
   }
 
