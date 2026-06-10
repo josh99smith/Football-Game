@@ -643,6 +643,8 @@ class FbxAvatar implements Avatar {
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
+  /** True while the active one-shot drives the body's fall pitch itself (tackle/dive clips). */
+  private oneShotOwnsFall = false;
   /** Every non-locomotion one-shot action — zeroed wholesale on a fresh play so a stale/orphaned
    *  overlay can never accumulate weight across the pooled avatars' reuse (the cause of the
    *  walk/run "corruption" that built up the longer a session ran). */
@@ -1089,7 +1091,9 @@ class FbxAvatar implements Avatar {
     maxDur: number,
     rate = 1,
     startAt = 0,
+    ownsFall = false,
   ): void {
+    this.oneShotOwnsFall = ownsFall; // this clip drives the body's fall pitch itself → suppress procedural
     if (!action) return;
     // Kill any still-active one-shot first — otherwise overwriting `this.oneShot` orphans it at its
     // clamped weight forever (it keeps posing the body), which is how overlapping overlays corrupted
@@ -1190,7 +1194,7 @@ class FbxAvatar implements Avatar {
     else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.55, 1.25, 0);
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
     else if (p.animEvent === "stiffArm") this.triggerOneShot(this.jukeAction ?? this.spinAction, 0.5, 1.3, 0);
-    else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0);
+    else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0, true);
     // def_tackle is a 5s mocap take whose forward wrap/drive is ~1.0-2.5s in — slice to the lunge so
     // the defender actually tackles ON contact (the first 1.5s is just the slow run-in).
     else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.15, 1.3, 1.05);
@@ -1199,7 +1203,7 @@ class FbxAvatar implements Avatar {
     else if (p.animEvent === "kick") this.triggerOneShot(this.kickAction, 1.2, 1.2, 2.6);
     // dive (Run_To_Dive, 1.18s): the launch is at the very start — play it fast for the runner dive
     // / defender dive-tackle. Falls back to the canned tackle clip until the dive clip streams in.
-    else if (p.animEvent === "dive") this.triggerOneShot(this.diveAction ?? this.tackleAction, 1.0, 1.45, 0.0);
+    else if (p.animEvent === "dive") this.triggerOneShot(this.diveAction ?? this.tackleAction, 1.0, 1.45, 0.0, true);
     // pickup (Pick_Up_Item, 1.2s): bend-down + scoop — play the whole bend/grab/rise for a recovery.
     else if (p.animEvent === "pickup") this.triggerOneShot(this.pickupAction ?? this.catchAction, 1.0, 1.3, 0.05);
     // turnRun (Turn_To_Running, 1.68s): the plant-and-turn is up front — play it fast for a hard
@@ -1240,10 +1244,10 @@ class FbxAvatar implements Avatar {
     const loco = 1 - osW;
 
     // Procedural fall: lerp toward flat (contact staggers partway, down goes flat, else up).
-    // When the tackle clip is the active one-shot, IT drives the fall, so skip the
-    // procedural pitch (otherwise the body would double-tip).
-    const tackleClip = this.oneShot != null && this.oneShot === this.tackleAction;
-    const fallTarget = this.suppressFall ? 0 : tackleClip ? 0 : lo.down ? 1 : lo.contact ? 0.18 : 0;
+    // When the active one-shot OWNS the fall channel (tackle / dive clips pitch the body
+    // themselves), skip the procedural pitch so the body doesn't double-tip.
+    const clipOwnsFall = this.oneShot != null && this.oneShotOwnsFall;
+    const fallTarget = this.suppressFall ? 0 : clipOwnsFall ? 0 : lo.down ? 1 : lo.contact ? 0.18 : 0;
     this.fallT = moveToward(this.fallT, fallTarget, (fallTarget > this.fallT ? 1 / 0.25 : 1 / 0.4) * dt);
 
     // Procedural fall pose (applies whether or not locomotion is muted).
