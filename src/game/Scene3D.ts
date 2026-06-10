@@ -778,6 +778,20 @@ class FbxAvatar implements Avatar {
       leg.knee.getWorldPosition(_ikKnee); // refreshed by aimBone's updateWorldMatrix
       _ikDir.subVectors(_ikTarget, _ikKnee).normalize();
       this.aimBone(leg.knee, leg.ankle, _ikDir, 1);
+
+      // Level the planted foot: pulling the ankle down dorsiflexes the foot "toes up", so re-aim the
+      // foot bone to point its toe forward-and-slightly-down (a flat sole on the turf). Scaled by the
+      // plant amount so swinging feet keep their natural clip angle.
+      if (leg.toe) {
+        leg.ankle.getWorldPosition(_ikAnkle); // ankle (foot) world pos, fresh after the shin aim
+        leg.toe.getWorldPosition(_ikToe);
+        _ikDir.subVectors(_ikToe, _ikAnkle);
+        const horiz = Math.hypot(_ikDir.x, _ikDir.z);
+        if (horiz > 1e-4) {
+          _ikDir.set(_ikDir.x / horiz, -0.18, _ikDir.z / horiz).normalize(); // flat, a hair toe-down
+          this.aimBone(leg.ankle, leg.toe, _ikDir, plant);
+        }
+      }
     }
   }
 
