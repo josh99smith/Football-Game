@@ -54,7 +54,23 @@ export class HUD {
     const mins = Math.floor(total / 60);
     const secs = total % 60;
     r.text(`Q${match.quarter}`, w / 2, minimal ? 5 : 7, { size: 12, align: "center", color: COLORS.blood, baseline: "top", font: FONT.display });
-    r.text(`${mins}:${secs.toString().padStart(2, "0")}`, w / 2, minimal ? 16 : 20, { size: minimal ? 20 : 22, align: "center", color: COLORS.bone, baseline: "top", font: FONT.display });
+    // Two-minute / final-seconds urgency: the clock goes warning-yellow under 60s and pulses
+    // blood-red in the final 10s of a quarter so a frantic finish reads at a glance.
+    const urgent = total <= 10;
+    const warn = total <= 60;
+    let clockColor = COLORS.bone;
+    let clockSize = minimal ? 20 : 22;
+    if (urgent) {
+      const beat = 0.5 + 0.5 * Math.sin(performance.now() / 130);
+      clockColor = mixHex(COLORS.bloodBright, COLORS.bone, beat * 0.4);
+      clockSize += 2 + beat * 2;
+    } else if (warn) {
+      clockColor = COLORS.hazard;
+    }
+    ctx.save();
+    if (urgent) { ctx.shadowColor = COLORS.bloodBright; ctx.shadowBlur = 12; }
+    r.text(`${mins}:${secs.toString().padStart(2, "0")}`, w / 2, minimal ? 16 : 20, { size: clockSize, align: "center", color: clockColor, baseline: "top", font: FONT.display });
+    ctx.restore();
 
     // The full board (down & distance, field-position bar) only shows between plays — during
     // the snap it'd clutter the action, so it's hidden in minimal mode.
@@ -104,8 +120,20 @@ export class HUD {
     ctx.fillRect(x - 7, y, 7, h);
     ctx.fillStyle = "#b03a3a";
     ctx.fillRect(x + bw, y, 7, h);
-    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    // Yard-line ticks every 10 yards (lighter), with a brighter midfield (50) line — gives the
+    // bar real scale so the ball spot reads as a true field position, not just a fraction.
+    ctx.strokeStyle = "rgba(255,255,255,0.16)";
     ctx.lineWidth = 1;
+    for (let yd = 10; yd < 100; yd += 10) {
+      const tx = Math.round(x + (yd / 100) * bw) + 0.5;
+      ctx.globalAlpha = yd === 50 ? 0.5 : 1;
+      ctx.beginPath();
+      ctx.moveTo(tx, y + 1);
+      ctx.lineTo(tx, y + h - 1);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
     ctx.strokeRect(x - 7, y, bw + 14, h);
 
     // First-down line (yellow) + ball spot (white).
@@ -201,17 +229,43 @@ export class HUD {
     const h = 12;
     const x = 16;
     const y = r.height - 26;
+    const fill = Math.max(0, Math.min(1, turbo));
+    const full = fill >= 0.999;
+    const low = fill <= 0.2;
+    ctx.save();
     ctx.fillStyle = "rgba(0,0,0,0.6)";
     ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
     ctx.fillStyle = COLORS.bg1;
     ctx.fillRect(x, y, w, h);
-    const fill = Math.max(0, Math.min(1, turbo));
-    ctx.fillStyle = fill > 0.25 ? COLORS.hazard : COLORS.bloodBright;
+    // Empty/low burns red and pulses (you're out of gas); otherwise warning-yellow.
+    if (low) {
+      ctx.globalAlpha = 0.65 + 0.35 * Math.sin(performance.now() / 120);
+      ctx.fillStyle = COLORS.bloodBright;
+    } else {
+      ctx.fillStyle = COLORS.hazard;
+    }
     ctx.fillRect(x, y, w * fill, h);
-    ctx.strokeStyle = "rgba(123,134,148,0.5)";
+    ctx.globalAlpha = 1;
+    // Charged + ready: a glow + a sweeping highlight band so a full bar invites a burst.
+    if (full) {
+      ctx.shadowColor = COLORS.hazard;
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = COLORS.hazard;
+      ctx.fillRect(x, y, w, h);
+      ctx.shadowBlur = 0;
+      const sweep = ((performance.now() / 900) % 1) * (w + 30) - 30;
+      const grad = ctx.createLinearGradient(x + sweep - 16, 0, x + sweep + 16, 0);
+      grad.addColorStop(0, "rgba(255,255,255,0)");
+      grad.addColorStop(0.5, "rgba(255,255,255,0.5)");
+      grad.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, y, w, h);
+    }
+    ctx.restore();
+    ctx.strokeStyle = full ? "rgba(224,178,26,0.9)" : "rgba(123,134,148,0.5)";
     ctx.lineWidth = 1;
     ctx.strokeRect(x, y, w, h);
-    r.text("TURBO", x, y - 14, { size: 11, color: COLORS.ash, baseline: "top", font: FONT.ui });
+    r.text(full ? "TURBO READY" : "TURBO", x, y - 14, { size: 11, color: full ? COLORS.hazard : COLORS.ash, baseline: "top", font: FONT.ui });
   }
 
   /** The ON FIRE build-up meter, sitting just above the turbo bar; pulses + glows when lit. */

@@ -1614,6 +1614,18 @@ export class Scene3D {
   private cine = 0;
   private cineHold = 0;
 
+  // Speed-reactive chase cam: track the focus point's smoothed world-space velocity so the
+  // broadcast cam can lead the action (look ahead of a breakaway runner) and widen its framing
+  // (pull back + a touch more FOV) as the play quickens — an arcade "sense of speed".
+  private static readonly BASE_FOV = 56;
+  private _focusVx = 0;
+  private _focusVz = 0;
+  private _lastFocusX = 0;
+  private _lastFocusZ = 0;
+  private _focusInit = false;
+  private _camSpeed = 0;
+  private _fovTarget = Scene3D.BASE_FOV;
+
   // Drifting night atmosphere (dust/embers caught in the floodlights).
   private atmo!: THREE.Points;
   private atmoVel!: Float32Array;
@@ -1631,7 +1643,7 @@ export class Scene3D {
     this.scene.background = this.makeSky();
     this.scene.fog = new THREE.Fog(0x070d1c, 60, 175);
 
-    this.camera = new THREE.PerspectiveCamera(56, 1, 0.1, 600);
+    this.camera = new THREE.PerspectiveCamera(Scene3D.BASE_FOV, 1, 0.1, 600);
 
     // Floodlit-night lighting: a dim cool ambient, a strong warm key floodlight that casts
     // shadows, and a cool fill from the far side so players are modelled from two directions
@@ -2410,6 +2422,12 @@ export class Scene3D {
     const wz = focusY * U;
     const back = 15 - 8.5 * z; // closer as you zoom in
     const high = 9.5 - 4.5 * z; // lower angle when zoomed in, higher overview when out
+    // Replays frame at the base FOV (no speed-reactive widening carried over from live play).
+    this._fovTarget = Scene3D.BASE_FOV;
+    if (this.camera.fov !== Scene3D.BASE_FOV) {
+      this.camera.fov = Scene3D.BASE_FOV;
+      this.camera.updateProjectionMatrix();
+    }
     this.camPos.set(wx - dir * back, high, wz);
     this.camLook.set(wx + dir * 1.5, 1.0, wz);
     this.camPosPrev.copy(this.camPos);
@@ -2421,6 +2439,13 @@ export class Scene3D {
   snapCamera(focusX: number, focusY: number, dir: number): void {
     this.cine = 0; // a fresh play never starts mid hit-zoom
     this.cineHold = 0;
+    // A fresh play starts from rest: clear any carried focus velocity + reset the FOV so the
+    // first frame isn't widened/leading from the previous play's breakaway.
+    this._focusInit = false;
+    this._focusVx = this._focusVz = this._camSpeed = 0;
+    this._fovTarget = Scene3D.BASE_FOV;
+    this.camera.fov = Scene3D.BASE_FOV;
+    this.camera.updateProjectionMatrix();
     this.computeCamTarget(focusX, focusY, dir, this.camPos, this.camLook);
     this.camPosPrev.copy(this.camPos);
     this.camPosCur.copy(this.camPos);
@@ -2451,9 +2476,20 @@ export class Scene3D {
       if (this._ssHasLook) outLook.lerp(this._ssLook, 0.55); // tilt/pan toward the targeted receiver
       return;
     }
-    // Tight, low "over the shoulder" angle: big readable players + the action up close.
-    outPos.set(fx - dir * 7.5, 6.0, fz);
+    // Tight, low "over the shoulder" angle: big readable players + the action up close. As the
+    // play speeds up, ease the cam back + up a touch (more of the field ahead comes into frame) so
+    // a breakaway reads as fast and open rather than cramped against the back of the runner.
+    const speedN = Math.min(1, this._camSpeed / 13);
+    outPos.set(fx - dir * (7.5 + speedN * 2.2), 6.0 + speedN * 0.7, fz);
     outLook.set(fx + dir * 10, 0.9, fz);
+    // Look-ahead lead: nudge the look point along the focus's travel (capped) so the camera
+    // anticipates cuts and keeps room downfield in front of a runner instead of trailing him.
+    const sp = this._camSpeed;
+    if (sp > 0.5) {
+      const lead = Math.min(sp * 0.32, 4.5);
+      outLook.x += (this._focusVx / sp) * lead;
+      outLook.z += (this._focusVz / sp) * lead;
+    }
   }
 
   /** Place the camera at an explicit world pose for a scripted cinematic (e.g. the pre-snap
@@ -2615,6 +2651,19 @@ export class Scene3D {
     } else {
       this._ssHasLook = false;
     }
+
+    // Track the focus point's smoothed world-space velocity, which drives the speed-reactive
+    // framing in computeCamTarget and the speed-reactive FOV applied in render().
+    const fxU = opts.focusX * U, fzU = opts.focusY * U;
+    if (this._focusInit && opts.dt > 1e-4) {
+      const inv = 1 / opts.dt;
+      const k = Math.min(1, opts.dt * 6);
+      this._focusVx += ((fxU - this._lastFocusX) * inv - this._focusVx) * k;
+      this._focusVz += ((fzU - this._lastFocusZ) * inv - this._focusVz) * k;
+    }
+    this._lastFocusX = fxU; this._lastFocusZ = fzU; this._focusInit = true;
+    this._camSpeed = Math.hypot(this._focusVx, this._focusVz);
+
     this.computeCamTarget(opts.focusX, opts.focusY, opts.dir, tp, tl);
 
     // Cinematic hit push-in. Advance `cine` on REAL time (fixed 1/60 step) so it snaps in even
@@ -2623,6 +2672,11 @@ export class Scene3D {
     const wantCine = this.cineHold > 0 && !this.holdSuperstarThroughHit ? 1 : 0;
     if (this.cineHold > 0) this.cineHold -= STEP;
     this.cine = moveToward(this.cine, wantCine, STEP / (wantCine > this.cine ? 0.09 : 0.5));
+
+    // Speed-reactive FOV: widen as the action quickens for a sense of speed, but tuck back in
+    // during the hit push-in so the contact close-up stays tight. Eased toward in render().
+    const speedN = this.superstarCam ? 0 : Math.min(1, this._camSpeed / 13);
+    this._fovTarget = Scene3D.BASE_FOV + speedN * 6 - this.cine * 5;
     if (this.cine > 0.001) {
       const e = this.cine * this.cine * (3 - 2 * this.cine); // smoothstep ease
       const fx = opts.focusX * U;
@@ -2728,6 +2782,12 @@ export class Scene3D {
       const camY = Math.max(1.3, _tmpPos.y + this.shakeY * U * 0.5);
       this.camera.position.set(_tmpPos.x + this.shakeX * U * 0.5, camY, _tmpPos.z);
       this.camera.lookAt(_tmpLook);
+      // Ease the live FOV toward its speed-reactive target (frame-rate independent).
+      const fov = this.camera.fov + (this._fovTarget - this.camera.fov) * Math.min(1, rdt * 5);
+      if (Math.abs(fov - this.camera.fov) > 1e-3) {
+        this.camera.fov = fov;
+        this.camera.updateProjectionMatrix();
+      }
     }
 
     this.composer.render();
@@ -2746,6 +2806,12 @@ export class Scene3D {
 
   /** Set up a place-kick: hide players, sit the ball on the spot, frame it against the posts. */
   prepareKick(ballX: number, ballY: number, dir: number): void {
+    // The kick view places the camera directly each frame (bypassing render()'s FOV easing), so
+    // reset to the base FOV here rather than inheriting a widened lens from the prior play.
+    if (this.camera.fov !== Scene3D.BASE_FOV) {
+      this.camera.fov = Scene3D.BASE_FOV;
+      this.camera.updateProjectionMatrix();
+    }
     for (const a of this.players) a.hide();
     this.ballGroup.visible = true;
     this.ballPrimed = false;

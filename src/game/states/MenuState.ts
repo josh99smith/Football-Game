@@ -22,6 +22,11 @@ export class MenuState implements GameState {
   private readonly app: GameApp;
   private rects: Record<string, Rect> = {};
   private t = 0;
+  /** Seconds since this screen was (re)entered — drives the one-shot intro animation. */
+  private enterT = 0;
+  /** Which button was last tapped and when, for a brief press-flash on it. */
+  private pressedKey: string | null = null;
+  private pressedAt = -1e9;
   /** True if a saved, still-in-progress season can be resumed (computed once on enter). */
   private resumable = false;
 
@@ -46,6 +51,8 @@ export class MenuState implements GameState {
 
   enter(): void {
     this.app.input.consumeTaps();
+    this.enterT = 0;
+    this.pressedKey = null;
     this.layout();
     this.app.audio.setMuted(this.app.config.muted);
     const saved = loadSeason();
@@ -120,10 +127,16 @@ export class MenuState implements GameState {
 
   update(dt: number): void {
     this.t += dt;
+    this.enterT += dt;
     const taps = this.app.input.consumeTaps();
     if (taps.length === 0) return;
     this.app.audio.resume();
     const c = this.app.config;
+
+    // Stamp which button was hit so render() can flash it for tactile press feedback.
+    for (const key in this.rects) {
+      if (tappedIn(this.rects[key], taps)) { this.pressedKey = key; this.pressedAt = performance.now(); break; }
+    }
 
     if (tappedIn(this.rects.teamPrev, taps)) c.homeTeamIndex = wrap(c.homeTeamIndex - 1);
     else if (tappedIn(this.rects.teamNext, taps)) c.homeTeamIndex = wrap(c.homeTeamIndex + 1);
@@ -205,6 +218,13 @@ export class MenuState implements GameState {
     const cx = W / 2;
     const ctx = r.ctx;
 
+    // One-shot intro: the hero cluster (emblem + wordmark + tagline) fades and rises into place.
+    const intro = clamp(this.enterT / 0.5, 0, 1);
+    const introE = 1 - Math.pow(1 - intro, 3); // easeOutCubic
+    ctx.save();
+    ctx.globalAlpha = introE;
+    ctx.translate(0, (1 - introE) * 20);
+
     // Blood glow behind the emblem, then the spiked skull + stamped wordmark.
     const badgeY = this.badgeY;
     const glow = ctx.createRadialGradient(cx, badgeY, this.badgeR * 0.4, cx, badgeY, this.badgeR * 2.6);
@@ -239,28 +259,35 @@ export class MenuState implements GameState {
         baseline: "middle",
       });
     }
+    ctx.restore(); // end intro fade/rise
 
     const c = this.app.config;
     const home = TEAMS[c.homeTeamIndex % TEAMS.length];
     const away = TEAMS[c.awayTeamIndex % TEAMS.length];
-    this.teamColumn(r, this.cxL, "YOUR CREW", home, this.rects.teamPrev, this.rects.teamNext);
-    this.teamColumn(r, this.cxR, "RIVALS", away, this.rects.oppPrev, this.rects.oppNext);
+    const pf = (key: string) => this.pressFlash(key);
+    this.teamColumn(r, this.cxL, "YOUR CREW", home, this.rects.teamPrev, this.rects.teamNext, pf("teamPrev"), pf("teamNext"));
+    this.teamColumn(r, this.cxR, "RIVALS", away, this.rects.oppPrev, this.rects.oppNext, pf("oppPrev"), pf("oppNext"));
 
-    drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: COLORS.concrete, size: 15 });
-    drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: COLORS.concrete, size: 14 });
+    drawButton(r, this.rects.diff, `DIFF: ${c.difficulty.toUpperCase()}`, { fill: COLORS.concrete, size: 15, flash: pf("diff") });
+    drawButton(r, this.rects.mute, c.muted ? "SOUND: OFF" : "SOUND: ON", { fill: COLORS.concrete, size: 14, flash: pf("mute") });
+    // Slow attention pulse on the primary CTA so the eye lands on PLAY first.
+    const playGlow = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(this.t * 2.2));
     drawButton(r, this.rects.play, "PLAY", {
       fill: COLORS.blood,
       accent: COLORS.hazard,
       size: clamp(this.rects.play.h * 0.36, 16, 26),
+      glow: playGlow,
+      flash: pf("play"),
     });
     drawButton(r, this.rects.season, this.resumable ? "RESUME" : "SEASON", {
       fill: COLORS.concrete,
       accent: COLORS.hazard,
       size: clamp(this.rects.season.h * 0.32, 14, 22),
       sub: this.resumable ? "SEASON" : "8 GAMES + PLAYOFF",
+      flash: pf("season"),
     });
-    drawButton(r, this.rects.debug, "DEBUG", { fill: COLORS.steel, size: 13 });
-    drawButton(r, this.rects.practice, "PRACTICE", { fill: COLORS.steel, size: 13 });
+    drawButton(r, this.rects.debug, "DEBUG", { fill: COLORS.steel, size: 13, flash: pf("debug") });
+    drawButton(r, this.rects.practice, "PRACTICE", { fill: COLORS.steel, size: 13, flash: pf("practice") });
 
     // Build stamp: version + last-updated date/time (bumped automatically on every build/push).
     ctx.save();
@@ -272,6 +299,13 @@ export class MenuState implements GameState {
       size: 10, align: "center", color: COLORS.ash, weight: "normal", baseline: "middle", font: FONT.ui,
     });
     ctx.restore();
+  }
+
+  /** 1 right after a button is tapped, easing to 0 over ~0.18s, for a press-flash. */
+  private pressFlash(key: string): number {
+    if (this.pressedKey !== key) return 0;
+    const e = (performance.now() - this.pressedAt) / 180;
+    return e >= 1 || e < 0 ? 0 : 1 - e;
   }
 
   /** Heavy poster wordmark with a blood-red mis-registration shadow + dark outline. */
@@ -299,15 +333,15 @@ export class MenuState implements GameState {
     ctx.restore();
   }
 
-  private teamColumn(r: GameApp["r"], cx: number, label: string, team: (typeof TEAMS)[number], prev: Rect, next: Rect): void {
+  private teamColumn(r: GameApp["r"], cx: number, label: string, team: (typeof TEAMS)[number], prev: Rect, next: Rect, prevFlash = 0, nextFlash = 0): void {
     const ctx = r.ctx;
     ctx.save();
     ctx.letterSpacing = "2px";
     r.text(label, cx, this.teamY - this.crestR - 8, { size: 12, align: "center", color: COLORS.blood, baseline: "bottom", weight: "normal", font: FONT.ui });
     ctx.restore();
     drawCrest(r.ctx, cx, this.teamY, this.crestR, team);
-    drawButton(r, prev, "‹", { fill: COLORS.concrete, size: 24 });
-    drawButton(r, next, "›", { fill: COLORS.concrete, size: 24 });
+    drawButton(r, prev, "‹", { fill: COLORS.concrete, size: 24, flash: prevFlash });
+    drawButton(r, next, "›", { fill: COLORS.concrete, size: 24, flash: nextFlash });
     r.text(team.name.toUpperCase(), cx, this.teamY + this.crestR + 16, { size: clamp(this.crestR * 0.42, 13, 19), align: "center", color: COLORS.bone, baseline: "middle", font: FONT.display });
   }
 }

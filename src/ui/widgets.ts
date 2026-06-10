@@ -49,12 +49,26 @@ export function drawButton(
   r: Renderer,
   rect: Rect,
   label: string,
-  opts: { fill?: string; text?: string; size?: number; sub?: string; accent?: string } = {},
+  opts: { fill?: string; text?: string; size?: number; sub?: string; accent?: string; flash?: number; glow?: number } = {},
 ): void {
   const ctx = r.ctx;
   const base = opts.fill ?? COLORS.concrete;
   const accent = opts.accent ?? COLORS.blood;
   const c = Math.min(12, rect.h * 0.28);
+  const flash = Math.max(0, Math.min(1, opts.flash ?? 0));
+  const glow = Math.max(0, Math.min(1, opts.glow ?? 0));
+
+  // Attention glow: a soft accent halo behind the plate (e.g. a slow pulse on the primary CTA).
+  if (glow > 0) {
+    ctx.save();
+    ctx.shadowColor = accent;
+    ctx.shadowBlur = 8 + glow * 22;
+    chamferPath(ctx, rect.x, rect.y, rect.w, rect.h, c);
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = 0.35 + glow * 0.4;
+    ctx.fill();
+    ctx.restore();
+  }
 
   // Plate shadow.
   ctx.save();
@@ -82,6 +96,11 @@ export function drawButton(
   // Brushed sheen.
   ctx.fillStyle = "rgba(255,255,255,0.05)";
   ctx.fillRect(rect.x, rect.y + rect.h * 0.16, rect.w, rect.h * 0.14);
+  // Press flash: a bright wash that fades out after a tap for tactile feedback.
+  if (flash > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${0.3 * flash})`;
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  }
   ctx.restore();
 
   // Edge + rivets.
