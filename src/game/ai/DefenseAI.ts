@@ -214,7 +214,10 @@ function interceptPoint(d: Player, carrier: Player, ctx: PlayContext): Vec2 {
     const fy = carrier.pos.y + carrier.vel.y * t;
     t = Math.hypot(fx - d.pos.x, fy - d.pos.y) / dSpeed;
   }
-  t = Math.min(t, 1.5); // don't over-project on a far, fast runner
+  // Don't over-project: a long lead made defenders sprint to a far DOWNFIELD point (looked like they
+  // ran the wrong way, esp. on kick returns with a fast open-field returner). A short lead keeps the
+  // pursuit aimed near the carrier so they converge and react to cuts instead of committing deep.
+  t = Math.min(t, 0.55);
   let px = carrier.pos.x + carrier.vel.x * t;
   const py = carrier.pos.y + carrier.vel.y * t;
   // Cut-off leverage scaled by how fast he's actually advancing — only get ahead of a runner
