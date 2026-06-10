@@ -120,6 +120,7 @@ export class TackleEngine {
       this.app.particles.burst(lead.pos.x, lead.pos.y, "#ffffff", 7, 90);
       this.app.audio.juke();
       this.app.shake.add(0.14);
+      this.app.shake.kick(carrier.vel.x, carrier.vel.y, 5); // lurch the way he bursts free
       this.app.floating.add(gangSize >= 2 ? "OUT OF THE PILE!" : "BROKE IT!", carrier.pos.x, carrier.pos.y, { size: 18, color: "#bfffd0", life: 0.8 });
       return { kind: "broken" };
     }
@@ -211,26 +212,44 @@ export class TackleEngine {
   private impactFx(hx: number, hy: number, dirX: number, dirY: number, big: boolean, hitStick: boolean, gangSize: number, closing: number, fumble: boolean, _team: string): void {
     const a = this.app;
     const gang = gangSize >= 3;
+    // Directional camera lurch (px): the camera gets *shoved* the way the runner is driven. Scales
+    // with the violence of the contact so a hit-stick rocks the frame and a wrap-up barely nudges it.
+    const kick = hitStick ? 15 : gang ? 12 : big ? 9 : 4;
+    a.shake.kick(dirX, dirY, kick);
     if (big || gang) {
-      a.time.freeze(hitStick ? 0.08 : 0.05);
-      a.time.bulletTime(hitStick ? 0.1 : 0.14, hitStick ? 0.7 : 0.58, 0.85);
-      a.scene3d.hitZoom(hitStick ? 0.9 : gang ? 0.8 : 0.7);
-      a.shake.add(hitStick ? 0.85 : gang ? 0.7 : 0.55);
-      a.particles.spark(hx, hy, dirX, dirY, hitStick ? 26 : gang ? 22 : 18);
+      a.time.freeze(hitStick ? 0.09 : 0.05);
+      // Tiered slow-mo: the biggest hits get a deeper, longer hold so they read as a *moment*;
+      // a routine "big" (just fast closing) stays snappy so the pace doesn't drag.
+      if (hitStick) a.time.bulletTime(0.08, 0.72, 0.95);
+      else if (gang) a.time.bulletTime(0.12, 0.5, 0.8);
+      else a.time.bulletTime(0.18, 0.34, 0.6);
+      a.scene3d.hitZoom(hitStick ? 0.95 : gang ? 0.82 : 0.66);
+      a.shake.add(hitStick ? 0.9 : gang ? 0.72 : 0.5);
+      a.particles.spark(hx, hy, dirX, dirY, hitStick ? 28 : gang ? 22 : 18);
       if (hitStick || gang) a.audio.bigHit(); else a.audio.hit(Math.min(1, closing / 260 + 0.4));
       const word = gang ? "GANG TACKLE!" : hitStick ? "BIG HIT!" : hitWord();
       a.floating.add(word, hx, hy - 16, { size: hitStick ? 34 : gang ? 30 : 28, color: hitStick ? "#ff5a3a" : gang ? "#ff9a3a" : "#ffd23a" });
       a.audio.crowdCheer();
     } else {
-      a.time.bulletTime(0.3, 0.22, 0.45);
-      a.scene3d.hitZoom(0.32);
-      a.shake.add(0.2);
+      a.time.bulletTime(0.3, 0.2, 0.42);
+      a.scene3d.hitZoom(0.3);
+      a.shake.add(0.18);
       a.particles.burst(hx, hy, "#d9c7a0", 8, 110);
       a.audio.hit(0.4);
     }
     if (fumble) {
-      a.floating.add("FUMBLE!", hx, hy - 40, { size: 26, color: "#ff6a6a" });
+      // Turnover drama: the ball pops loose during the contact, so escalate the moment hard —
+      // a deeper, longer freeze + bullet-time to sell the scramble, an extra camera punch, a tight
+      // zoom, and a crowd gasp. A loose ball is the most exciting thing that can happen on a down.
+      a.time.freeze(0.11);
+      a.time.bulletTime(0.07, 0.85, 1.05);
+      a.scene3d.hitZoom(1.0);
+      a.shake.add(0.4);
+      a.shake.kick(dirX, dirY, 10);
+      a.particles.spark(hx, hy, dirX, dirY, 30);
+      a.floating.add("FUMBLE!", hx, hy - 40, { size: 30, color: "#ff5a3a" });
       a.audio.turnover();
+      a.audio.crowdGroan();
     }
   }
 
@@ -251,6 +270,7 @@ export class TackleEngine {
     carrier.leanTarget = Math.sign(cross) || 1;
     this.app.time.slow(0.85, 0.12);
     this.app.shake.add(0.1);
+    this.app.shake.kick(hvx, hvy, 4); // a glancing shove off the would-be tackler
     this.app.particles.burst((carrier.pos.x + tackler.pos.x) / 2, (carrier.pos.y + tackler.pos.y) / 2, "#ffffff", 5, 70);
     this.app.audio.hit(0.3);
     return true;
