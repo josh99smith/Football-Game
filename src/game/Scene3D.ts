@@ -1085,6 +1085,42 @@ class FbxAvatar implements Avatar {
   }
 
 
+  // --- Animation channels (the three weight sources that can pose the body) -------------------
+  // LOCO: the idle/walk/run/backpedal/strafe blend. ACTION: the active one-shot overlay + the
+  // procedural throw. GETUP: the stand-up clip. Each helper hard-silences one channel so a
+  // transition can enforce that a state only shows the channels it owns.
+  private silenceLoco(): void {
+    for (const a of [this.idleAction, this.walkAction, this.runAction, this.backAction, this.backDiagAction, this.strafeAction]) a?.setEffectiveWeight(0);
+  }
+  private silenceActions(): void {
+    if (this.oneShot) { this.oneShot.setEffectiveWeight(0); this.oneShot.stop(); this.oneShot = null; }
+    this.throwT = 0;
+  }
+  private silenceGetup(): void {
+    if (this.getupViaClip) { this.getupAction?.stop(); this.getupViaClip = false; }
+  }
+
+  /**
+   * Transition the formal avatar state, enforcing channel ownership on every change: entering a
+   * state hard-silences the channels it must NOT show, so a leaked/clamped weight from the prior
+   * state can never bleed through (the exact bug class behind the locomotion corruption). Channels
+   * the new state OWNS are left to their own crossfade/envelope (e.g. LOCO ducks under an overlay
+   * via the one-shot envelope, it is not snapped to zero). A no-op when the state is unchanged, so
+   * it costs only a compare per frame in steady state.
+   */
+  private setAnimState(next: AvatarState): void {
+    if (next === this.animState) return;
+    switch (next) {
+      case "loco": this.silenceActions(); this.silenceGetup(); break;          // pure locomotion
+      case "action": this.silenceGetup(); break;                               // overlay ducks LOCO via envelope
+      case "contact": this.silenceActions(); this.silenceGetup(); break;       // upright, procedural fall lean
+      case "down": this.silenceActions(); this.silenceGetup(); break;          // flattened, procedural fall
+      case "ragFall": this.silenceLoco(); this.silenceActions(); this.silenceGetup(); break; // physics owns the body
+      case "getup": this.silenceLoco(); this.silenceActions(); break;          // stand-up clip owns the body
+    }
+    this.animState = next;
+  }
+
   /**
    * Play a one-shot overlay, capping how long it ducks locomotion (clips can be long).
    * `rate` speeds up playback and `startAt` skips into the clip (e.g. to land on the
@@ -1178,7 +1214,7 @@ class FbxAvatar implements Avatar {
     // While a physics ragdoll owns the body, it's stepped/driven in advanceRagdoll(); the
     // normal animation + position pipeline stands down so it doesn't fight the bones. Drop any
     // queued one-shot (e.g. the canned "tackle") so it can't fire when we hand back to anim.
-    if (this.rPhase !== "anim") { this.animState = this.rPhase === "fall" ? "ragFall" : "getup"; p.animEvent = null; return; }
+    if (this.rPhase !== "anim") { this.setAnimState(this.rPhase === "fall" ? "ragFall" : "getup"); p.animEvent = null; return; }
     this.interp.push(p.pos.x * U, p.pos.y * U); // horizontal position interpolated in present()
     g.position.y = 0;
 
@@ -1331,12 +1367,12 @@ class FbxAvatar implements Avatar {
       if (p.controlled) this.chevron.position.y = 2.8 + Math.sin(this.phase * 4) * 0.12;
     }
 
-    // Formal state for this anim frame (observability; drives channel ownership in the next step).
-    this.animState = deriveAvatarState({
+    // Formal state for this anim frame; the setter enforces channel ownership on any transition.
+    this.setAnimState(deriveAvatarState({
       ragdolling: false, gettingUp: false,
       overlay: this.oneShot != null || this.throwT > 0,
       down: lo.down, contact: lo.contact,
-    });
+    }));
 
     // Smoothly crossfade all locomotion/idle weights toward their targets.
     blendW(this.idleAction, tIdle * loco, dt);
