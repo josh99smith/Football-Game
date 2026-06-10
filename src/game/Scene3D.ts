@@ -1023,7 +1023,9 @@ class FbxAvatar implements Avatar {
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
     else if (p.animEvent === "stiffArm") this.triggerOneShot(this.jukeAction ?? this.spinAction, 0.5, 1.3, 0);
     else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0);
-    else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.4, 1.1, 0);
+    // def_tackle is a 5s mocap take whose forward wrap/drive is ~1.0-2.5s in — slice to the lunge so
+    // the defender actually tackles ON contact (the first 1.5s is just the slow run-in).
+    else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.15, 1.3, 1.05);
     else if (p.animEvent === "swat") this.triggerOneShot(this.defSwatAction, 0.95, 1.2, 0.3);
     else if (p.animEvent === "kick") this.triggerOneShot(this.kickAction, 1.1, 1.1, 0);
     else if (p.animEvent === "celebrate") {
