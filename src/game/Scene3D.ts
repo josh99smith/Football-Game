@@ -557,6 +557,7 @@ class FbxAvatar implements Avatar {
   private readonly idleAction: THREE.AnimationAction | null;
   private readonly runAction: THREE.AnimationAction | null;
   private readonly backAction: THREE.AnimationAction | null;
+  private readonly backDiagAction: THREE.AnimationAction | null;
   private readonly strafeAction: THREE.AnimationAction | null;
   private readonly walkAction: THREE.AnimationAction | null;
   private readonly passAction: THREE.AnimationAction | null;
@@ -665,6 +666,7 @@ class FbxAvatar implements Avatar {
     this.idleAction = clips.idle ? this.mixer.clipAction(clips.idle) : null;
     this.runAction = clips.run ? this.mixer.clipAction(clips.run) : null;
     this.backAction = clips.runBack ? this.mixer.clipAction(clips.runBack) : null;
+    this.backDiagAction = clips.backDiag ? this.mixer.clipAction(clips.backDiag) : null;
     this.strafeAction = clips.strafe ? this.mixer.clipAction(clips.strafe) : null;
     this.walkAction = clips.walk ? this.mixer.clipAction(clips.walk) : null;
     this.passAction = clips.pass ? this.mixer.clipAction(clips.pass) : null;
@@ -690,7 +692,7 @@ class FbxAvatar implements Avatar {
     ] as [THREE.AnimationAction | null, number][])
       .filter((x): x is [THREE.AnimationAction, number] => x[0] != null)
       .map(([a, s]) => ({ a, s }));
-    for (const a of [this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
+    for (const a of [this.runAction, this.backAction, this.backDiagAction, this.strafeAction, this.walkAction]) {
       a?.setLoop(THREE.LoopRepeat, Infinity);
       a?.play();
       a?.setEffectiveWeight(0);
@@ -1044,7 +1046,6 @@ class FbxAvatar implements Avatar {
   }
 
   update(p: Player, jersey: number, trim: number, accent: number, helmet: number, decal: EmblemIcon | undefined, onFire: boolean, dt: number, isDefense: boolean): void {
-    void isDefense;
     const g = this.group;
     g.visible = true;
     // While a physics ragdoll owns the body, it's stepped/driven in advanceRagdoll(); the
@@ -1169,6 +1170,7 @@ class FbxAvatar implements Avatar {
       this.walkAction?.setEffectiveTimeScale(clamp(lo.speed * WALK_PLANT_K, 0.7, 3.6));
       this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 3.0));
       this.backAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
+      this.backDiagAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
       this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * STRAFE_PLANT_K, 0.7, 3.0));
       // Bank hard into turns/cuts so a change of direction reads as a dynamic lean (plus the
       // juke lean). Smoothed so it carves in rather than snapping, but quick enough to feel sharp.
@@ -1203,7 +1205,11 @@ class FbxAvatar implements Avatar {
     blendW(this.idleAction, tIdle * loco, dt);
     blendW(this.walkAction, tWalk * loco, dt);
     blendW(this.runAction, tRun * loco, dt);
-    blendW(this.backAction, tBack * loco, dt);
+    // Defenders backpedal with the diagonal coverage jog (DBs shuffle back at an angle); offense and
+    // anyone without the clip keep the straight backpedal.
+    const diagBack = isDefense && this.backDiagAction != null;
+    blendW(this.backAction, (diagBack ? 0 : tBack) * loco, dt);
+    blendW(this.backDiagAction, (diagBack ? tBack : 0) * loco, dt);
     blendW(this.strafeAction, tStrafe * loco, dt);
 
     // NOTE: the mixer is advanced in present() at the display's refresh rate (not here at the fixed

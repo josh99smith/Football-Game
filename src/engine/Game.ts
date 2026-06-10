@@ -90,6 +90,7 @@ export class GameApp {
       run: `${base}standard_run.fbx`,
       runBack: `${base}run_backward.fbx`,
       strafe: `${base}strafe.fbx`,
+      backDiag: `${base}back_diag.fbx`,
       pass: `${base}rig_pass.fbx`,
       catch: `${base}rig_catch.fbx`,
       juke: `${base}change_dir.fbx`,
