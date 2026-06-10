@@ -1013,7 +1013,8 @@ export class LivePlayState implements GameState {
     if (!c || this.jukeAnimCd > 0) return;
     if (c.state !== "active" || c.animEvent !== null || c.jukeTimer > 0) return;
     if (c.loco.speed01 > 0.4 && Math.abs(c.loco.turnRate) > 6.5) {
-      c.animEvent = "juke";
+      // A hard pivot (near a reversal) plays the plant-and-turn-upfield; a moderate cut is a juke.
+      c.animEvent = Math.abs(c.loco.turnRate) > 11 ? "turnRun" : "juke";
       this.jukeAnimCd = 0.7;
     }
   }
