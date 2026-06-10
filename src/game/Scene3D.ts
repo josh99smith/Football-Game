@@ -584,6 +584,10 @@ class FbxAvatar implements Avatar {
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
+  /** Every non-locomotion one-shot action — zeroed wholesale on a fresh play so a stale/orphaned
+   *  overlay can never accumulate weight across the pooled avatars' reuse (the cause of the
+   *  walk/run "corruption" that built up the longer a session ran). */
+  private oneShotActions: THREE.AnimationAction[] = [];
   /** Jersey/pants mesh material(s) — get the procedural team-jersey skin texture. */
   private readonly jerseyMats: THREE.MeshStandardMaterial[] = [];
   /** Helmet material(s) — get the dark trim color. */
@@ -705,9 +709,11 @@ class FbxAvatar implements Avatar {
       a?.play();
       a?.setEffectiveWeight(0);
     }
-    for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction, this.qbThrowAction, this.pitchAction, this.kickAction, this.diveAction, this.pickupAction, this.turnRunAction, ...this.celebVariants.map((v) => v.a)]) {
-      a?.setLoop(THREE.LoopOnce, 1);
-      if (a) a.clampWhenFinished = true;
+    this.oneShotActions = [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction, this.qbThrowAction, this.pitchAction, this.kickAction, this.diveAction, this.pickupAction, this.turnRunAction, this.getupAction, ...this.celebVariants.map((v) => v.a)]
+      .filter((a): a is THREE.AnimationAction => a != null);
+    for (const a of this.oneShotActions) {
+      a.setLoop(THREE.LoopOnce, 1);
+      a.clampWhenFinished = true;
     }
     // Neutral/idle players hold a relaxed UPRIGHT stand, not the deep 3-point crouch the clip
     // ends on — freeze the clip early (IDLE_POSE) where the body is standing.
@@ -1026,6 +1032,10 @@ class FbxAvatar implements Avatar {
     startAt = 0,
   ): void {
     if (!action) return;
+    // Kill any still-active one-shot first — otherwise overwriting `this.oneShot` orphans it at its
+    // clamped weight forever (it keeps posing the body), which is how overlapping overlays corrupted
+    // the locomotion blend over a long session.
+    if (this.oneShot && this.oneShot !== action) { this.oneShot.setEffectiveWeight(0); this.oneShot.stop(); }
     action.reset();
     action.setLoop(THREE.LoopOnce, 1);
     action.clampWhenFinished = true;
@@ -1049,12 +1059,14 @@ class FbxAvatar implements Avatar {
     this.fallT = 0;
     this.bankSmooth = 0;
     this.throwT = 0; // kill any in-flight procedural throw so a reset mid-arc can't jam the arm next play
-    this.oneShot?.stop(); // actually halt the LoopOnce action, not just hide it (it was still clamping live)
-    this.oneShot?.setEffectiveWeight(0);
+    // Zero EVERY one-shot (not just the current `this.oneShot`): an overlapping overlay can leave an
+    // orphaned action clamped at weight > 0, and those accumulated across the pooled avatars' reuse —
+    // the walk/run corruption that grew over a session. Wipe them all on each fresh play.
+    for (const a of this.oneShotActions) { a.stop(); a.setEffectiveWeight(0); }
     this.oneShot = null;
     this.lean.rotation.set(0, 0, 0);
     this.group.position.y = 0;
-    for (const a of [this.idleAction, this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
+    for (const a of [this.idleAction, this.runAction, this.backAction, this.backDiagAction, this.strafeAction, this.walkAction]) {
       a?.setEffectiveWeight(0);
     }
     // Hold the upright neutral stand again for the new play.
