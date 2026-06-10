@@ -1768,7 +1768,7 @@ export class Scene3D {
       // A few shared jersey textures per side (random numbers), reused across figures (one canvas
       // each instead of per-player — keeps texture memory + uploads low).
       const texes = [0, 0, 0, 0].map(() => jerseyTexture(jersey, accent, trim, 1 + ((Math.random() * 98) | 0)));
-      const baseZ = side < 0 ? -2.4 : FIELD_WID_U + 2.4;
+      const baseZ = side < 0 ? -1.7 : FIELD_WID_U + 1.7; // tight standing line right at the boundary
       const faceY = side < 0 ? 0 : Math.PI;
       // Pack a denser front rank spanning more of the sideline length.
       const x0 = FIELD_LEN_U * 0.22, x1 = FIELD_LEN_U * 0.78, n = SIDELINE_PLAYERS_PER_SIDE;
@@ -1895,10 +1895,10 @@ export class Scene3D {
         this.addSidelineFigure(o);
         this.sidelineBoxPlayers.push(o); // becomes the back rank once skinned models upgrade the front
       }
-      // Coaches stand a touch closer to the field, between the ranks.
+      // Coaches stand behind the player line, between the ranks.
       for (const cx of [FIELD_LEN_U * 0.4, FIELD_LEN_U * 0.52, FIELD_LEN_U * 0.62]) {
         const o = figure(coachMat, 1.06);
-        o.position.set(cx, 0, side < 0 ? -1.6 : FIELD_WID_U + 1.6);
+        o.position.set(cx, 0, side < 0 ? -2.9 : FIELD_WID_U + 2.9);
         o.rotation.y = faceY;
         this.scene.add(o);
         this.addSidelineFigure(o);
@@ -1924,6 +1924,73 @@ export class Scene3D {
     );
     this.chainLink.position.set(0, 0.85, -0.7);
     this.scene.add(this.chainDown, this.chainFirst, this.chainLink);
+
+    this.buildSidelineProps(figure, coachMat);
+  }
+
+  /** Real-sideline dressing to flesh out the bench area: a long padded bench, team-colored equipment
+   *  trunks (the "W" carts), stacked road cases, a Gatorade cooler table, and a broadcast camera on a
+   *  tripod with an operator. All low-poly + no shadows (background). */
+  private buildSidelineProps(figure: (mat: THREE.Material, scale: number) => THREE.Group, coachMat: THREE.Material): void {
+    const dark = new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 0.92 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x47515d, roughness: 0.55, metalness: 0.35 });
+    const lid = new THREE.MeshStandardMaterial({ color: 0xb9c2cc, roughness: 0.75 });
+    const orange = new THREE.MeshStandardMaterial({ color: 0xd9601f, roughness: 0.7 });
+    const cushion = new THREE.MeshStandardMaterial({ color: 0x20242b, roughness: 0.95 });
+    const box = (w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number, g: THREE.Group): void => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); g.add(m);
+    };
+
+    for (const side of [-1, 1] as const) {
+      const team = side < 0 ? this.benchMatHome : this.benchMatAway; // crates in the team's color
+      const sgn = side; // -1 (home, -z) / +1 (away, beyond +z)
+      const z0 = side < 0 ? -5.6 : FIELD_WID_U + 5.6; // back of the sideline, behind the player ranks
+      const toField = -sgn; // +z for home, -z for away
+      const g = new THREE.Group();
+
+      // Long padded bench around midfield.
+      box(9, 0.5, 1.0, dark, FIELD_LEN_U * 0.5, 0.3, z0 + 0.6, g);
+      box(9, 0.16, 1.0, cushion, FIELD_LEN_U * 0.5, 0.62, z0 + 0.6, g);
+
+      // Row of team-colored equipment trunks (the "W" carts) behind the bench.
+      for (let i = 0; i < 4; i++) {
+        const x = FIELD_LEN_U * 0.3 + i * 2.0;
+        box(1.4, 1.0, 1.0, team, x, 0.5, z0 + 1.7, g);
+        box(1.46, 0.14, 1.06, lid, x, 1.03, z0 + 1.7, g);
+      }
+      // Stacked road cases at one end.
+      box(1.2, 0.8, 1.0, steel, FIELD_LEN_U * 0.22, 0.4, z0 + 1.6, g);
+      box(1.1, 0.6, 0.9, steel, FIELD_LEN_U * 0.22, 1.1, z0 + 1.6, g);
+
+      // Gatorade table: top + legs + two orange coolers with lids.
+      const tx = FIELD_LEN_U * 0.66;
+      box(2.0, 0.08, 0.8, lid, tx, 0.95, z0 + 0.9, g);
+      for (const lx of [-0.9, 0.9]) box(0.08, 0.95, 0.7, steel, tx + lx, 0.47, z0 + 0.9, g);
+      for (const cx of [tx - 0.5, tx + 0.5]) {
+        const c = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.3, 0.6, 10), orange);
+        c.position.set(cx, 1.3, z0 + 0.9); g.add(c);
+        const cl = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.06, 10), lid);
+        cl.position.set(cx, 1.63, z0 + 0.9); g.add(cl);
+      }
+      this.scene.add(g);
+
+      // Broadcast camera on a tripod near the bench, lens trained on the field, an operator behind it.
+      const cam = new THREE.Group();
+      box(0.5, 0.5, 1.0, dark, 0, 1.45, 0, cam); // camera body
+      const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.55, 12), steel);
+      lens.rotation.x = Math.PI / 2; lens.position.set(0, 1.45, toField * 0.7); cam.add(lens);
+      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.2, 8), steel);
+      ped.position.y = 0.7; cam.add(ped);
+      for (const a of [0.4, 2.5, 4.6]) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.05, 6), steel);
+        leg.position.set(Math.cos(a) * 0.32, 0.45, Math.sin(a) * 0.32);
+        leg.rotation.set(-Math.sin(a) * 0.5, 0, Math.cos(a) * 0.5);
+        cam.add(leg);
+      }
+      const op = figure(coachMat, 1.0); op.position.set(0, 0, -toField * 0.7); cam.add(op); // operator behind
+      cam.position.set(FIELD_LEN_U * 0.44, 0, side < 0 ? -3.4 : FIELD_WID_U + 3.4);
+      this.scene.add(cam);
+    }
   }
 
   private buildStadium(): void {
