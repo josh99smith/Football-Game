@@ -236,6 +236,7 @@ export class SpecialTeamsState implements GameState {
       this.ball.kick(this.holdX, CENTER_Y, this.dir * hSpeed, vy, vz, GRAV);
     }
     this.kicker.facing = this.dir > 0 ? 0 : Math.PI;
+    this.kicker.animEvent = "kick"; // leg-swing (shows on punts; FG/PAT frame the ball, not the kicker)
   }
 
   /** Watch the ball: split the uprights, sail wide/short, or (punt) land for the return. */

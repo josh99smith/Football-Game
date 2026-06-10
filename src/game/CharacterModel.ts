@@ -28,6 +28,17 @@ export interface CharacterClips {
   defSwat: THREE.AnimationClip | null;
   /** One-shot touchdown / turnover celebration. */
   celebrate: THREE.AnimationClip | null;
+  // --- sports-mocap one-shots (Mixamo) ---
+  /** Real QB throwing motion (replaces the procedural arm-aim when present). */
+  qbThrow: THREE.AnimationClip | null;
+  /** Over-the-top heave for long / Hail-Mary throws (baseball pitch). */
+  pitch: THREE.AnimationClip | null;
+  /** Placekicker leg-swing (kickoffs / punts). */
+  kick: THREE.AnimationClip | null;
+  /** Alternate touchdown celebrations (golf swing / bat flip / tennis serve). */
+  celebGolf: THREE.AnimationClip | null;
+  celebBat: THREE.AnimationClip | null;
+  celebTennis: THREE.AnimationClip | null;
 }
 
 export interface CharacterAsset {
@@ -54,6 +65,13 @@ export interface CharacterUrls {
   defTackle: string;
   defSwat: string;
   celebrate: string;
+  // Optional sports-mocap one-shots (the main game supplies these; tools/sandboxes may omit them).
+  qbThrow?: string;
+  pitch?: string;
+  kick?: string;
+  celebGolf?: string;
+  celebBat?: string;
+  celebTennis?: string;
 }
 
 /**
@@ -167,7 +185,8 @@ function buildAsset(model: THREE.Group, clips: CharacterClips): CharacterAsset {
 
 function emptyClips(idle: THREE.AnimationClip | null): CharacterClips {
   return { idle, run: null, runBack: null, strafe: null, pass: null, catch: null, juke: null,
-    walk: null, tackle: null, spin: null, defTackle: null, defSwat: null, celebrate: null };
+    walk: null, tackle: null, spin: null, defTackle: null, defSwat: null, celebrate: null,
+    qbThrow: null, pitch: null, kick: null, celebGolf: null, celebBat: null, celebTennis: null };
 }
 
 /**
@@ -190,10 +209,13 @@ export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
  */
 const CLIP_KEYS: Array<Exclude<keyof CharacterClips, "idle">> = [
   "run", "walk", "runBack", "strafe", "spin", "juke", "catch", "pass", "tackle", "defTackle", "defSwat", "celebrate",
+  // Sports-mocap one-shots load last (lowest priority — locomotion + core one-shots come first).
+  "qbThrow", "pitch", "kick", "celebGolf", "celebBat", "celebTennis",
 ];
 const CLIP_URL_KEY: Record<Exclude<keyof CharacterClips, "idle">, keyof CharacterUrls> = {
   run: "run", runBack: "runBack", strafe: "strafe", pass: "pass", catch: "catch", juke: "juke",
   walk: "walk", tackle: "tackle", spin: "spin", defTackle: "defTackle", defSwat: "defSwat", celebrate: "celebrate",
+  qbThrow: "qbThrow", pitch: "pitch", kick: "kick", celebGolf: "celebGolf", celebBat: "celebBat", celebTennis: "celebTennis",
 };
 
 /** True once every animation clip (not just idle) is loaded — i.e. nothing left to retry. */
@@ -231,7 +253,9 @@ export async function loadAnimationClips(
   // the caller apply the locomotion clips the moment they arrive instead of waiting for all 12.
   for (const k of CLIP_KEYS) {
     if (clips[k] != null) continue;
-    clips[k] = await loadClip(loader, urls[CLIP_URL_KEY[k]]);
+    const url = urls[CLIP_URL_KEY[k]];
+    if (!url) continue; // optional clip not supplied (e.g. a sandbox) — skip it
+    clips[k] = await loadClip(loader, url);
     onProgress?.(buildAsset(current.template, { ...clips }));
   }
   return buildAsset(current.template, clips);

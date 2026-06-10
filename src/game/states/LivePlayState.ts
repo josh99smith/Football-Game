@@ -1340,7 +1340,8 @@ export class LivePlayState implements GameState {
     this.ball.throwTo(from, aim, speed, loft, spin);
     this.passThrown = true;
     this.passTarget = receiver;
-    from.animEvent = "pass";
+    // Deep balls get the over-the-top heave (pitcher motion); normal throws the QB clip.
+    from.animEvent = Math.min(d, maxPass) > maxPass * 0.62 ? "hailMary" : "pass";
     this.app.audio.throwBall();
     // The thrower's side has no carrier until the catch, so the offense human drops to
     // no-control (and can grab a receiver in the air). A defending human KEEPS their

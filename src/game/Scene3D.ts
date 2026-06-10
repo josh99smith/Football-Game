@@ -566,6 +566,11 @@ class FbxAvatar implements Avatar {
   private readonly defTackleAction: THREE.AnimationAction | null;
   private readonly defSwatAction: THREE.AnimationAction | null;
   private readonly celebrateAction: THREE.AnimationAction | null;
+  private readonly qbThrowAction: THREE.AnimationAction | null;
+  private readonly pitchAction: THREE.AnimationAction | null;
+  private readonly kickAction: THREE.AnimationAction | null;
+  /** All available touchdown-celebration clips (base + sports variants) to pick from at random. */
+  private readonly celebVariants: THREE.AnimationAction[];
   private oneShot: THREE.AnimationAction | null = null;
   private oneShotTime = 0;
   private oneShotDur = 0;
@@ -662,12 +667,17 @@ class FbxAvatar implements Avatar {
     this.defTackleAction = clips.defTackle ? this.mixer.clipAction(clips.defTackle) : null;
     this.defSwatAction = clips.defSwat ? this.mixer.clipAction(clips.defSwat) : null;
     this.celebrateAction = clips.celebrate ? this.mixer.clipAction(clips.celebrate) : null;
+    this.qbThrowAction = clips.qbThrow ? this.mixer.clipAction(clips.qbThrow) : null;
+    this.pitchAction = clips.pitch ? this.mixer.clipAction(clips.pitch) : null;
+    this.kickAction = clips.kick ? this.mixer.clipAction(clips.kick) : null;
+    this.celebVariants = [this.celebrateAction, ...[clips.celebGolf, clips.celebBat, clips.celebTennis]
+      .map((c) => (c ? this.mixer.clipAction(c) : null))].filter((a): a is THREE.AnimationAction => a != null);
     for (const a of [this.runAction, this.backAction, this.strafeAction, this.walkAction]) {
       a?.setLoop(THREE.LoopRepeat, Infinity);
       a?.play();
       a?.setEffectiveWeight(0);
     }
-    for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction]) {
+    for (const a of [this.passAction, this.catchAction, this.jukeAction, this.tackleAction, this.spinAction, this.defTackleAction, this.defSwatAction, this.celebrateAction, this.qbThrowAction, this.pitchAction, this.kickAction, ...this.celebVariants]) {
       a?.setLoop(THREE.LoopOnce, 1);
       if (a) a.clampWhenFinished = true;
     }
@@ -827,6 +837,13 @@ class FbxAvatar implements Avatar {
     let found: THREE.Bone | null = null;
     this.inner.traverse((o) => { if (!found && (o as THREE.Bone).isBone && o.name === "mixamorig" + short) found = o as THREE.Bone; });
     return found;
+  }
+
+  /** Throw visual: play the mocap QB/pitch clip when we have it, otherwise fall back to the
+   *  procedural arm-aim. The ball is launched by game logic, so this only drives the body motion. */
+  private startThrow(p: Player, clip: THREE.AnimationAction | null): void {
+    if (clip) this.triggerOneShot(clip, 1.1, 1.2, 0);
+    else { this.throwT = THROW_DUR; this.throwHeading = p.loco.heading; }
   }
 
   /**
@@ -999,7 +1016,8 @@ class FbxAvatar implements Avatar {
     // Fire one-shot overlays on game events: throw, catch, the change-of-direction juke,
     // the spin move, the carrier's getting-tackled reaction, the defender's tackle + ball-swat
     // attempts, and a celebration. Each ramps in/out (below) so it crossfades with locomotion.
-    if (p.animEvent === "pass") { this.throwT = THROW_DUR; this.throwHeading = p.loco.heading; }
+    if (p.animEvent === "pass") this.startThrow(p, this.qbThrowAction);
+    else if (p.animEvent === "hailMary") this.startThrow(p, this.pitchAction ?? this.qbThrowAction);
     else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.95);
     else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.55, 1.25, 0);
     else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
@@ -1007,7 +1025,11 @@ class FbxAvatar implements Avatar {
     else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0);
     else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.4, 1.1, 0);
     else if (p.animEvent === "swat") this.triggerOneShot(this.defSwatAction, 0.95, 1.2, 0.3);
-    else if (p.animEvent === "celebrate") this.triggerOneShot(this.celebrateAction, 2.6, 1.0, 0);
+    else if (p.animEvent === "kick") this.triggerOneShot(this.kickAction, 1.1, 1.1, 0);
+    else if (p.animEvent === "celebrate") {
+      const v = this.celebVariants;
+      this.triggerOneShot(v.length ? v[(Math.random() * v.length) | 0] : this.celebrateAction, 2.6, 1.0, 0);
+    }
     p.animEvent = null;
 
     const lo = p.loco;
