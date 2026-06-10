@@ -2362,7 +2362,18 @@ export class Scene3D {
       for (const a of active) a.advanceRagdoll(opts.dt);
     }
 
-    if (ball.state === "held") {
+    if (ball.state === "held" && ball.carrier && ball.carrier.isDown) {
+      // Tackled but still holding the ball: the carried hand-nub is hidden while down and can't track
+      // anyway (present() pauses during a ragdoll), so the ball would otherwise vanish for the whole
+      // down beat. Show the free ball tucked at the down spot so it's never missing from the field.
+      this.ballGroup.visible = true;
+      this.ballCur.set(ball.pos.x * U, 0.35, ball.pos.y * U);
+      this.ballPrev.copy(this.ballCur);
+      this.ballPrimed = true;
+      const shadow = this.ballGroup.getObjectByName("shadow");
+      if (shadow) shadow.position.y = 0.02 - 0.35;
+      this.ballMesh.rotation.set(this.ballRoll * 0.2, Math.atan2(ball.vel.x, ball.vel.y), 0);
+    } else if (ball.state === "held") {
       this.ballGroup.visible = false;
       this.ballPrimed = false; // snap when it next appears (no slide from a stale spot)
     } else {
