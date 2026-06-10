@@ -1859,49 +1859,17 @@ export class Scene3D {
     this.scene.add(apron);
   }
 
-  /** Dress the sidelines: a bench of players + coaches on each side, and a chain gang (down marker +
-   *  first-down marker joined by a chain) on the home sideline that rides the LOS / first-down line.
-   *  All low-poly, no shadow casting (decoration), with a gentle idle bob applied each frame. */
+  /** Dress the sidelines with a chain gang (down marker + first-down marker joined by a chain) on the
+   *  home sideline that rides the LOS / first-down line, then the bench props. The sideline PEOPLE are
+   *  all real skinned models (rebuildSidelinePlayers) — there are no blocky stand-ins. */
   private buildSidelines(): void {
-    const legGeo = new THREE.BoxGeometry(0.5, 0.85, 0.34);
-    const torsoGeo = new THREE.BoxGeometry(0.62, 0.8, 0.4);
-    const headGeo = new THREE.SphereGeometry(0.23, 8, 6);
-    const pants = new THREE.MeshStandardMaterial({ color: 0x1b1b1f, roughness: 0.9 });
-    const skinMats = [0xf0c9a0, 0xe0aa78, 0xc98e5e, 0x9c6b43, 0x7a4f30].map(
-      (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.75 }),
-    );
-    const figure = (jersey: THREE.Material, scale: number): THREE.Group => {
-      const g = new THREE.Group();
-      const legs = new THREE.Mesh(legGeo, pants); legs.position.y = 0.42;
-      const torso = new THREE.Mesh(torsoGeo, jersey); torso.position.y = 1.12;
-      const head = new THREE.Mesh(headGeo, skinMats[(Math.random() * skinMats.length) | 0]); head.position.y = 1.66;
-      g.add(legs, torso, head);
-      g.scale.setScalar(scale);
-      return g;
-    };
-    const coachMat = new THREE.MeshStandardMaterial({ color: 0x2a2e33, roughness: 0.95 });
-
-    // Coaches/staff only (the bench PLAYERS are real skinned models, built in rebuildSidelinePlayers
-    // — no blocky stand-ins). Coaches stand behind the player line, in coach attire.
-    for (const side of [-1, 1] as const) {
-      const faceY = side < 0 ? 0 : Math.PI;
-      for (const cx of [FIELD_LEN_U * 0.4, FIELD_LEN_U * 0.52, FIELD_LEN_U * 0.62]) {
-        const o = figure(coachMat, 1.06);
-        o.position.set(cx, 0, side < 0 ? -2.9 : FIELD_WID_U + 2.9);
-        o.rotation.y = faceY;
-        this.scene.add(o);
-        this.addSidelineFigure(o);
-      }
-    }
-
-    // Chain gang on the home sideline (z just outside the field): two pole markers + a chain.
-    const crewMat = new THREE.MeshStandardMaterial({ color: 0xdedede, roughness: 0.9 });
+    // Chain gang on the home sideline: two pole markers joined by a chain (equipment markers, no crew
+    // figure). Both sidelines are otherwise identical bar team branding.
     const marker = (poleMat: THREE.Material): THREE.Group => {
       const g = new THREE.Group();
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.3, 6), poleMat); pole.position.y = 1.15;
       const sign = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.46, 0.08), poleMat); sign.position.y = 2.2;
-      const crew = figure(crewMat, 0.95); crew.position.set(0.45, 0, 0); crew.rotation.y = 0;
-      g.add(pole, sign, crew);
+      g.add(pole, sign);
       g.position.z = -0.7;
       return g;
     };
@@ -1914,13 +1882,13 @@ export class Scene3D {
     this.chainLink.position.set(0, 0.85, -0.7);
     this.scene.add(this.chainDown, this.chainFirst, this.chainLink);
 
-    this.buildSidelineProps(figure, coachMat);
+    this.buildSidelineProps();
   }
 
-  /** Real-sideline dressing to flesh out the bench area: a long padded bench, team-colored equipment
-   *  trunks (the "W" carts), stacked road cases, a Gatorade cooler table, and a broadcast camera on a
-   *  tripod with an operator. All low-poly + no shadows (background). */
-  private buildSidelineProps(figure: (mat: THREE.Material, scale: number) => THREE.Group, coachMat: THREE.Material): void {
+  /** Real-sideline dressing to flesh out the bench area (identical on both sidelines bar team colors):
+   *  a long padded bench, team-colored equipment trunks (the "W" carts), stacked road cases, a
+   *  Gatorade cooler table, and an unmanned broadcast camera on a tripod. Low-poly + no shadows. */
+  private buildSidelineProps(): void {
     const dark = new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 0.92 });
     const steel = new THREE.MeshStandardMaterial({ color: 0x47515d, roughness: 0.55, metalness: 0.35 });
     const lid = new THREE.MeshStandardMaterial({ color: 0xb9c2cc, roughness: 0.75 });
@@ -1976,7 +1944,6 @@ export class Scene3D {
         leg.rotation.set(-Math.sin(a) * 0.5, 0, Math.cos(a) * 0.5);
         cam.add(leg);
       }
-      const op = figure(coachMat, 1.0); op.position.set(0, 0, -toField * 0.7); cam.add(op); // operator behind
       cam.position.set(FIELD_LEN_U * 0.44, 0, side < 0 ? -3.4 : FIELD_WID_U + 3.4);
       this.scene.add(cam);
     }
