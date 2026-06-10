@@ -9,7 +9,7 @@ import { Ball } from "../entities/Ball";
 import { buildDefense, buildOffense, type OffensePlay, type DefensePlay } from "../Playbook";
 import { assignDefense, updateDefense, type PlayContext } from "../ai/DefenseAI";
 import { updateOffense } from "../ai/OffenseAI";
-import { CPUOffense } from "../ai/CPUOffense";
+import { CPUOffense, steerCarrier } from "../ai/CPUOffense";
 import { chooseTarget, resolveAir } from "../Passing";
 import { HUD } from "../../ui/HUD";
 import { TouchControls, type ControlLabels } from "../../ui/TouchControls";
@@ -491,6 +491,17 @@ export class LivePlayState implements GameState {
       this.cpu.update(ctx, (from, target, receiver, power) => this.throwPass(from, target, receiver, power));
     }
     updateDefense(ctx, this.controlled);
+    // Superstar (or any moment the human offense isn't the one carrying): the ball carrier — a caught
+    // receiver, or a handed-off back while you're locked to the QB — has NO driver, because OffenseAI
+    // skips the carrier and the CPU offense brain is off while the human has possession. Without this
+    // he coasts on stale route momentum and can run the WRONG way (even through his own end zone).
+    // Steer him as an open runner toward the correct goal (`ctx.dir`).
+    if (this.humanIsOffense) {
+      const carrier = this.ball.carrier;
+      if (carrier && carrier !== this.controlled && carrier.team === this.offenseTeamId && !carrier.isDown) {
+        steerCarrier(carrier, ctx);
+      }
+    }
     this.maybeCpuBigHit(dt);
 
     // While the ball is in the air, the target receiver attacks the catch point —
@@ -587,17 +598,30 @@ export class LivePlayState implements GameState {
     let ssLook: Vec2 | null = null;
     if (superstar && this.phase === "live" && this.controlled && !this.controlled.isDown) {
       const c = this.controlled;
-      ssHeading = c.heading; // the cam sits behind whoever you control (QB downfield / defender facing the play)
       const threw = this.passThrown && this.ball.thrownBy === c;
-      if (threw) {
+      if (!this.humanIsOffense) {
+        // DEFENSE: lock the camera BEHIND the selected defender, framing the play. The defender's
+        // own facing thrashes (backpedal, react, pursue, juke), which whipped the old cam all over —
+        // so orient it by the much steadier defender→ball vector instead. The cam ends up on the
+        // defender's back side with the ball / offense framed ahead (the reference look).
+        starFocus = c.pos;
+        const bx = this.ball.carrier ? this.ball.carrier.pos.x : this.ball.pos.x;
+        const by = this.ball.carrier ? this.ball.carrier.pos.y : this.ball.pos.y;
+        const dx = bx - c.pos.x, dy = by - c.pos.y;
+        if (Math.hypot(dx, dy) > 14) { ssHeading = Math.atan2(dy, dx); ssLook = { x: bx, y: by }; }
+        // else: too close to derive a stable heading — leave ssHeading undefined so Scene3D holds the
+        // eased value, and let the contact hit-cam take over.
+      } else if (threw) {
         // You're locked to the QB but watch the throw: ride behind the receiver once he catches it,
         // else look downfield at the ball in flight.
+        ssHeading = c.heading;
         const carrier = this.ball.carrier;
         if (carrier && !carrier.isDown) { starFocus = carrier.pos; ssHeading = carrier.heading; }
         else { starFocus = this.ball.pos; ssLook = { x: this.ball.pos.x, y: this.ball.pos.y }; }
       } else {
+        ssHeading = c.heading; // cam behind the QB looking downfield
         starFocus = c.pos;
-        if (this.humanIsOffense && this.canThrow(c)) {
+        if (this.canThrow(c)) {
           const rcv = this.aimedReceiver(c); // QB: pan toward the receiver you're aiming at
           if (rcv) ssLook = { x: rcv.pos.x, y: rcv.pos.y };
         }
