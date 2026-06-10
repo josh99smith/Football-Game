@@ -323,11 +323,25 @@ export class Player {
     this.contactVel.y = driftVy;
   }
 
-  /** Glancing hit: stay upright but lose a beat (and lean). */
-  enterStumble(seconds: number): void {
-    if (this.state !== "active") return;
+  /** Glancing hit: stay upright but lose a beat (and lean). Returns false (no-op) if the player
+   *  isn't in the normal active state — callers must gate their FX on this so a stagger that didn't
+   *  take doesn't still fire slow-mo/particles. */
+  enterStumble(seconds: number): boolean {
+    if (this.state !== "active") return false;
     this.state = "stumbling";
     this.stumbleTimer = seconds;
+    return true;
+  }
+
+  /** Coast on current momentum for `dt`: no steering, no braking — just carry velocity (used by a
+   *  committed dive so a zero `desired` can't brake the lunge to a stop). Timers + loco still tick. */
+  coast(dt: number): void {
+    if (this.jukeTimer > 0) this.jukeTimer -= dt;
+    if (this.diveTimer > 0) this.diveTimer -= dt;
+    if (this.cutTimer > 0) this.cutTimer -= dt;
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+    this.updateLoco(dt);
   }
 
   /** True while staggering from a glancing hit. */

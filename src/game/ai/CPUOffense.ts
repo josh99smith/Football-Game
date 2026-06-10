@@ -81,7 +81,16 @@ export function keepInbounds(p: Player): void {
   const edge = Math.min(p.pos.y, FIELD_WIDTH - p.pos.y);
   if (edge >= SIDELINE_MARGIN) return;
   const inward = p.pos.y < center ? 1 : -1; // +y pushes down from the top edge, etc.
-  const urgency = 1 - edge / SIDELINE_MARGIN; // 0 at the margin, 1 at the line
-  p.desired.y += inward * (1.0 + 3.0 * urgency);
-  if (edge < 30 && Math.sign(p.desired.y) === -inward) p.desired.y = inward * 1.2;
+  const u = 1 - edge / SIDELINE_MARGIN; // 0 at the margin, 1 at the line
+  // Rotate the desired direction toward the inbound tangent while PRESERVING its magnitude (and the
+  // forward-X intent) — the old additive (+up to 4.0 on a unit vector) crushed the runner's upfield
+  // push near the numbers and pinned him straight in.
+  const mag = Math.min(1, Math.hypot(p.desired.x, p.desired.y));
+  if (mag < 0.01) { p.desired.x = 0; p.desired.y = inward * u; return; }
+  const ty = inward * Math.max(0.35, u);   // how hard to angle infield (never less than a little)
+  p.desired.y += (ty - p.desired.y) * (u * u);
+  if (edge < 30 && Math.sign(p.desired.y) === -inward) p.desired.y = 0; // hard zone: never steer out
+  const nl = Math.hypot(p.desired.x, p.desired.y) || 1;
+  p.desired.x = (p.desired.x / nl) * mag;
+  p.desired.y = (p.desired.y / nl) * mag;
 }

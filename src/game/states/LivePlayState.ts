@@ -1368,9 +1368,10 @@ export class LivePlayState implements GameState {
     for (const d of this.defense) {
       if (d.bigHitArmed && d.diveTimer <= 0) {
         d.bigHitArmed = false;
-        d.enterStumble(0.5);
-        this.app.particles.burst(d.pos.x, d.pos.y, "#9aa6b8", 5, 70);
-        if (d === this.controlled) this.app.floating.add("WHIFF!", d.pos.x, d.pos.y - 18, { size: 18, color: "#cdd6e6", life: 0.8 });
+        if (d.enterStumble(0.5)) { // only show the whiff FX if the stagger actually took
+          this.app.particles.burst(d.pos.x, d.pos.y, "#9aa6b8", 5, 70);
+          if (d === this.controlled) this.app.floating.add("WHIFF!", d.pos.x, d.pos.y - 18, { size: 18, color: "#cdd6e6", life: 0.8 });
+        }
       }
     }
   }
@@ -1519,8 +1520,9 @@ export class LivePlayState implements GameState {
       const accelMul = human ? 3.2 : 1;
       p.agility = human ? 1.8 : 1;
       if (diving) {
-        // Keep momentum during a dive (don't steer).
-        p.step(dt, Math.hypot(p.vel.x, p.vel.y));
+        // Committed dive: coast on the lunge momentum with NO steering or braking (a zero `desired`
+        // used to brake it to a stop via step()'s no-input brake).
+        p.coast(dt);
       } else {
         p.step(dt, target, accelMul);
       }
@@ -1546,6 +1548,14 @@ export class LivePlayState implements GameState {
   /** Push overlapping bodies apart so blockers wall defenders (blocking emerges). */
   private resolveBodies(): void {
     const carrier = this.ball.carrier;
+    const m = this.app.match;
+    // Cap a body's speed after a collision impulse so a closing hit can't momentarily launch it past
+    // its own top speed (the old impulse had no clamp → occasional "rocket" glitches in pile-ups).
+    const clampVel = (pl: Player): void => {
+      const cap = pl.speedFor(pl.turbo, m.team(pl.team).onFire) * 1.15;
+      const s2 = pl.vel.x * pl.vel.x + pl.vel.y * pl.vel.y;
+      if (s2 > cap * cap) { const k = cap / Math.sqrt(s2); pl.vel.x *= k; pl.vel.y *= k; }
+    };
     for (let i = 0; i < this.all.length; i++) {
       const a = this.all[i];
       if (a.isDown) continue;
@@ -1588,6 +1598,7 @@ export class LivePlayState implements GameState {
             a.vel.y -= ny * j * (bMass / total);
             b.vel.x += nx * j * (aMass / total);
             b.vel.y += ny * j * (aMass / total);
+            clampVel(a); clampVel(b);
           }
         }
       }
@@ -2175,7 +2186,7 @@ export class LivePlayState implements GameState {
     }
     const tapped = taps.length > 0;
     const beatDone = this.deadTimer <= 0 && !busy;
-    const skipped = tapped && this.deadElapsed >= MIN_DEAD_LINGER;
+    const skipped = tapped && this.deadElapsed >= MIN_DEAD_LINGER && !busy; // don't cut away mid-ragdoll
     if (beatDone || skipped || this.deadElapsed >= POSTPLAY_MAX) {
       this.commitOutcome();
       return;

@@ -280,7 +280,7 @@ export class TackleEngine {
     const hl = Math.hypot(hvx, hvy) || 1;
     const dot = (carrier.vel.x / cv) * (hvx / hl) + (carrier.vel.y / cv) * (hvy / hl);
     if (dot > 0.5) return false; // square in front -> a real tackle, not a brush
-    carrier.enterStumble(0.28);
+    if (!carrier.enterStumble(0.28)) return false; // already staggering/in contact — no double FX
     carrier.vel.x -= (hvx / hl) * 30;
     carrier.vel.y -= (hvy / hl) * 30;
     const cross = carrier.vel.x * hvy - carrier.vel.y * hvx;
