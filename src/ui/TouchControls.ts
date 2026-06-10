@@ -76,29 +76,25 @@ export class TouchControls {
     this.button(r, this.layout.action, labels.action.text, labels.action.icon, labels.action.color, input.action);
   }
 
-  /** The right MOVE stick: a "clutch" cross you push for juke/truck/back. Moves only — the
-   *  contextual action is its own button now. The knob deflects with the push. */
+  /** The right ACTION STICK: flick it UP to DIVE. That's its only action — the knob deflects with
+   *  the push and a bold up-arrow marks the live direction. */
   private rightStickPad(r: Renderer, input: Input): void {
     const ctx = r.ctx;
     const s = this.layout.rightStick;
-    const col = "#7f93a8"; // neutral steel — this pad is movement, not the (colored) action button
-    // Base ring, tinted by the action color.
+    const col = "#3fb56b"; // action green — this is the action stick, not a movement pad
+    // Base ring.
     ctx.globalAlpha = 0.34;
     ctx.fillStyle = "#0b1726";
     ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.6; ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
-    // 4-way plus arrows (the clutch cross).
-    ctx.globalAlpha = 0.7; ctx.fillStyle = "rgba(255,255,255,0.6)";
-    for (let i = 0; i < 4; i++) {
-      const a = (Math.PI / 2) * i;
-      ctx.save();
-      ctx.translate(s.x + Math.cos(a) * (s.r - 12), s.y + Math.sin(a) * (s.r - 12));
-      ctx.rotate(a);
-      ctx.beginPath(); ctx.moveTo(7, 0); ctx.lineTo(-3, -6); ctx.lineTo(-3, 6); ctx.closePath(); ctx.fill();
-      ctx.restore();
-    }
+    // A single bold UP chevron (the dive direction).
+    ctx.globalAlpha = 0.85; ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.save();
+    ctx.translate(s.x, s.y - (s.r - 13));
+    ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(-8, 4); ctx.lineTo(8, 4); ctx.closePath(); ctx.fill();
+    ctx.restore();
     ctx.globalAlpha = 1;
-    // Knob (deflects with the push), with the context action glyph + label on it.
+    // Knob (deflects with the push), labelled DIVE.
     const kx = input.rightStickActive ? input.rightStickKnob.x : s.x;
     const ky = input.rightStickActive ? input.rightStickKnob.y : s.y;
     const kr = s.r * 0.54;
@@ -110,11 +106,10 @@ export class TouchControls {
     ctx.beginPath(); ctx.arc(kx, ky, kr, 0, Math.PI * 2); ctx.fill();
     ctx.shadowColor = "transparent";
     ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.stroke();
-    // "MOVE" label on the knob (it's a movement pad, not the action button).
     ctx.fillStyle = "#fff";
     ctx.font = `900 ${Math.round(kr * 0.3)}px "Trebuchet MS", system-ui, sans-serif`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("MOVE", kx, ky);
+    ctx.fillText("DIVE", kx, ky);
     ctx.restore();
   }
 

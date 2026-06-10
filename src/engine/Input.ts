@@ -75,9 +75,8 @@ export class Input {
 
   private prevAction = false;
   private prevAction2 = false;
-  private prevQ = false;
-  private prevE = false;
   private prevR = false;
+  private prevF = false;
   private lastActionDownTime = -1;
   private joystickPointerId: number | null = null;
   private pendingTaps: Vec2[] = [];
@@ -295,13 +294,11 @@ export class Input {
     this.prevAction = actionDown;
     this.prevAction2 = action2Down;
 
-    // Keyboard carrier moves (desktop): Q/E juke left/right, R trucks forward — fired as swipes on
-    // the key's leading edge (screen-space, mapped to field by the game like a flick).
-    const q = this.keys.has("q"), eK = this.keys.has("e"), rK = this.keys.has("r");
-    if (q && !this.prevQ) this.pendingSwipe = { x: -1, y: 0 };
-    else if (eK && !this.prevE) this.pendingSwipe = { x: 1, y: 0 };
-    else if (rK && !this.prevR) this.pendingSwipe = { x: 0, y: -1 };
-    this.prevQ = q; this.prevE = eK; this.prevR = rK;
+    // Keyboard ACTION stick (desktop): F (or R) flicks UP to DIVE — fired as an up-swipe on the key's
+    // leading edge, the same signal the right stick emits.
+    const rK = this.keys.has("r"), fK = this.keys.has("f");
+    if ((rK && !this.prevR) || (fK && !this.prevF)) this.pendingSwipe = { x: 0, y: -1 };
+    this.prevR = rK; this.prevF = fK;
   }
 
   consumeTaps(): Vec2[] {

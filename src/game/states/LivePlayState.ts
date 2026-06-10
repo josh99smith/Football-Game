@@ -62,8 +62,6 @@ const STRUGGLE_TAP = 0.07;   // meter gained per mash
 const STRUGGLE_CPU = 0.2;    // meter drift per second toward the CPU's side
 /** Hold this long (s) to fully charge a bullet pass; a quick tap throws a lob. */
 const THROW_CHARGE_MAX = 0.5;
-/** Hold the ACTION button this long (s) as a ball carrier to dive instead of juke. */
-const DIVE_HOLD = 0.22;
 /** A defender within this distance (px) of the carrier tackles on ACTION (else switches). */
 const DEF_TACKLE_RANGE = 70;
 
@@ -125,9 +123,6 @@ export class LivePlayState implements GameState {
   /** Throw charge (seconds ACTION held); maps tap->lob, hold->bullet. */
   private throwCharge = 0;
   private throwCharging = false;
-  /** Ball-carrier ACTION hold tracking (tap = juke, hold = dive). */
-  private carrierHeld = 0;
-  private carrierFired = false;
   /** Cooldown so the change-of-direction "juke" animation fires on a hard cut, not every frame. */
   private jukeAnimCd = 0;
   /** How long the current hard-cut angle has held, so a one-frame steering spike can't fire a juke. */
@@ -588,6 +583,7 @@ export class LivePlayState implements GameState {
       this.checkLooseBall();
     } else {
       this.checkTackles();
+      this.checkGroundedCarrier(); // a dive-prone carrier is down the instant a defender touches him
       this.checkBigHitWhiff();
       this.checkBoundaries();
     }
@@ -952,18 +948,18 @@ export class LivePlayState implements GameState {
       this.turbo = Math.min(1, this.turbo + recharge * dt);
     }
 
+    // Right "action stick": its ONE action is DIVE (flick up). Carrier gives himself up to the
+    // ground; a controlled defender lunges into a dive tackle.
+    this.handleActionStick(c);
+
     if (this.humanIsOffense) {
-      // Right "action stick": directional carrier evasion (flick L/R = juke, forward = truck,
-      // back = spin) — works for ANY ball carrier, including the QB behind the line.
-      if (this.ball.carrier === c) this.handleCarrierMoves(c);
       // The ACTION button is contextual: the QB (a legal passer behind the line) charges a throw
-      // (tap = lob, hold = bullet); any other ball carrier holds it to dive for the spot.
+      // (tap = lob, hold = bullet). Non-passers leave it idle — diving is on the action stick now.
       if (this.canThrow(c)) {
         this.updateThrowCharge(c, dt);
       } else {
         this.throwCharging = false;
         this.throwCharge = 0;
-        if (this.ball.carrier === c) this.updateCarrierDive(c, dt);
       }
     } else {
       this.handleDefenseAction(c);
@@ -1039,40 +1035,51 @@ export class LivePlayState implements GameState {
   /** Right-stick carrier evasion: a directional flick is the move. Sideways = JUKE that way;
    *  forward (downfield) = TRUCK, or STIFF-ARM a defender squared up in front; back = SPIN off. The
    *  stick fires axis-aligned flicks, so each push reads as a clean direction. */
-  private handleCarrierMoves(c: Player): void {
+  private handleActionStick(c: Player): void {
     const sw = this.app.input.consumeSwipe();
     if (!sw) return;
-    if (c.state !== "active" || c.animEvent !== null || c.jukeTimer > 0 || c.diveTimer > 0) return;
-    // Map the flick into field space (like the move stick), then split along / across the run.
-    const fx = -sw.y * this.dir;
-    const fy = sw.x * this.dir;
-    const fwd = Math.cos(c.facing) * fx + Math.sin(c.facing) * fy; // along the run direction
-    const lat = Math.cos(c.facing) * fy - Math.sin(c.facing) * fx; // sideways component
-    if (fwd < -0.35 && Math.abs(fwd) > Math.abs(lat)) {
-      this.doSpin(c); // flick BACK → spin off the tackle
-    } else if (fwd > 0.3 && fwd > Math.abs(lat)) {
-      const d = this.nearestTackler(c, 72); // flick FORWARD → truck, or stiff-arm a man in front
-      if (d && this.isAhead(c, d)) this.doStiffArm(c, d);
-      else this.doTruck(c);
-    } else {
-      this.doJuke(c, fx, fy); // flick L/R → juke that way
-    }
+    if (sw.y >= -0.45) return; // only an UP flick is an action; other directions are reserved
+    if (this.ball.carrier === c) this.diveToGround(c);
+    else if (c.team !== this.offenseTeamId) this.defenderDive(c);
   }
 
-  /** Ball-carrier ACTION button: hold past a beat to DIVE for the spot (the directional evasion
-   *  moves live on the right stick now). */
-  private updateCarrierDive(c: Player, dt: number): void {
-    const input = this.app.input;
-    if (input.actionPressed) {
-      this.carrierHeld = 0;
-      this.carrierFired = false;
-    }
-    if (input.action) {
-      this.carrierHeld += dt;
-      if (!this.carrierFired && this.carrierHeld >= DIVE_HOLD) {
-        this.startDive(c);
-        this.carrierFired = true;
-      }
+  /** Carrier dive (action stick, flick up): lunge forward along the run, hit the deck and lie prone.
+   *  He's then DOWN IF TOUCHED by a defender (checkGroundedCarrier); if untouched, the prone beat
+   *  elapses and he scrambles back up to keep running (the prone timer in Player.step). */
+  private diveToGround(c: Player): void {
+    if (c.state !== "active" || c.animEvent !== null || c.diveTimer > 0) return;
+    c.diveTimer = 0.34;
+    c.animEvent = "dive";
+    const sp = Math.hypot(c.vel.x, c.vel.y);
+    const dx = sp > 20 ? c.vel.x / sp : Math.cos(c.facing);
+    const dy = sp > 20 ? c.vel.y / sp : Math.sin(c.facing);
+    c.vel.x += dx * 95; c.vel.y += dy * 95; // launch in the direction he's running
+    this.app.audio.juke();
+    this.app.particles.burst(c.pos.x, c.pos.y, "#cfe8d4", 7, 80);
+  }
+
+  /** Controlled-defender dive (action stick, flick up): a committed lunge-tackle when in range of the
+   *  carrier, otherwise a forward dive that lands him on the deck a beat. */
+  private defenderDive(c: Player): void {
+    if (c.diveTimer > 0 || c.state !== "active") return;
+    c.diveTimer = 0.3;
+    c.animEvent = "dive";
+    const inRange = this.defenderInTackleRange(c);
+    if (inRange) { c.bigHitArmed = true; c.leanTarget = 0.7; }
+    const burst = inRange ? 165 : 120;
+    c.vel.x += Math.cos(c.facing) * burst;
+    c.vel.y += Math.sin(c.facing) * burst;
+    this.app.particles.burst(c.pos.x, c.pos.y, "#dce6ff", 6, 80);
+    if (inRange) this.app.shake.add(0.12);
+  }
+
+  /** A dive-prone ball carrier is down the instant a defender touches him (the normal tackle engine
+   *  skips a down carrier, so this is what makes "down if touched while on the ground" real). */
+  private checkGroundedCarrier(): void {
+    const c = this.ball.carrier;
+    if (!c || this.phase !== "live" || this.pendingTackle || !c.groundDive) return;
+    if (this.nearestTackler(c, c.radius + 22)) {
+      this.endPlay("tackle", { x: c.pos.x, y: c.pos.y });
     }
   }
 
@@ -1085,177 +1092,6 @@ export class LivePlayState implements GameState {
       if (dd < bestD) { bestD = dd; best = d; }
     }
     return best;
-  }
-
-  /** Is `d` roughly in front of the carrier's run direction (within ~63°)? */
-  private isAhead(c: Player, d: Player): boolean {
-    const dx = d.pos.x - c.pos.x, dy = d.pos.y - c.pos.y, dl = Math.hypot(dx, dy) || 1;
-    return (Math.cos(c.facing) * dx + Math.sin(c.facing) * dy) / dl > 0.45;
-  }
-
-  /** Stiff-arm: fend off the defender squared up in front — he's shoved aside and stumbles while
-   * the carrier powers straight through with only a small loss of speed (no lateral curl, unlike a
-   * spin). Brief immunity makes the tackle engine whiff that man. */
-  private doStiffArm(c: Player, d: Player): void {
-    c.jukeTimer = 0.22;
-    const dx = d.pos.x - c.pos.x, dy = d.pos.y - c.pos.y, dl = Math.hypot(dx, dy) || 1;
-    d.vel.x += (dx / dl) * 150; d.vel.y += (dy / dl) * 150;
-    d.knockDown(0.55);
-    c.vel.x *= 0.92; c.vel.y *= 0.92;
-    const cross = Math.cos(c.facing) * (dy / dl) - Math.sin(c.facing) * (dx / dl);
-    c.leanTarget = -Math.sign(cross) || 1;
-    c.animEvent = "stiffArm";
-    this.app.audio.juke();
-    this.app.shake.add(0.12);
-    this.app.particles.burst(d.pos.x, d.pos.y, "#ffffff", 7, 95);
-    this.app.floating.add("STIFF ARM!", c.pos.x, c.pos.y - 24, { size: 18, color: "#cfe8d4", life: 0.8 });
-  }
-
-  /** Spin move: brief tackle-immunity + a burst that carries forward momentum through a 360°
-   * spin, curling slightly to the aim side so the carrier spins OFF the defender. */
-  private doSpin(c: Player): void {
-    c.jukeTimer = 0.5; // immunity through the spin (the first tackler whiffs)
-    const sp = Math.hypot(c.vel.x, c.vel.y);
-    // Burst along the current run direction (keep the forward progress of a real spin move).
-    if (sp > 30) {
-      c.vel.x += (c.vel.x / sp) * 75;
-      c.vel.y += (c.vel.y / sp) * 75;
-    } else {
-      c.vel.x += Math.cos(c.facing) * 60;
-      c.vel.y += Math.sin(c.facing) * 60;
-    }
-    // Curl off toward the stick.
-    const aim = this.stickToField();
-    const am = Math.hypot(aim.x, aim.y);
-    if (am > 0.3) {
-      c.vel.x += (aim.x / am) * 34;
-      c.vel.y += (aim.y / am) * 34;
-      c.leanTarget = Math.sign(c.vel.x * (aim.y / am) - c.vel.y * (aim.x / am)) || 1;
-    } else {
-      c.leanTarget = 1;
-    }
-    c.animEvent = "spin";
-    this.app.audio.juke();
-    this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 8, 90);
-  }
-
-  /**
-   * Timing window for a swipe move, judged against the nearest threatening defender. A flick thrown
-   * just as a defender closes into the sweet-spot distance (wider if he's committed to a dive/hit)
-   * is "perfect"; close-but-not-quite is "good"; open field (no one near) is "normal". This is the
-   * skill layer: read the defender and swipe on his commitment.
-   */
-  private swipeTiming(c: Player): { d: Player | null; q: "perfect" | "good" | "normal" } {
-    let best: Player | null = null;
-    let bestD = 95;
-    for (const d of this.defense) {
-      if (d.isDown) continue;
-      const dd = dist(d.pos, c.pos);
-      if (dd < bestD) { bestD = dd; best = d; }
-    }
-    if (!best) return { d: null, q: "normal" };
-    const committed = best.diveTimer > 0 || best.bigHitArmed; // reading his commit widens the window
-    const lo = committed ? 12 : 16;
-    const hi = committed ? 66 : 48;
-    if (bestD >= lo && bestD <= hi) return { d: best, q: "perfect" };
-    if (bestD <= 82) return { d: best, q: "good" };
-    return { d: best, q: "normal" };
-  }
-
-  /** Bowl a defender over: shove him off the carrier's line and put him on the ground. */
-  private truckOver(c: Player, d: Player, downSec: number, shove: number): void {
-    const dx = d.pos.x - c.pos.x, dy = d.pos.y - c.pos.y, dl = Math.hypot(dx, dy) || 1;
-    d.vel.x += (dx / dl) * shove;
-    d.vel.y += (dy / dl) * shove;
-    d.knockDown(downSec);
-  }
-
-  /** Swipe juke: a sharp sidestep in the flick direction, with tackle immunity scaled by timing —
-   *  a perfectly-timed cut leaves the closing defender grasping at air ("ANKLES!"). */
-  private doJuke(c: Player, fx: number, fy: number): void {
-    const { d, q } = this.swipeTiming(c);
-    c.leanTarget = Math.sign(Math.cos(c.facing) * fy - Math.sin(c.facing) * fx) || 1; // bank into the cut
-    c.animEvent = "juke";
-    this.app.audio.juke();
-    if (q === "perfect") {
-      c.vel.x += fx * 175; c.vel.y += fy * 175;
-      c.jukeTimer = 0.62; c.cutTimer = 0.6; // long immunity — he whiffs badly
-      if (d) d.enterStumble(0.5); // the defender stutters past
-      this.app.time.slow(0.5, 0.22); // a beat of slow-mo on the highlight cut
-      this.app.particles.burst(c.pos.x, c.pos.y, "#9fe0ff", 10, 110);
-      this.app.floating.add("ANKLES!", c.pos.x, c.pos.y - 26, { size: 20, color: "#9fe0ff", life: 0.9 });
-      this.igniteCheck(c.team, 0.22);
-    } else if (q === "good") {
-      c.vel.x += fx * 140; c.vel.y += fy * 140;
-      c.jukeTimer = 0.46; c.cutTimer = 0.45;
-      this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 7, 85);
-      this.app.floating.add("JUKE!", c.pos.x, c.pos.y - 24, { size: 18, color: "#cfe8d4", life: 0.7 });
-    } else {
-      c.vel.x += fx * 112; c.vel.y += fy * 112;
-      c.jukeTimer = 0.34; c.cutTimer = 0.38;
-      this.app.particles.burst(c.pos.x, c.pos.y, "#ffffff", 5, 75);
-      this.app.floating.add("JUKE!", c.pos.x, c.pos.y - 24, { size: 16, color: "#cfe8d4", life: 0.6 });
-    }
-  }
-
-  /** Swipe-forward truck: lower the head and run through the defender. Timed on his commitment it's a
-   *  devastating TRUCK STICK (flattens him + a second man, slow-mo, fire); mistimed you get stuffed. */
-  private doTruck(c: Player): void {
-    const tm = this.swipeTiming(c);
-    const target = tm.d && this.isAhead(c, tm.d) ? tm.d : null;
-    const q = target ? tm.q : "normal";
-    const sp = Math.hypot(c.vel.x, c.vel.y);
-    const fwx = sp > 30 ? c.vel.x / sp : Math.cos(c.facing);
-    const fwy = sp > 30 ? c.vel.y / sp : Math.sin(c.facing);
-    c.leanTarget = 0; // square + head down
-    c.animEvent = "stiffArm"; // head-down power move (no dedicated truck clip)
-
-    if (q === "perfect" && target) {
-      c.vel.x += fwx * 150; c.vel.y += fwy * 150; // blow clean through, keep your feet moving
-      c.jukeTimer = 0.55;
-      this.truckOver(c, target, 1.1, 320); // flatten him
-      // Gang truck: a second man crowding the hole gets bowled too.
-      let d2: Player | null = null, d2d = 48;
-      for (const dd of this.defense) {
-        if (dd === target || dd.isDown) continue;
-        const r = dist(dd.pos, c.pos);
-        if (r < d2d) { d2d = r; d2 = dd; }
-      }
-      if (d2) this.truckOver(c, d2, 0.7, 210);
-      this.app.audio.bigHit();
-      this.app.shake.add(0.34);
-      this.app.scene3d.hitZoom(0.5);
-      this.app.time.slow(0.45, 0.32); // hit-stop on the truck
-      this.app.particles.burst(target.pos.x, target.pos.y, "#ffd24a", 16, 150);
-      this.app.floating.add("TRUCK STICK!", c.pos.x, c.pos.y - 26, { size: 22, color: "#ffd24a", life: 1.0 });
-      this.igniteCheck(c.team, 0.34);
-    } else if (q === "good" && target) {
-      c.vel.x += fwx * 122; c.vel.y += fwy * 122;
-      c.jukeTimer = 0.42;
-      this.truckOver(c, target, 0.8, 240);
-      c.vel.x *= 0.9; c.vel.y *= 0.9;
-      this.app.audio.bigHit();
-      this.app.shake.add(0.22);
-      this.app.particles.burst(target.pos.x, target.pos.y, "#ffd24a", 11, 120);
-      this.app.floating.add("TRUCK!", c.pos.x, c.pos.y - 24, { size: 20, color: "#ffd24a", life: 0.85 });
-      this.igniteCheck(c.team, 0.14);
-    } else if (target) {
-      // Mistimed (swiped too early): you lower the head but don't square him up — bounce off and
-      // lose steam, no knockdown. Read his commitment next time.
-      c.vel.x += fwx * 70; c.vel.y += fwy * 70;
-      c.vel.x *= 0.68; c.vel.y *= 0.68;
-      c.jukeTimer = 0.16;
-      this.app.audio.hit(0.6);
-      this.app.shake.add(0.12);
-      this.app.floating.add("STUFFED!", c.pos.x, c.pos.y - 22, { size: 16, color: "#d9b38c", life: 0.7 });
-    } else {
-      // Open field: a head-down power burst with nobody to run over.
-      c.vel.x += fwx * 115; c.vel.y += fwy * 115;
-      c.jukeTimer = 0.3;
-      this.app.audio.juke();
-      this.app.particles.burst(c.pos.x, c.pos.y, "#ffe2a6", 7, 90);
-      this.app.floating.add("TRUCK!", c.pos.x, c.pos.y - 24, { size: 18, color: "#ffd24a", life: 0.7 });
-    }
   }
 
   /** Defender ACTION is contextual: unleash a committed BIG HIT when near the carrier,
@@ -1404,26 +1240,14 @@ export class LivePlayState implements GameState {
     return !!carrier && !carrier.isDown && dist(c.pos, carrier.pos) < DEF_TACKLE_RANGE;
   }
 
-  private startDive(c: Player): void {
-    c.diveTimer = 0.34;
-    c.animEvent = "dive"; // runner dive for the spot
-    c.vel.x += Math.cos(c.facing) * 85;
-    c.vel.y += Math.sin(c.facing) * 85;
-    this.app.particles.burst(c.pos.x, c.pos.y, "#cfe8d4", 6, 70);
-    // The dive ends the play shortly after, securing the spot (resolved in landDive).
-  }
-
-  /** A dive lunge has settled (diveTimer hit 0). The ball carrier is DOWN where he landed (he gave
-   *  himself up — end the play at the spot); anyone else (a defender who whiffed a dive-tackle) hits
-   *  the deck and lies prone a beat before scrambling back up. A tackle/ragdoll that already claimed
-   *  the player mid-dive leaves him non-active, so we don't double-resolve. */
+  /** A dive lunge has settled (diveTimer hit 0): the player hits the ground and lies prone. The ball
+   *  carrier stays down (groundDive) and is "down if touched" — he scrambles back up if no defender
+   *  reaches him; a defender who whiffed a dive-tackle just lies a shorter beat. A tackle/ragdoll that
+   *  already claimed the player mid-dive leaves him non-active, so we don't double-resolve. */
   private landDive(p: Player): void {
     if (p.state !== "active") return; // contact/tackle already took over
     const isCarrier = p === this.ball.carrier;
-    p.goProne(0.8); // hit the deck where the dive landed (lie, then auto-scramble up)
-    if (isCarrier && this.phase === "live" && !this.pendingTackle) {
-      this.endPlay("tackle", { x: p.pos.x, y: p.pos.y }); // down where he gave himself up
-    }
+    p.goProne(isCarrier ? 1.3 : 0.8, isCarrier); // prone; the carrier is vulnerable until he gets up
   }
 
   /** Switch to the defender best placed to make a play: nearest to the carrier, or to
@@ -2923,11 +2747,8 @@ export class LivePlayState implements GameState {
     if (this.humanIsOffense) {
       const c = this.controlled;
       if (c && this.canThrow(c)) return { action: { text: "PASS", icon: "pass", color: blue } };
-      if (c && this.ball.carrier === c) {
-        const d = this.nearestTackler(c, 72);
-        const text = d && this.isAhead(c, d) ? "STIFF ARM" : "SPIN";
-        return { action: { text, icon: "spin", color: green } };
-      }
+      // Carrier evasion (dive) lives on the right action stick now — the button has no carrier action.
+      if (c && this.ball.carrier === c) return { action: { text: "—", icon: "switch", color: grey } };
       if (this.ball.state === "inAir") return { action: { text: "CATCH", icon: "pass", color: green } };
       return { action: { text: "—", icon: "switch", color: grey } };
     }

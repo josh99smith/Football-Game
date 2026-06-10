@@ -120,6 +120,9 @@ export class Player {
   simIndex = 0;
   /** Active dive/lunge window (carrier dive or defender dive-tackle). */
   diveTimer = 0;
+  /** True while lying prone FROM a give-yourself-up dive (vs a normal tackle): the carrier is "down
+   *  if touched" in this state, and scrambles back up when the prone timer elapses if untouched. */
+  groundDive = false;
   /** This lunge is a committed BIG HIT (hit-stick): devastating on contact, a whiff if it misses. */
   bigHitArmed = false;
   /** Receiver just made a route break — burst open while the DB reacts late. */
@@ -205,8 +208,10 @@ export class Player {
       }
       // Timer elapsed: scramble back up and rejoin the play (clears loco.down so the avatar stands).
       // The ball carrier's tackle has already ended the play by now, so this only revives the
-      // knocked-down (blocked / whiffed-tackle / gang-tackle) players who were stuck lying there.
+      // knocked-down (blocked / whiffed-tackle / gang-tackle) players who were stuck lying there —
+      // and the dive-prone carrier who was never touched, who pops up and keeps running.
       this.state = "active";
+      this.groundDive = false;
     }
 
     if (this.state === "contact") {
@@ -350,10 +355,11 @@ export class Player {
 
   /** Hit the deck (whiffed dive / give-up): lie prone for `seconds`, decelerating to a stop, then
    *  auto-revive via the tackled timer in step(). No-op unless currently active. */
-  goProne(seconds: number): void {
+  goProne(seconds: number, fromDive = false): void {
     if (this.state !== "active") return;
     this.state = "tackled";
     this.tackledTimer = seconds;
+    this.groundDive = fromDive;
   }
 
   /** True while staggering from a glancing hit. */
