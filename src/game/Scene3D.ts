@@ -1236,6 +1236,16 @@ export class Scene3D {
   private readonly markerGlows: THREE.Mesh[] = [];
   private markerT = 0;
 
+  // --- sideline dressing: benches, coaches, and a chain gang that tracks the markers -------------
+  /** Per-side jersey materials for the benched players (recolored to the matchup in setFieldTeams). */
+  private readonly benchMatHome = new THREE.MeshStandardMaterial({ color: 0x2a4f8f, roughness: 0.85 });
+  private readonly benchMatAway = new THREE.MeshStandardMaterial({ color: 0x8f3030, roughness: 0.85 });
+  /** Bench/coach figures that idle-bob each frame. */
+  private readonly sidelineFigures: { o: THREE.Object3D; ph: number }[] = [];
+  private chainDown?: THREE.Object3D; // down marker (rides the LOS)
+  private chainFirst?: THREE.Object3D; // first-down marker (rides the first-down line)
+  private chainLink?: THREE.Mesh; // the chain stretched between them
+
   private width = 1;
   private height = 1;
   private ballRoll = 0;
@@ -1300,6 +1310,7 @@ export class Scene3D {
 
     this.buildField(field);
     this.buildStadium();
+    this.buildSidelines();
     this.buildFloodlights();
     this.buildAtmosphere();
 
@@ -1425,6 +1436,9 @@ export class Scene3D {
     });
     this.fieldRef.drawTexture(this.fieldCtx, brand(home), brand(away));
     this.fieldTex.needsUpdate = true;
+    // Dress the benches in the matchup's colors.
+    this.benchMatHome.color.set(home.colors.jersey);
+    this.benchMatAway.color.set(away.colors.jersey);
   }
 
   private buildField(field: Field): void {
@@ -1457,6 +1471,71 @@ export class Scene3D {
     apron.position.set(FIELD_LEN_U / 2, -0.05, FIELD_WID_U / 2);
     apron.receiveShadow = true;
     this.scene.add(apron);
+  }
+
+  /** Dress the sidelines: a bench of players + coaches on each side, and a chain gang (down marker +
+   *  first-down marker joined by a chain) on the home sideline that rides the LOS / first-down line.
+   *  All low-poly, no shadow casting (decoration), with a gentle idle bob applied each frame. */
+  private buildSidelines(): void {
+    const legGeo = new THREE.BoxGeometry(0.5, 0.85, 0.34);
+    const torsoGeo = new THREE.BoxGeometry(0.62, 0.8, 0.4);
+    const headGeo = new THREE.SphereGeometry(0.23, 8, 6);
+    const pants = new THREE.MeshStandardMaterial({ color: 0x1b1b1f, roughness: 0.9 });
+    const skinMats = [0xf0c9a0, 0xe0aa78, 0xc98e5e, 0x9c6b43, 0x7a4f30].map(
+      (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.75 }),
+    );
+    const figure = (jersey: THREE.Material, scale: number): THREE.Group => {
+      const g = new THREE.Group();
+      const legs = new THREE.Mesh(legGeo, pants); legs.position.y = 0.42;
+      const torso = new THREE.Mesh(torsoGeo, jersey); torso.position.y = 1.12;
+      const head = new THREE.Mesh(headGeo, skinMats[(Math.random() * skinMats.length) | 0]); head.position.y = 1.66;
+      g.add(legs, torso, head);
+      g.scale.setScalar(scale);
+      return g;
+    };
+    const coachMat = new THREE.MeshStandardMaterial({ color: 0x2a2e33, roughness: 0.95 });
+
+    // A bench of players + two coaches on each sideline, between the field and the stands (z = ±4).
+    for (const side of [-1, 1] as const) {
+      const jersey = side < 0 ? this.benchMatHome : this.benchMatAway;
+      const baseZ = side < 0 ? -2.6 : FIELD_WID_U + 2.6;
+      const faceY = side < 0 ? 0 : Math.PI;
+      const x0 = FIELD_LEN_U * 0.32, x1 = FIELD_LEN_U * 0.68, n = 14;
+      for (let i = 0; i < n; i++) {
+        const o = figure(jersey, 0.94 + Math.random() * 0.12);
+        o.position.set(x0 + (x1 - x0) * (i / (n - 1)) + (Math.random() * 0.5 - 0.25), 0, baseZ + (Math.random() * 0.7 - 0.35));
+        o.rotation.y = faceY;
+        this.scene.add(o);
+        this.sidelineFigures.push({ o, ph: Math.random() });
+      }
+      for (const cx of [FIELD_LEN_U * 0.44, FIELD_LEN_U * 0.56]) {
+        const o = figure(coachMat, 1.06);
+        o.position.set(cx, 0, side < 0 ? -1.7 : FIELD_WID_U + 1.7);
+        o.rotation.y = faceY;
+        this.scene.add(o);
+        this.sidelineFigures.push({ o, ph: Math.random() });
+      }
+    }
+
+    // Chain gang on the home sideline (z just outside the field): two pole markers + a chain.
+    const crewMat = new THREE.MeshStandardMaterial({ color: 0xdedede, roughness: 0.9 });
+    const marker = (poleMat: THREE.Material): THREE.Group => {
+      const g = new THREE.Group();
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.3, 6), poleMat); pole.position.y = 1.15;
+      const sign = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.46, 0.08), poleMat); sign.position.y = 2.2;
+      const crew = figure(crewMat, 0.95); crew.position.set(0.45, 0, 0); crew.rotation.y = 0;
+      g.add(pole, sign, crew);
+      g.position.z = -0.7;
+      return g;
+    };
+    this.chainDown = marker(new THREE.MeshStandardMaterial({ color: 0xff7a1e, roughness: 0.55, emissive: 0x3a1800 }));
+    this.chainFirst = marker(new THREE.MeshStandardMaterial({ color: 0xffe24a, roughness: 0.55, emissive: 0x3a3000 }));
+    this.chainLink = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 0.04, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0xffb84a, roughness: 0.5, emissive: 0x221400 }),
+    );
+    this.chainLink.position.set(0, 0.85, -0.7);
+    this.scene.add(this.chainDown, this.chainFirst, this.chainLink);
   }
 
   private buildStadium(): void {
@@ -1975,6 +2054,19 @@ export class Scene3D {
     const pulse = 0.7 + 0.3 * Math.sin(this.markerT * 3.5);
     for (const g of this.markerGlows) {
       (g.material as THREE.MeshBasicMaterial).opacity = (g.userData.baseOpacity as number) * pulse;
+    }
+
+    // Chain gang rides the LOS / first-down line; the chain stretches between them.
+    if (this.chainDown && this.chainFirst && this.chainLink) {
+      const losU = opts.losX * U, fdU = opts.firstDownX * U;
+      this.chainDown.position.x = losU;
+      this.chainFirst.position.x = fdU;
+      this.chainLink.position.x = (losU + fdU) / 2;
+      this.chainLink.scale.x = Math.max(0.1, Math.abs(fdU - losU));
+    }
+    // Idle bob for the benched players + coaches (gives the sideline life).
+    for (const f of this.sidelineFigures) {
+      f.o.position.y = Math.abs(Math.sin((this.markerT * 1.5 + f.ph) * Math.PI)) * 0.05;
     }
 
     // Smooth camera follow (per-tick); the final placement is interpolated in render().
