@@ -699,10 +699,15 @@ const bake = (() => {
 
 const texData = new Uint8Array(AW * AH * 4);
 const texCovered = new Uint8Array(AW * AH);
-const classify = (r, g, b) => {
+const classify = (r, g, b, x, y, z) => {
   const [h, s, l] = rgbToHsl(r, g, b);
   if (h >= 8 && h <= 52 && l > 0.1 && l < 0.8 && (s > 0.62 || (s > 0.42 && l < 0.45))) return MASK_PRIMARY;
   if (s > 0.12 && l < 0.68 && h >= 180 && h <= 270) return MASK_SECONDARY;
+  // The BACK of the helmet has a white trim band + light panel that reads as a FACEMASK at
+  // gameplay distance — players look like they're running backwards. Fold the helmet-back
+  // whites into the uniform-base class so they take the team color; the real (gray, front)
+  // facemask stays "keep", which makes the true front unambiguous.
+  if (y > 0.13 && z < 0.0 && l > 0.5 && s < 0.4) return MASK_SECONDARY;
   return MASK_KEEP;
 };
 for (let t = 0; t < fIdx.length; t += 3) {
@@ -734,7 +739,7 @@ for (let t = 0; t < fIdx.length; t += 3) {
       texData[o] = Math.round(rgb[0] * 255);
       texData[o + 1] = Math.round(rgb[1] * 255);
       texData[o + 2] = Math.round(rgb[2] * 255);
-      const m = classify(rgb[0], rgb[1], rgb[2]);
+      const m = classify(rgb[0], rgb[1], rgb[2], x, y, z);
       texData[o + 3] = m === MASK_PRIMARY ? 170 : m === MASK_SECONDARY ? 85 : 255;
       texCovered[py * AW + px] = 1;
     }
