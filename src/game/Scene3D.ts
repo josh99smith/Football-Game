@@ -620,6 +620,46 @@ function blendW(a: THREE.AnimationAction | null, target: number, dt: number): vo
   a.setEffectiveWeight(moveToward(a.getEffectiveWeight(), target, dt / 0.16));
 }
 
+// --- Photo-scan team colorways ------------------------------------------------------------------
+// The scanned player model is vertex-colored (no texture): COLOR_0 carries RGBA8 where rgb is the
+// baked photogrammetry color and ALPHA is a recolor mask authored by tools/build-player-asset.mjs
+// (255 = keep — skin/pants/whites; ~170 = the warm trim class; ~85 = the navy uniform-base class).
+// A team's colorway substitutes the two uniform classes with the team jersey/accent hues while
+// preserving the baked luminance (shading/wrinkles survive). One recolored geometry is cached per
+// colorway and shared by every avatar on that team.
+const scanGeomCache = new Map<string, THREE.BufferGeometry>();
+function scanTeamGeometry(base: THREE.BufferGeometry, jersey: number, accent: number): THREE.BufferGeometry {
+  const key = `${base.uuid}-${jersey.toString(16)}-${accent.toString(16)}`;
+  const hit = scanGeomCache.get(key);
+  if (hit) return hit;
+  const g = base.clone();
+  const attr = g.getAttribute("color") as THREE.BufferAttribute;
+  const jc = new THREE.Color(jersey);
+  const ac = new THREE.Color(accent);
+  // Baseline luminance of each class in the source scan — the per-vertex luminance ratio
+  // against this carries the baked shading onto the substituted hue. Everything here is
+  // LINEAR-space: COLOR_0 ships linear (per glTF), and THREE.Color(hex) decodes the team's
+  // sRGB hex into the linear working space under default color management.
+  const NAVY_LUM = 0.04, WARM_LUM = 0.21;
+  const out = new Float32Array(attr.count * 4);
+  for (let i = 0; i < attr.count; i++) {
+    // The getters denormalize, so this is agnostic to the attribute's storage width.
+    const r = attr.getX(i), gg = attr.getY(i), b = attr.getZ(i), a = attr.getW(i);
+    out[i * 4] = r; out[i * 4 + 1] = gg; out[i * 4 + 2] = b; out[i * 4 + 3] = a;
+    if (a > 0.8) continue; // keep class — skin, whites, pants
+    const lum = 0.299 * r + 0.587 * gg + 0.114 * b;
+    const warm = a > 0.45; // ~0.67 = warm trim class, ~0.33 = navy uniform-base class
+    const team = warm ? ac : jc;
+    const s = Math.min(warm ? 2.0 : 2.2, Math.max(0.25, lum / (warm ? WARM_LUM : NAVY_LUM)));
+    out[i * 4] = Math.min(1, team.r * s);
+    out[i * 4 + 1] = Math.min(1, team.g * s);
+    out[i * 4 + 2] = Math.min(1, team.b * s);
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(out, 4));
+  scanGeomCache.set(key, g);
+  return g;
+}
+
 /** A skinned, animated player using the rigged model's own textured uniform. */
 class FbxAvatar implements Avatar {
   readonly group = new THREE.Group();
@@ -667,6 +707,15 @@ class FbxAvatar implements Avatar {
   private readonly helmetMats: THREE.MeshStandardMaterial[] = [];
   /** Face/arms material(s) — held at a neutral skin tone. */
   private readonly skinMats: THREE.MeshStandardMaterial[] = [];
+  /** The photo-scan mesh + material (vertex-colored): team colors come from a palette-swapped
+   *  COLOR_0 attribute (see scanTeamGeometry), not from a painted texture. */
+  private readonly scanMeshes: THREE.Mesh[] = [];
+  private readonly scanMats: THREE.MeshStandardMaterial[] = [];
+  /** Each scan mesh's PRISTINE geometry (colorway swaps replace mesh.geometry with a cached
+   *  recolored clone, so the original must be kept to derive future colorways from). */
+  private readonly scanBase: THREE.BufferGeometry[] = [];
+  /** Cache key of the scan colorway currently applied. */
+  private scanKey = "";
   /** Cache key of the jersey texture currently applied, so we only swap it when it changes. */
   private jerseyKey = "";
   /** Skin tone currently applied to the face/arms, so we only re-tint when the player changes. */
@@ -742,11 +791,14 @@ class FbxAvatar implements Avatar {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       m.castShadow = true;
-      const isJersey = /body/i.test(m.name);
-      const isHelmet = /helmet/i.test(m.name);
+      const isScan = /scan/i.test(m.name);
+      const isJersey = !isScan && /body/i.test(m.name);
+      const isHelmet = !isScan && /helmet/i.test(m.name);
+      if (isScan) { this.scanMeshes.push(m); this.scanBase.push(m.geometry as THREE.BufferGeometry); }
       const apply = (mat: THREE.Material): THREE.Material => {
         const clone = mat.clone() as THREE.MeshStandardMaterial;
-        if (isJersey) this.jerseyMats.push(clone);
+        if (isScan) this.scanMats.push(clone);
+        else if (isJersey) this.jerseyMats.push(clone);
         else if (isHelmet) this.helmetMats.push(clone);
         else { clone.color.setHex(SKIN); this.skinMats.push(clone); }
         return clone;
@@ -754,8 +806,9 @@ class FbxAvatar implements Avatar {
       m.material = Array.isArray(m.material) ? m.material.map(apply) : apply(m.material);
     });
     // Fallback: if mesh names didn't separate cleanly, treat everything as jersey so the team
-    // color still applies (better a flat-tinted player than an untinted gray one).
-    if (this.jerseyMats.length === 0) {
+    // color still applies (better a flat-tinted player than an untinted gray one). A scan model
+    // keeps its own baked colors, so it never wants the jersey treatment.
+    if (this.jerseyMats.length === 0 && this.scanMats.length === 0) {
       inner.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh && !Array.isArray(m.material)) this.jerseyMats.push(m.material as THREE.MeshStandardMaterial);
@@ -787,13 +840,14 @@ class FbxAvatar implements Avatar {
     for (const clip of [clips.getup, clips.getupB, clips.getupC]) {
       if (clip) this.getupPool.push({ action: this.mixer.clipAction(clip), startY: 0 });
     }
-    // Each celebration with its slice point (the sports takes are 20-32s; the swing is buried inside).
+    // Each celebration with its slice point (the new pack's takes are purpose-cut, so they all
+    // start at 0: hip-hop dance, breakdance freeze, sit-down thumbs-up, sitting laugh).
     const ca = (c: THREE.AnimationClip | null) => (c ? this.mixer.clipAction(c) : null);
     this.celebVariants = ([
       [this.celebrateAction, 0],
-      [ca(clips.celebGolf), 4.0],
-      [ca(clips.celebBat), 13.0],
-      [ca(clips.celebTennis), 5.0],
+      [ca(clips.celebGolf), 0],
+      [ca(clips.celebBat), 0],
+      [ca(clips.celebTennis), 0],
     ] as [THREE.AnimationAction | null, number][])
       .filter((x): x is [THREE.AnimationAction, number] => x[0] != null)
       .map(([a, s]) => ({ a, s }));
@@ -978,6 +1032,7 @@ class FbxAvatar implements Avatar {
     for (const m of this.jerseyMats) m.dispose();
     for (const m of this.helmetMats) m.dispose();
     for (const m of this.skinMats) m.dispose();
+    for (const m of this.scanMats) m.dispose();
     (this.ring.material as THREE.Material).dispose();
     (this.chevron.material as THREE.Material).dispose();
     (this.nub.material as THREE.Material).dispose();
@@ -1562,6 +1617,19 @@ class FbxAvatar implements Avatar {
     // NOTE: the mixer is advanced in present() at the display's refresh rate (not here at the fixed
     // 60Hz sim rate) so the skinned animation is smooth on high-refresh screens — see present().
 
+    // Scan model: swap in the team's colorway geometry (vertex-color palette swap, cached per
+    // team) and let ON FIRE glow through the material emissive.
+    if (this.scanMeshes.length > 0) {
+      const skey = `${jersey.toString(16)}-${accent.toString(16)}`;
+      if (skey !== this.scanKey) {
+        this.scanKey = skey;
+        this.scanMeshes.forEach((m, i) => { m.geometry = scanTeamGeometry(this.scanBase[i], jersey, accent); });
+      }
+      for (const m of this.scanMats) {
+        m.color.setHex(0xffffff);
+        m.emissive.setHex(onFire ? 0x5a1e08 : 0x000000);
+      }
+    }
     // Paint the team jersey skin onto the body mesh (cached per team-colors + number), keep the
     // helmet on the dark trim color. The jersey color lives in the texture, so the material color
     // stays white (a non-white color would multiply/darken the printed numbers and stripes).

@@ -1,19 +1,22 @@
 /**
- * Underground / hardcore visual theme: a gritty palette, condensed display fonts,
- * and procedurally-generated grunge graphics (concrete, film grain, scanlines, a
- * distressed skull emblem). Everything is drawn to canvas — no external image assets —
- * so it stays self-contained and themable from one place.
+ * BOBBLE BOWL visual theme: still gritty street-arcade (concrete, film grain, scanlines,
+ * the distressed emblem), but keyed to the brand's orange-and-navy — the colors of the
+ * scanned bobblehead player's uniform. Everything is drawn to canvas — no external image
+ * assets — so it stays self-contained and themable from one place.
+ *
+ * NOTE: the accent keys keep their legacy "blood" names (dozens of call sites) but now hold
+ * the brand ORANGE.
  */
 
 export const COLORS = {
-  bg0: "#08080a", // deepest black
-  bg1: "#141318", // charcoal
-  panel: "#16151b", // panel fill
-  concrete: "#23222a", // asphalt grey
-  concreteHi: "#3a3942",
-  blood: "#b3121f", // blood red (primary accent)
-  bloodBright: "#e11d2b",
-  bloodDeep: "#6e0b13",
+  bg0: "#070910", // deepest navy-black
+  bg1: "#11141f", // dark navy charcoal
+  panel: "#131626", // panel fill
+  concrete: "#222637", // asphalt grey-blue
+  concreteHi: "#383d52",
+  blood: "#d9560f", // brand orange (primary accent)
+  bloodBright: "#ff7a1f",
+  bloodDeep: "#7e3406",
   steel: "#7b8694", // cold steel
   ash: "#8b9099", // muted text
   bone: "#ece6d8", // bone white (primary text)

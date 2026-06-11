@@ -1,13 +1,14 @@
 {
-  "name": "gridiron-blitz",
-  "version": "0.1.0",
-  "description": "Gridiron Blitz — a mobile-first arcade American football game (NFL Blitz-style) built with HTML5 Canvas + TypeScript.",
+  "name": "bobble-bowl",
+  "version": "0.2.0",
+  "description": "Bobble Bowl — bighead arcade American football (NFL Blitz-style) starring a rigged photo-scanned player, built with Three.js + TypeScript.",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:player": "node tools/build-player-asset.mjs"
   },
   "keywords": [
     "game",
@@ -20,6 +21,8 @@
   "license": "MIT",
   "devDependencies": {
     "@types/three": "^0.169.0",
+    "jpeg-js": "^0.4.4",
+    "meshoptimizer": "^1.1.1",
     "typescript": "^5.5.4",
     "vite": "^5.4.2"
   },

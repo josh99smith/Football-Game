@@ -84,7 +84,7 @@ export class MatchupIntroState implements GameState {
     const cx = r.width / 2;
     const titleY = Math.max(28, r.height * 0.1);
     hazardStripe(ctx, cx - r.width * 0.32, titleY + 14, r.width * 0.64, 8);
-    r.text("GRIDIRON BLITZ", cx, titleY, { size: 22, align: "center", color: COLORS.bone, font: FONT.display });
+    r.text("BOBBLE BOWL", cx, titleY, { size: 22, align: "center", color: COLORS.bone, font: FONT.display });
 
     // Matchup lower-third: crests slide in from the sides and the names fade up.
     const home = m.home, away = m.away;
