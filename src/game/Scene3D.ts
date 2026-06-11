@@ -645,14 +645,17 @@ function scanTeamTexture(base: THREE.Texture, jersey: number, accent: number): T
   const jr = (jersey >> 16) & 255, jg = (jersey >> 8) & 255, jb = jersey & 255;
   const ar = (accent >> 16) & 255, ag = (accent >> 8) & 255, ab = accent & 255;
   // Baseline luminance of each class in the source scan — the per-texel luminance ratio against
-  // this carries the baked shading onto the substituted hue.
+  // this carries the baked shading onto the substituted hue. The square root COMPRESSES the
+  // shading band: a raw ratio (clamped at 2x+) turns any leftover bright flecks in the scan into
+  // marble streaks, especially on light kits (the away whites); compressed, the uniform reads as
+  // one solid color with soft wrinkle shading.
   const NAVY_LUM = 0.22, WARM_LUM = 0.5;
   for (let i = 0; i < d.length; i += 4) {
     const a = d[i + 3];
     if (a > 200) { d[i + 3] = 255; continue; } // keep class — skin, whites, pants
     const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
     const warm = a > 120; // ~170 = warm trim class, ~85 = navy uniform-base class
-    const s = Math.min(warm ? 2.0 : 2.2, Math.max(0.25, lum / (warm ? WARM_LUM : NAVY_LUM)));
+    const s = Math.min(1.45, Math.max(0.55, Math.sqrt(lum / (warm ? WARM_LUM : NAVY_LUM))));
     d[i] = Math.min(255, (warm ? ar : jr) * s);
     d[i + 1] = Math.min(255, (warm ? ag : jg) * s);
     d[i + 2] = Math.min(255, (warm ? ab : jb) * s);
