@@ -3,17 +3,20 @@
  * per-chart texture atlas) + a Mixamo animation FBX (whose skeleton Mixamo already auto-fitted to
  * this scan) into a game-ready rigged player model:
  *
- *   1. dequantize + position-weld the scan (the atlas's thousands of UV charts otherwise lock
- *      every edge against simplification),
- *   2. bake the texture into per-vertex colors (the atlas can't survive decimation; vertex color
- *      at this density reads great at gameplay camera distance and drops the texture entirely),
- *   3. meshopt-simplify to a mobile budget,
- *   4. classify each vertex into a team-recolor mask (primary uniform color / secondary / keep),
- *      stored in COLOR_0.alpha so the game can palette-swap uniforms per team at load,
- *   5. auto-skin the mesh to the Mixamo skeleton extracted from the Idle FBX (bone-segment
+ *   1. dequantize + position-weld the scan and sample its texture per source vertex (inset from
+ *      the chart borders, which run exactly through the vertices),
+ *   2. VOXEL-REMESH: the scan is a noisy double-layered shell that locks up edge-collapse
+ *      simplifiers — solidify it (occupancy grid → close → outside flood → cuberille → Taubin)
+ *      into one clean manifold surface,
+ *   3. meshopt-simplify to a mobile budget (clean input reaches the target directly),
+ *   4. unwrap with xatlas and RE-BAKE a clean texture atlas by sampling the dense source point
+ *      cloud with per-channel medians (rejects the source atlas's chart-bleed outliers),
+ *   5. classify each texel into a team-recolor mask (warm trim / uniform base / keep), stored in
+ *      the atlas's ALPHA channel so the game can palette-swap uniforms per team at load,
+ *   6. auto-skin the mesh to the Mixamo skeleton extracted from the Idle FBX (bone-segment
  *      distance weights + Laplacian smoothing — the skeleton is already scaled/posed to the scan),
- *   6. bake the Idle clip into the GLB (the game expects the model file to supply its idle), and
- *   7. write a single self-contained player.glb.
+ *   7. bake the Idle clip into the GLB (the game expects the model file to supply its idle), and
+ *   8. write a single self-contained player.glb.
  *
  * Usage: node tools/build-player-asset.mjs <scan.glb> <Idle.fbx> <out.glb>
  * Debug dumps (QC plots) land in /tmp/rigqc when --qc is passed.
@@ -24,6 +27,8 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { MeshoptSimplifier } from "meshoptimizer";
 import jpeg from "jpeg-js";
+import * as watlas from "watlas";
+import { PNG } from "pngjs";
 
 const [, , scanPath, idlePath, outPath] = process.argv;
 const QC = process.argv.includes("--qc");
@@ -119,20 +124,43 @@ console.log(`  ${nSrc} verts, ${srcIdx.length / 3} tris`);
 console.log("— baking texture to vertex colors");
 const imgBv = gj.bufferViews[gj.images[0].bufferView];
 const img = jpeg.decode(gbin.subarray(imgBv.byteOffset || 0, (imgBv.byteOffset || 0) + imgBv.byteLength), { useTArray: true });
+// This scan's converter kept FBX-style bottom-left-origin UVs (verified by edge-color
+// coherence: flipped V is 1.5x more coherent than every other axis transform), so flip V when
+// sampling the decoded rows. And because the atlas is thousands of tiny charts whose BORDERS run
+// exactly through the vertices, don't sample at the vertex UV (it bleeds the neighboring chart):
+// sample each triangle corner inset toward the triangle's UV centroid, and average a vertex's
+// color over its incident triangles.
 const srcCol = new Float32Array(nSrc * 3);
-for (let i = 0; i < nSrc; i++) {
-  // This scan's converter kept FBX-style bottom-left-origin UVs (verified by edge-color
-  // coherence: flipped V is 1.5x more coherent), so flip V when sampling the decoded rows.
-  const u = srcUv[i * 2] * (img.width - 1);
-  const vv = (1 - srcUv[i * 2 + 1]) * (img.height - 1);
-  const x0 = Math.max(0, Math.min(img.width - 2, Math.floor(u)));
-  const y0 = Math.max(0, Math.min(img.height - 2, Math.floor(vv)));
-  const fx = u - x0, fy = vv - y0;
-  for (let c = 0; c < 3; c++) {
-    const s = (x, y) => img.data[(y * img.width + x) * 4 + c] / 255;
-    srcCol[i * 3 + c] =
-      s(x0, y0) * (1 - fx) * (1 - fy) + s(x0 + 1, y0) * fx * (1 - fy) +
-      s(x0, y0 + 1) * (1 - fx) * fy + s(x0 + 1, y0 + 1) * fx * fy;
+{
+  const sample = (u, v, out) => {
+    const su = u * (img.width - 1);
+    const sv = (1 - v) * (img.height - 1);
+    const x0 = Math.max(0, Math.min(img.width - 2, Math.floor(su)));
+    const y0 = Math.max(0, Math.min(img.height - 2, Math.floor(sv)));
+    const fx = su - x0, fy = sv - y0;
+    for (let c = 0; c < 3; c++) {
+      const s = (x, y) => img.data[(y * img.width + x) * 4 + c];
+      out[c] = s(x0, y0) * (1 - fx) * (1 - fy) + s(x0 + 1, y0) * fx * (1 - fy) +
+        s(x0, y0 + 1) * (1 - fx) * fy + s(x0 + 1, y0 + 1) * fx * fy;
+    }
+  };
+  const accum = new Float32Array(nSrc * 4);
+  const rgb = [0, 0, 0];
+  const INSET = 0.4; // 0 = at the corner (chart border), 1 = at the centroid
+  for (let t = 0; t < srcIdx.length; t += 3) {
+    const ia = srcIdx[t], ib = srcIdx[t + 1], ic = srcIdx[t + 2];
+    const cu = (srcUv[ia * 2] + srcUv[ib * 2] + srcUv[ic * 2]) / 3;
+    const cv = (srcUv[ia * 2 + 1] + srcUv[ib * 2 + 1] + srcUv[ic * 2 + 1]) / 3;
+    for (const vi of [ia, ib, ic]) {
+      sample(srcUv[vi * 2] * (1 - INSET) + cu * INSET, srcUv[vi * 2 + 1] * (1 - INSET) + cv * INSET, rgb);
+      accum[vi * 4] += rgb[0]; accum[vi * 4 + 1] += rgb[1]; accum[vi * 4 + 2] += rgb[2]; accum[vi * 4 + 3]++;
+    }
+  }
+  for (let i = 0; i < nSrc; i++) {
+    const n = accum[i * 4 + 3] || 1;
+    srcCol[i * 3] = accum[i * 4] / n / 255;
+    srcCol[i * 3 + 1] = accum[i * 4 + 1] / n / 255;
+    srcCol[i * 3 + 2] = accum[i * 4 + 2] / n / 255;
   }
 }
 
@@ -164,52 +192,259 @@ const weldIdx = new Uint32Array(srcIdx.length);
 for (let i = 0; i < srcIdx.length; i++) weldIdx[i] = canon[srcIdx[i]];
 
 // ---------------------------------------------------------------------------------------------
-// Simplify
+// Voxel remesh. The scan is a noisy DOUBLE-LAYERED shell (inner+outer surface ~1-2 mm apart)
+// full of non-manifold junk — edge-collapse simplifiers lock up on it and cluster simplifiers
+// merge the layers into fin soup. Solidify it instead: occupancy grid from the dense point
+// cloud → morphological close → flood-fill the outside → boundary surface (cuberille) → Taubin
+// smooth → clean manifold mesh that simplifies and unwraps perfectly.
+// ---------------------------------------------------------------------------------------------
+console.log("— voxel remeshing");
+const VOX = 0.004;
+let pos, idx, nOut;
+{
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < nSrc; i++) {
+    minX = Math.min(minX, srcPos[i * 3]); maxX = Math.max(maxX, srcPos[i * 3]);
+    minY = Math.min(minY, srcPos[i * 3 + 1]); maxY = Math.max(maxY, srcPos[i * 3 + 1]);
+    minZ = Math.min(minZ, srcPos[i * 3 + 2]); maxZ = Math.max(maxZ, srcPos[i * 3 + 2]);
+  }
+  const M = 3; // margin cells
+  const nx = Math.ceil((maxX - minX) / VOX) + 2 * M;
+  const ny = Math.ceil((maxY - minY) / VOX) + 2 * M;
+  const nz = Math.ceil((maxZ - minZ) / VOX) + 2 * M;
+  const N = nx * ny * nz;
+  const at = (x, y, z) => (z * ny + y) * nx + x;
+  const occ = new Uint8Array(N);
+  for (let i = 0; i < nSrc; i++) {
+    const x = Math.floor((srcPos[i * 3] - minX) / VOX) + M;
+    const y = Math.floor((srcPos[i * 3 + 1] - minY) / VOX) + M;
+    const z = Math.floor((srcPos[i * 3 + 2] - minZ) / VOX) + M;
+    occ[at(x, y, z)] = 1;
+  }
+  // Dilate once (26-neighborhood) to seal pinholes before the outside flood.
+  const dil = new Uint8Array(occ);
+  for (let z = 1; z < nz - 1; z++) for (let y = 1; y < ny - 1; y++) for (let x = 1; x < nx - 1; x++) {
+    if (!occ[at(x, y, z)]) continue;
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) dil[at(x + dx, y + dy, z + dz)] = 1;
+  }
+  // BFS flood from a corner: everything reachable through empty cells is OUTSIDE.
+  const outside = new Uint8Array(N);
+  const queue = new Int32Array(N);
+  let qh = 0, qt = 0;
+  queue[qt++] = at(0, 0, 0);
+  outside[at(0, 0, 0)] = 1;
+  while (qh < qt) {
+    const c = queue[qh++];
+    const cz = (c / (nx * ny)) | 0, cy = ((c / nx) | 0) % ny, cx = c % nx;
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const x = cx + dx, y = cy + dy, z = cz + dz;
+      if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) continue;
+      const q = at(x, y, z);
+      if (outside[q] || dil[q]) continue;
+      outside[q] = 1;
+      queue[qt++] = q;
+    }
+  }
+  // Solid = not outside; erode once (6-conn) to undo the dilation's thickening.
+  const solid = new Uint8Array(N);
+  for (let i = 0; i < N; i++) solid[i] = outside[i] ? 0 : 1;
+  const eroded = new Uint8Array(solid);
+  for (let z = 1; z < nz - 1; z++) for (let y = 1; y < ny - 1; y++) for (let x = 1; x < nx - 1; x++) {
+    const c = at(x, y, z);
+    if (!solid[c]) continue;
+    if (!solid[at(x + 1, y, z)] || !solid[at(x - 1, y, z)] || !solid[at(x, y + 1, z)] || !solid[at(x, y - 1, z)] || !solid[at(x, y, z + 1)] || !solid[at(x, y, z - 1)]) eroded[c] = 0;
+  }
+  // Cuberille extraction: a quad (two tris) per face between solid and empty, lattice verts shared.
+  const vmap = new Map();
+  const verts = [];
+  const vid = (x, y, z) => {
+    const k = (z * (ny + 1) + y) * (nx + 1) + x;
+    let v = vmap.get(k);
+    if (v === undefined) {
+      v = verts.length / 3;
+      vmap.set(k, v);
+      verts.push(minX + (x - M) * VOX, minY + (y - M) * VOX, minZ + (z - M) * VOX);
+    }
+    return v;
+  };
+  const tris = [];
+  const FACES = [
+    [[1, 0, 0], [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]]],
+    [[-1, 0, 0], [[0, 0, 1], [0, 1, 1], [0, 1, 0], [0, 0, 0]]],
+    [[0, 1, 0], [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]]],
+    [[0, -1, 0], [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]]],
+    [[0, 0, 1], [[1, 0, 1], [1, 1, 1], [0, 1, 1], [0, 0, 1]]],
+    [[0, 0, -1], [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]]],
+  ];
+  for (let z = 1; z < nz - 1; z++) for (let y = 1; y < ny - 1; y++) for (let x = 1; x < nx - 1; x++) {
+    if (!eroded[at(x, y, z)]) continue;
+    for (const [[dx, dy, dz], corners] of FACES) {
+      if (eroded[at(x + dx, y + dy, z + dz)]) continue;
+      const q = corners.map(([cx, cy, cz]) => vid(x + cx, y + cy, z + cz));
+      tris.push(q[0], q[1], q[2], q[0], q[2], q[3]);
+    }
+  }
+  pos = Float32Array.from(verts);
+  idx = Uint32Array.from(tris);
+  nOut = pos.length / 3;
+  console.log(`  grid ${nx}x${ny}x${nz}, surface: ${nOut} verts, ${idx.length / 3} tris`);
+
+  // Heavy Taubin smoothing melts the voxel staircase into the scan's true surface.
+  const nbr = Array.from({ length: nOut }, () => new Set());
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t], b = idx[t + 1], c = idx[t + 2];
+    nbr[a].add(b); nbr[a].add(c); nbr[b].add(a); nbr[b].add(c); nbr[c].add(a); nbr[c].add(b);
+  }
+  const vadj = nbr.map((s) => Uint32Array.from(s));
+  const taubin = (lambda) => {
+    const next = new Float32Array(pos);
+    for (let i = 0; i < nOut; i++) {
+      const an = vadj[i];
+      if (an.length === 0) continue;
+      let x = 0, y = 0, z = 0;
+      for (const j of an) { x += pos[j * 3]; y += pos[j * 3 + 1]; z += pos[j * 3 + 2]; }
+      next[i * 3] = pos[i * 3] + lambda * (x / an.length - pos[i * 3]);
+      next[i * 3 + 1] = pos[i * 3 + 1] + lambda * (y / an.length - pos[i * 3 + 1]);
+      next[i * 3 + 2] = pos[i * 3 + 2] + lambda * (z / an.length - pos[i * 3 + 2]);
+    }
+    pos.set(next);
+  };
+  for (let pass = 0; pass < 10; pass++) { taubin(0.5); taubin(-0.52); }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Simplify (the remeshed surface is clean manifold — meshopt reaches any budget directly).
 // ---------------------------------------------------------------------------------------------
 console.log("— simplifying");
 await MeshoptSimplifier.ready;
-let simpIdx = weldIdx, simpErr = 0;
-// Escalating error budget: each pass can unlock edges the previous pass couldn't collapse (scan
-// topology junk), and Prune drops disconnected floaters smaller than the pass's error.
-for (const err of [0.005, 0.01, 0.02, 0.04, 0.08, 0.15]) {
-  if (simpIdx.length <= TARGET_TRIS * 3) break;
-  let out, e;
-  try {
-    [out, e] = MeshoptSimplifier.simplify(simpIdx, srcPos, 3, TARGET_TRIS * 3, err, ["Prune"]);
-  } catch {
-    [out, e] = MeshoptSimplifier.simplify(simpIdx, srcPos, 3, TARGET_TRIS * 3, err, []);
+{
+  const [out, err] = MeshoptSimplifier.simplify(idx, pos, 3, TARGET_TRIS * 3, 0.05, []);
+  console.log(`  → ${out.length / 3} tris (error ${err.toFixed(4)})`);
+  // Compact to surviving vertices.
+  const remap = new Int32Array(nOut).fill(-1);
+  let n2 = 0;
+  for (const i of out) if (remap[i] === -1) remap[i] = n2++;
+  const pos2 = new Float32Array(n2 * 3);
+  for (let i = 0; i < nOut; i++) {
+    const r = remap[i];
+    if (r === -1) continue;
+    pos2[r * 3] = pos[i * 3]; pos2[r * 3 + 1] = pos[i * 3 + 1]; pos2[r * 3 + 2] = pos[i * 3 + 2];
   }
-  if (out.length < simpIdx.length) { simpIdx = out; simpErr = Math.max(simpErr, e); }
-  console.log(`  pass (err ${err}): → ${simpIdx.length / 3} tris (achieved ${simpErr.toFixed(4)})`);
-  if (out.length >= simpIdx.length && err > 0.02) break; // stuck on topology — stop burning passes
+  idx = new Uint32Array(out.length);
+  for (let i = 0; i < out.length; i++) idx[i] = remap[out[i]];
+  pos = pos2;
+  nOut = n2;
+  console.log(`  ${nOut} verts out`);
 }
-// Photogrammetry junk (non-manifold edges, self-intersections) hard-blocks edge-collapse well
-// above our budget — finish the job with the topology-ignoring cluster simplifier. Its output
-// still indexes the ORIGINAL vertex buffer, so colors carry over untouched.
-if (simpIdx.length > TARGET_TRIS * 3) {
-  const [out, e] = MeshoptSimplifier.simplifySloppy(simpIdx, srcPos, 3, null, TARGET_TRIS * 3, 0.3);
-  simpIdx = out; simpErr = Math.max(simpErr, e);
-  console.log(`  sloppy: → ${simpIdx.length / 3} tris (achieved ${simpErr.toFixed(4)})`);
+const col = new Float32Array(nOut * 3); // filled below by supersampling from the source cloud
+
+// Final-mesh vertex adjacency (used to smooth colors, normals, and skin weights below).
+const adj = (() => {
+  const nbr = Array.from({ length: nOut }, () => new Set());
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t], b = idx[t + 1], c = idx[t + 2];
+    nbr[a].add(b); nbr[a].add(c); nbr[b].add(a); nbr[b].add(c); nbr[c].add(a); nbr[c].add(b);
+  }
+  return nbr.map((s) => Uint32Array.from(s));
+})();
+
+// Taubin-smooth the positions (shrink-compensated): the surviving scan vertices carry 1-3 mm of
+// surface noise, so at this edge length adjacent face normals disagree wildly — bad shading AND
+// the reason xatlas fragments. λ/μ alternation smooths without losing volume.
+{
+  const taubin = (lambda) => {
+    const next = new Float32Array(pos);
+    for (let i = 0; i < nOut; i++) {
+      const an = adj[i];
+      if (an.length === 0) continue;
+      let x = 0, y = 0, z = 0;
+      for (const j of an) { x += pos[j * 3]; y += pos[j * 3 + 1]; z += pos[j * 3 + 2]; }
+      next[i * 3] = pos[i * 3] + lambda * (x / an.length - pos[i * 3]);
+      next[i * 3 + 1] = pos[i * 3 + 1] + lambda * (y / an.length - pos[i * 3 + 1]);
+      next[i * 3 + 2] = pos[i * 3 + 2] + lambda * (z / an.length - pos[i * 3 + 2]);
+    }
+    pos.set(next);
+  };
+  for (let pass = 0; pass < 4; pass++) { taubin(0.5); taubin(-0.53); }
 }
 
-// Compact to the surviving vertices.
-const remap = new Int32Array(nSrc).fill(-1);
-let nOut = 0;
-for (const i of simpIdx) if (remap[i] === -1) remap[i] = nOut++;
-const pos = new Float32Array(nOut * 3);
-const col = new Float32Array(nOut * 3);
-for (let i = 0; i < nSrc; i++) {
-  const r = remap[i];
-  if (r === -1) continue;
-  pos[r * 3] = srcPos[i * 3]; pos[r * 3 + 1] = srcPos[i * 3 + 1]; pos[r * 3 + 2] = srcPos[i * 3 + 2];
-  const n = colSum[i * 4 + 3] || 1;
-  col[r * 3] = colSum[i * 4] / n; col[r * 3 + 1] = colSum[i * 4 + 1] / n; col[r * 3 + 2] = colSum[i * 4 + 2] / n;
+// Supersample colors: a surviving vertex's own sample is ONE noisy texel of a photogrammetry
+// atlas — adjacent vertices disagree and the model shades like TV static. Instead, every
+// original (welded) vertex votes its color into its nearest FINAL vertex (~70 source samples
+// per final vertex), then one gentle Laplacian pass evens out the remainder.
+console.log("— supersampling vertex colors");
+{
+  const cell = 0.012;
+  const grid = new Map();
+  for (let i = 0; i < nOut; i++) {
+    const k = `${Math.round(pos[i * 3] / cell)},${Math.round(pos[i * 3 + 1] / cell)},${Math.round(pos[i * 3 + 2] / cell)}`;
+    let arr = grid.get(k);
+    if (!arr) grid.set(k, (arr = []));
+    arr.push(i);
+  }
+  // Collect every source sample per final vertex, then take the per-channel MEDIAN: even on the
+  // full-res mesh ~a quarter of vertex samples are atlas chart-bleed outliers (white speckle on
+  // the navy, etc.) — a mean drags them in and mottles the result; the median rejects them.
+  const samples = Array.from({ length: nOut }, () => []);
+  for (let v = 0; v < nSrc; v++) {
+    if (canon[v] !== v) continue; // one vote per welded position (already the seam-averaged color)
+    const x = srcPos[v * 3], y = srcPos[v * 3 + 1], z = srcPos[v * 3 + 2];
+    const cx = Math.round(x / cell), cy = Math.round(y / cell), cz = Math.round(z / cell);
+    let best = -1, bd = Infinity;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const arr = grid.get(`${cx + dx},${cy + dy},${cz + dz}`);
+      if (!arr) continue;
+      for (const f of arr) {
+        const d = (pos[f * 3] - x) ** 2 + (pos[f * 3 + 1] - y) ** 2 + (pos[f * 3 + 2] - z) ** 2;
+        if (d < bd) { bd = d; best = f; }
+      }
+    }
+    if (best < 0 || bd > (cell * 2.5) ** 2) continue;
+    const n = colSum[v * 4 + 3] || 1;
+    samples[best].push([colSum[v * 4] / n, colSum[v * 4 + 1] / n, colSum[v * 4 + 2] / n]);
+  }
+  const filled = new Uint8Array(nOut);
+  let covered = 0;
+  for (let i = 0; i < nOut; i++) {
+    const s = samples[i];
+    if (s.length === 0) continue;
+    for (let c = 0; c < 3; c++) {
+      const vals = s.map((x) => x[c]).sort((a, b) => a - b);
+      col[i * 3 + c] = vals[vals.length >> 1];
+    }
+    filled[i] = 1;
+    covered++;
+  }
+  console.log(`  ${covered}/${nOut} verts median-filtered`);
+  // Remeshed vertices with no nearby source samples inherit from covered neighbors.
+  for (let pass = 0; pass < 6; pass++) {
+    let changed = 0;
+    for (let i = 0; i < nOut; i++) {
+      if (filled[i]) continue;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (const j of adj[i]) {
+        if (!filled[j]) continue;
+        r += col[j * 3]; g += col[j * 3 + 1]; b += col[j * 3 + 2]; n++;
+      }
+      if (!n) continue;
+      col[i * 3] = r / n; col[i * 3 + 1] = g / n; col[i * 3 + 2] = b / n;
+      filled[i] = 2;
+      changed++;
+    }
+    for (let i = 0; i < nOut; i++) if (filled[i] === 2) filled[i] = 1;
+    if (!changed) break;
+  }
+  const sm = new Float32Array(col);
+  for (let i = 0; i < nOut; i++) {
+    let r = col[i * 3] * 2, g = col[i * 3 + 1] * 2, b = col[i * 3 + 2] * 2, w = 2;
+    for (const j of adj[i]) { r += col[j * 3]; g += col[j * 3 + 1]; b += col[j * 3 + 2]; w++; }
+    sm[i * 3] = r / w; sm[i * 3 + 1] = g / w; sm[i * 3 + 2] = b / w;
+  }
+  col.set(sm);
 }
-const idx = new Uint32Array(simpIdx.length);
-for (let i = 0; i < simpIdx.length; i++) idx[i] = remap[simpIdx[i]];
-console.log(`  ${nOut} verts out`);
 
-// Smooth vertex normals.
+// Smooth vertex normals (area-weighted face accumulation, then two Laplacian passes — the raw
+// scan surface is bumpy and its lighting speckle reads as noise too).
 const nrm = new Float32Array(nOut * 3);
 {
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
@@ -220,9 +455,22 @@ const nrm = new Float32Array(nOut * 3);
       nrm[vi * 3] += n.x; nrm[vi * 3 + 1] += n.y; nrm[vi * 3 + 2] += n.z;
     }
   }
-  for (let i = 0; i < nOut; i++) {
-    const l = Math.hypot(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2]) || 1;
-    nrm[i * 3] /= l; nrm[i * 3 + 1] /= l; nrm[i * 3 + 2] /= l;
+  const renorm = () => {
+    for (let i = 0; i < nOut; i++) {
+      const l = Math.hypot(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2]) || 1;
+      nrm[i * 3] /= l; nrm[i * 3 + 1] /= l; nrm[i * 3 + 2] /= l;
+    }
+  };
+  renorm();
+  for (let pass = 0; pass < 2; pass++) {
+    const sm = new Float32Array(nrm);
+    for (let i = 0; i < nOut; i++) {
+      let x = nrm[i * 3] * 2, y = nrm[i * 3 + 1] * 2, z = nrm[i * 3 + 2] * 2;
+      for (const j of adj[i]) { x += nrm[j * 3]; y += nrm[j * 3 + 1]; z += nrm[j * 3 + 2]; }
+      sm[i * 3] = x; sm[i * 3 + 1] = y; sm[i * 3 + 2] = z;
+    }
+    nrm.set(sm);
+    renorm();
   }
 }
 
@@ -251,7 +499,7 @@ for (let i = 0; i < nOut; i++) {
   // SECONDARY = the scan's dominant navy uniform color (jersey/helmet/boots) → team primary at
   // runtime. PRIMARY = the saturated orange trim → team accent. Bare-skin tans (s ≈ 0.3-0.45,
   // bright) must stay KEEP, so the warm class needs high saturation or darker luminance.
-  if (h >= 8 && h <= 52 && l > 0.1 && l < 0.8 && (s > 0.5 || (s > 0.38 && l < 0.5))) mask[i] = MASK_PRIMARY;
+  if (h >= 8 && h <= 52 && l > 0.1 && l < 0.8 && (s > 0.62 || (s > 0.42 && l < 0.45))) mask[i] = MASK_PRIMARY;
   else if (s > 0.12 && l < 0.68 && h >= 180 && h <= 270) mask[i] = MASK_SECONDARY;
   else mask[i] = MASK_KEEP;
   const bucket = `${Math.round(h / 15) * 15}/${(s > 0.3 ? "S" : "s")}${(l > 0.5 ? "L" : "l")}`;
@@ -330,12 +578,6 @@ for (let i = 0; i < nOut; i++) {
 // Laplacian-smooth the weight field over the mesh so seams between bone regions deform softly.
 console.log("— smoothing weights");
 {
-  const nbr = Array.from({ length: nOut }, () => new Set());
-  for (let t = 0; t < idx.length; t += 3) {
-    const a = idx[t], b = idx[t + 1], c = idx[t + 2];
-    nbr[a].add(b); nbr[a].add(c); nbr[b].add(a); nbr[b].add(c); nbr[c].add(a); nbr[c].add(b);
-  }
-  const adj = nbr.map((s) => Uint32Array.from(s));
   for (let pass = 0; pass < 12; pass++) {
     const W2 = new Float32Array(nOut * nB);
     for (let i = 0; i < nOut; i++) {
@@ -368,6 +610,165 @@ for (let i = 0; i < nOut; i++) {
     acc += w;
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Unwrap (xatlas) + texture re-bake. Vertex colors at this density physically can't hold the
+// figure's fine paint regions (3-5 mm stripes/trim) — so generate a CLEAN atlas for the
+// simplified mesh and bake colors into it by sampling the dense source point cloud (~1 mm
+// spacing) with a per-channel median (rejects the source atlas's chart-bleed outliers).
+// ---------------------------------------------------------------------------------------------
+console.log("— unwrapping (xatlas)");
+await watlas.Initialize();
+const atlas = new watlas.Atlas();
+atlas.addMesh({
+  vertexPositionData: pos, vertexCount: nOut, vertexPositionStride: 12,
+  vertexNormalData: nrm, vertexNormalStride: 12,
+  indexData: idx, indexCount: idx.length,
+});
+// Default chart options shatter this (still bumpy) scan into thousands of tiny charts and the
+// padding alone blows the atlas up 6x — relax the cost terms so charts can wrap curvature.
+atlas.generate(
+  { maxCost: 24, normalDeviationWeight: 0.4, roundnessWeight: 0.005, straightnessWeight: 0.1, normalSeamWeight: 0.6, textureSeamWeight: 0 },
+  { resolution: 1024, padding: 4, bilinear: true },
+);
+const AW = atlas.width, AH = atlas.height;
+const amesh = atlas.getMesh(0);
+const nF = amesh.vertexCount;
+console.log(`  atlas ${AW}x${AH}, ${amesh.chartCount} charts, ${nF} verts (from ${nOut})`);
+// Unwrapping splits vertices at chart seams: rebuild every attribute through xref.
+const fPos = new Float32Array(nF * 3);
+const fNrm = new Float32Array(nF * 3);
+const fUv = new Float32Array(nF * 2);
+const fUvTexel = new Float32Array(nF * 2);
+const fJoints = new Uint8Array(nF * 4);
+const fWeights = new Uint8Array(nF * 4);
+for (let i = 0; i < nF; i++) {
+  const v = amesh.getVertex(i);
+  const o = v.xref;
+  fPos.set(pos.subarray(o * 3, o * 3 + 3), i * 3);
+  fNrm.set(nrm.subarray(o * 3, o * 3 + 3), i * 3);
+  fJoints.set(joints.subarray(o * 4, o * 4 + 4), i * 4);
+  fWeights.set(weights.subarray(o * 4, o * 4 + 4), i * 4);
+  fUvTexel[i * 2] = v.uv[0]; fUvTexel[i * 2 + 1] = v.uv[1];
+  fUv[i * 2] = v.uv[0] / AW; fUv[i * 2 + 1] = v.uv[1] / AH;
+}
+const fIdx = new Uint32Array(amesh.indexCount);
+amesh.getIndexArray(fIdx);
+
+console.log("— baking texture");
+// Spatial grid over the dense canonical source vertices (the color ground truth).
+const bake = (() => {
+  const cell = 0.0035;
+  const grid = new Map();
+  for (let v = 0; v < nSrc; v++) {
+    if (canon[v] !== v) continue;
+    const k = `${Math.round(srcPos[v * 3] / cell)},${Math.round(srcPos[v * 3 + 1] / cell)},${Math.round(srcPos[v * 3 + 2] / cell)}`;
+    let arr = grid.get(k);
+    if (!arr) grid.set(k, (arr = []));
+    arr.push(v);
+  }
+  const out = [0, 0, 0];
+  const cand = [];
+  return (x, y, z) => {
+    const cx = Math.round(x / cell), cy = Math.round(y / cell), cz = Math.round(z / cell);
+    cand.length = 0;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const arr = grid.get(`${cx + dx},${cy + dy},${cz + dz}`);
+      if (!arr) continue;
+      for (const v of arr) {
+        const d = (srcPos[v * 3] - x) ** 2 + (srcPos[v * 3 + 1] - y) ** 2 + (srcPos[v * 3 + 2] - z) ** 2;
+        cand.push([d, v]);
+      }
+    }
+    if (cand.length === 0) return null;
+    cand.sort((a, b) => a[0] - b[0]);
+    const k = Math.min(9, cand.length);
+    for (let c = 0; c < 3; c++) {
+      const vals = [];
+      for (let i = 0; i < k; i++) {
+        const v = cand[i][1];
+        const n = colSum[v * 4 + 3] || 1;
+        vals.push(colSum[v * 4 + c] / n);
+      }
+      vals.sort((a, b) => a - b);
+      out[c] = vals[vals.length >> 1];
+    }
+    return out;
+  };
+})();
+
+const texData = new Uint8Array(AW * AH * 4);
+const texCovered = new Uint8Array(AW * AH);
+const classify = (r, g, b) => {
+  const [h, s, l] = rgbToHsl(r, g, b);
+  if (h >= 8 && h <= 52 && l > 0.1 && l < 0.8 && (s > 0.62 || (s > 0.42 && l < 0.45))) return MASK_PRIMARY;
+  if (s > 0.12 && l < 0.68 && h >= 180 && h <= 270) return MASK_SECONDARY;
+  return MASK_KEEP;
+};
+for (let t = 0; t < fIdx.length; t += 3) {
+  const a = fIdx[t], b = fIdx[t + 1], c = fIdx[t + 2];
+  const ax = fUvTexel[a * 2], ay = fUvTexel[a * 2 + 1];
+  const bx = fUvTexel[b * 2], by = fUvTexel[b * 2 + 1];
+  const cx = fUvTexel[c * 2], cy = fUvTexel[c * 2 + 1];
+  const minX = Math.max(0, Math.floor(Math.min(ax, bx, cx)) - 1);
+  const maxX = Math.min(AW - 1, Math.ceil(Math.max(ax, bx, cx)) + 1);
+  const minY = Math.max(0, Math.floor(Math.min(ay, by, cy)) - 1);
+  const maxY = Math.min(AH - 1, Math.ceil(Math.max(ay, by, cy)) + 1);
+  const den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+  if (Math.abs(den) < 1e-9) continue;
+  for (let py = minY; py <= maxY; py++) {
+    for (let px = minX; px <= maxX; px++) {
+      const sx = px + 0.5, sy = py + 0.5;
+      let w0 = ((by - cy) * (sx - cx) + (cx - bx) * (sy - cy)) / den;
+      let w1 = ((cy - ay) * (sx - cx) + (ax - cx) * (sy - cy)) / den;
+      let w2 = 1 - w0 - w1;
+      const TOL = -0.12; // conservative: claim edge texels so bilinear never reads a hole
+      if (w0 < TOL || w1 < TOL || w2 < TOL) continue;
+      w0 = Math.max(0, w0); w1 = Math.max(0, w1); w2 = Math.max(0, Math.min(1, w2));
+      const x = fPos[a * 3] * w0 + fPos[b * 3] * w1 + fPos[c * 3] * w2;
+      const y = fPos[a * 3 + 1] * w0 + fPos[b * 3 + 1] * w1 + fPos[c * 3 + 1] * w2;
+      const z = fPos[a * 3 + 2] * w0 + fPos[b * 3 + 2] * w1 + fPos[c * 3 + 2] * w2;
+      const rgb = bake(x, y, z);
+      if (!rgb) continue;
+      const o = (py * AW + px) * 4;
+      texData[o] = Math.round(rgb[0] * 255);
+      texData[o + 1] = Math.round(rgb[1] * 255);
+      texData[o + 2] = Math.round(rgb[2] * 255);
+      const m = classify(rgb[0], rgb[1], rgb[2]);
+      texData[o + 3] = m === MASK_PRIMARY ? 170 : m === MASK_SECONDARY ? 85 : 255;
+      texCovered[py * AW + px] = 1;
+    }
+  }
+}
+// Gutter dilation: bleed covered colors into empty texels so bilinear/mip sampling near chart
+// borders never reads black.
+for (let pass = 0; pass < 8; pass++) {
+  const next = Uint8Array.from(texCovered);
+  for (let py = 0; py < AH; py++) {
+    for (let px = 0; px < AW; px++) {
+      const i = py * AW + px;
+      if (texCovered[i]) continue;
+      let r = 0, g = 0, b = 0, aMode = 0, n = 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const qx = px + dx, qy = py + dy;
+        if (qx < 0 || qy < 0 || qx >= AW || qy >= AH) continue;
+        const q = qy * AW + qx;
+        if (!texCovered[q]) continue;
+        const o = q * 4;
+        r += texData[o]; g += texData[o + 1]; b += texData[o + 2]; aMode = texData[o + 3]; n++;
+      }
+      if (!n) continue;
+      const o = i * 4;
+      texData[o] = r / n; texData[o + 1] = g / n; texData[o + 2] = b / n; texData[o + 3] = aMode;
+      next[i] = 1;
+    }
+  }
+  texCovered.set(next);
+}
+const png = new PNG({ width: AW, height: AH });
+png.data = Buffer.from(texData.buffer, texData.byteOffset, texData.byteLength);
+const pngBuf = PNG.sync.write(png);
+console.log(`  baked atlas PNG: ${(pngBuf.length / 1e6).toFixed(2)} MB`);
 
 // ---------------------------------------------------------------------------------------------
 // Write the GLB: bone nodes + skinned vertex-colored mesh + baked idle animation
@@ -415,26 +816,21 @@ function minMax(arr, n) {
   return { min, max };
 }
 
-const idx16 = nOut <= 65535 ? Uint16Array.from(idx) : idx;
-const accIdx = push(idx16, 34963, { componentType: nOut <= 65535 ? 5123 : 5125, count: idx.length, type: "SCALAR" });
-const accPos = push(pos, 34962, { componentType: 5126, count: nOut, type: "VEC3", ...minMax(pos, 3) });
-const accNrm = push(nrm, 34962, { componentType: 5126, count: nOut, type: "VEC3" });
-// COLOR_0 = rgba16: rgb = baked color, a = team-recolor mask (1.0 keep / ~0.67 primary /
-// ~0.33 secondary). glTF vertex colors are LINEAR — the sampled JPEG is sRGB, so decode here or
-// the model renders washed-out (three re-encodes to sRGB on output). 16-bit because linear-space
-// darks (the navy uniform) band visibly at 8 bits.
-const srgbToLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
-const colU16 = new Uint16Array(nOut * 4);
-for (let i = 0; i < nOut; i++) {
-  colU16[i * 4] = Math.round(srgbToLinear(col[i * 3]) * 65535);
-  colU16[i * 4 + 1] = Math.round(srgbToLinear(col[i * 3 + 1]) * 65535);
-  colU16[i * 4 + 2] = Math.round(srgbToLinear(col[i * 3 + 2]) * 65535);
-  colU16[i * 4 + 3] = mask[i] === MASK_PRIMARY ? 43690 : mask[i] === MASK_SECONDARY ? 21845 : 65535;
-}
-const accCol = push(colU16, 34962, { componentType: 5123, normalized: true, count: nOut, type: "VEC4" });
-const accJnt = push(joints, 34962, { componentType: 5121, count: nOut, type: "VEC4" });
-const accWgt = push(weights, 34962, { componentType: 5121, normalized: true, count: nOut, type: "VEC4" });
+const idx16 = nF <= 65535 ? Uint16Array.from(fIdx) : fIdx;
+const accIdx = push(idx16, 34963, { componentType: nF <= 65535 ? 5123 : 5125, count: fIdx.length, type: "SCALAR" });
+const accPos = push(fPos, 34962, { componentType: 5126, count: nF, type: "VEC3", ...minMax(fPos, 3) });
+const accNrm = push(fNrm, 34962, { componentType: 5126, count: nF, type: "VEC3" });
+const accUv = push(fUv, 34962, { componentType: 5126, count: nF, type: "VEC2" });
+const accJnt = push(fJoints, 34962, { componentType: 5121, count: nF, type: "VEC4" });
+const accWgt = push(fWeights, 34962, { componentType: 5121, normalized: true, count: nF, type: "VEC4" });
 const accIbm = push(ibm, null, { componentType: 5126, count: bones.length, type: "MAT4" });
+// Embedded baked atlas (RGBA png: rgb = albedo, a = team-recolor mask).
+const pad = (4 - (byteLen % 4)) % 4;
+if (pad) { chunks.push(Buffer.alloc(pad)); byteLen += pad; }
+bufferViews.push({ buffer: 0, byteOffset: byteLen, byteLength: pngBuf.length });
+chunks.push(pngBuf);
+byteLen += pngBuf.length;
+const imgBvIdx = bufferViews.length - 1;
 
 // Idle animation: copy the FBX clip's tracks (rotation for every bone + hips translation).
 const animChannels = [];
@@ -458,8 +854,12 @@ const outJson = {
   scenes: [{ name: "player", nodes: [...rootBones, meshNode] }],
   nodes,
   skins: [{ inverseBindMatrices: accIbm, joints: bones.map((_, i) => i), skeleton: rootBones[0] }],
-  meshes: [{ name: "playerscan", primitives: [{ attributes: { POSITION: accPos, NORMAL: accNrm, COLOR_0: accCol, JOINTS_0: accJnt, WEIGHTS_0: accWgt }, indices: accIdx, material: 0 }] }],
-  materials: [{ name: "playerscan", pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0.9 }, doubleSided: true }],
+  meshes: [{ name: "playerscan", primitives: [{ attributes: { POSITION: accPos, NORMAL: accNrm, TEXCOORD_0: accUv, JOINTS_0: accJnt, WEIGHTS_0: accWgt }, indices: accIdx, material: 0 }] }],
+  images: [{ name: "playerscan", mimeType: "image/png", bufferView: imgBvIdx }],
+  samplers: [{ magFilter: 9729, minFilter: 9987, wrapS: 33071, wrapT: 33071 }],
+  textures: [{ source: 0, sampler: 0 }],
+  // alphaMode stays OPAQUE: the texture's alpha channel is the recolor mask, not transparency.
+  materials: [{ name: "playerscan", pbrMetallicRoughness: { baseColorTexture: { index: 0 }, baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0.9 }, doubleSided: true }],
   animations: idleClip ? [{ name: "idle", channels: animChannels, samplers: animSamplers }] : [],
   bufferViews,
   accessors,
@@ -493,9 +893,10 @@ if (QC) {
   const dom = new Uint8Array(nOut);
   for (let i = 0; i < nOut; i++) dom[i] = joints[i * 4];
   fs.writeFileSync("/tmp/rigqc/qc.json", JSON.stringify({
-    pos: [...pos], col: [...colU8], dom: [...dom],
+    pos: [...fPos], nrm: [...fNrm], uv: [...fUv], idx: [...fIdx], dom: [...dom],
     boneNames: bones.map((b) => b.name),
     bonePos: bones.map((b) => b.getWorldPosition(new THREE.Vector3()).toArray()),
   }));
-  console.log("  QC dump → /tmp/rigqc/qc.json");
+  fs.writeFileSync("/tmp/rigqc/atlas.png", pngBuf);
+  console.log("  QC dump → /tmp/rigqc/qc.json + atlas.png");
 }

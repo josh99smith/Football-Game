@@ -57,16 +57,18 @@ sprint for the burst, but pick your moments.
 Every player on the field is one **photogrammetry scan of a bobblehead football figure**,
 auto-rigged and palette-swapped per team:
 
-- The raw scan (≈830k triangles, chaotic per-chart texture atlas) is decimated to a mobile
-  budget and its texture is **baked into vertex colors** (`public/player.glb`, ~0.6 MB).
+- The raw scan (≈830k triangles, a noisy double-layered shell with a chaotic per-chart
+  texture atlas) is **voxel-remeshed** into one clean manifold surface, decimated to a
+  mobile budget, **unwrapped with xatlas**, and a fresh texture atlas is **re-baked** from
+  the dense source point cloud (`public/player.glb`, ~3 MB all-in).
 - The skeleton comes from the **Mixamo auto-rig** of the same scan: the bundled
   `anim_*.fbx` clips (run/walk/strafe/juke/catch/get-ups/celebrations…) were retargeted by
   Mixamo onto the scan's own proportions and bind 1:1. A handful of legacy mocap clips
   (throws, tackles, kick) are retargeted rotation-only at load.
 - Skinning is computed offline — bone-segment distance weights + Laplacian smoothing.
-- **Team colorways**: the asset pipeline classifies each vertex (uniform navy / orange trim /
-  keep skin & whites) into `COLOR_0.alpha`; at load the game substitutes the two uniform
-  classes with each team's jersey/accent colors, preserving the baked shading.
+- **Team colorways**: the asset pipeline classifies each texel (uniform navy / orange trim /
+  keep skin & whites) into the atlas's **alpha channel**; at load the game palette-swaps the
+  two uniform classes to each team's jersey/accent colors, preserving the baked shading.
 
 Rebuild the model from a new scan + Mixamo `Idle.fbx` with:
 
