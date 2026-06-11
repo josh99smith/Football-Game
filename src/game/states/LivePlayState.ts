@@ -177,7 +177,6 @@ export class LivePlayState implements GameState {
   /** Free-look camera for the replay (orbit/pan/zoom), created lazily on first replay. */
   private freeCam: FreeCamController | null = null;
   private replayT = 0;          // current replay time (s)
-  private replayLastIdx = -1;   // last sampled frame, to detect a scrub/rewind jump
   private replayPlaying = true;
   private replayZoom = 0.45;    // 0 wide .. 1 tight
   private replayFrom: Phase = "dead"; // phase to return to when the replay closes
@@ -684,6 +683,13 @@ export class LivePlayState implements GameState {
       ssHeading,
       ssLook,
     });
+
+    // For a 1:1 replay, record the EXACT skeleton pose of any ragdolling/getting-up avatar this frame
+    // (their bones were just driven by physics in sync()). Physics isn't reproducible, so we replay
+    // these verbatim instead of re-simulating. Only runs while someone's down (poses are else null).
+    if ((this.phase === "live" || this.phase === "dead") && this.app.scene3d.ragdollsBusy()) {
+      this.replay.attachPoses(this.app.scene3d.capturePoses());
+    }
 
     this.updateAtmosphere(dt);
   }
@@ -2087,7 +2093,6 @@ export class LivePlayState implements GameState {
     this.replayFrom = this.phase === "playcall" ? "playcall" : "dead";
     this.phase = "replay";
     this.replayT = 0;
-    this.replayLastIdx = -1;
     this.replayPlaying = true;
     if (auto) this.replayZoom = 0.7; // tight, cinematic
     this.replay.rewind();
@@ -2160,20 +2165,12 @@ export class LivePlayState implements GameState {
       if (this.replayHold > 0.7) { this.exitReplay(); return; }
     }
 
-    // A scrub/rewind jump can't drive live ragdoll physics, which only moves forward. If the
-    // timeline jumped backward (or skipped ahead), dispose any active ragdoll so the avatar
-    // renders the RECORDED pose at the new time instead of staying flopped; it re-spawns when
-    // forward playback reaches the tackle again.
-    const idx = Math.round(this.replayT * 60);
-    if ((idx < this.replayLastIdx || idx > this.replayLastIdx + 6) && this.app.scene3d.ragdollsBusy()) {
-      this.app.scene3d.resetAvatars();
-    }
-    this.replayLastIdx = idx;
-
+    // Scrubbing anywhere (even backward) just applies the recorded pose at the new time — no live
+    // physics to fight, so a jump needs no special handling now.
     const fr = this.replay.sample(this.replayT);
-    // When the replay reaches a tackle, re-spawn the physics ragdoll (instead of the canned clip)
-    // so the hit tumbles with real ragdoll physics, like it did live.
-    this.spawnReplayRagdolls(fr.players);
+    // 1:1 replay: hand the avatars the EXACT recorded ragdoll/get-up poses for this frame (null for
+    // everyone while no one's down → they animate normally from the recorded loco). No physics re-sim.
+    this.app.scene3d.setReplayPoses(fr.poses);
     this.app.scene3d.sync({
       players: fr.players, ball: fr.ball, colorFor: fr.colorFor,
       focusX: fr.focusX, focusY: fr.focusY, dir: this.dir,
@@ -2183,28 +2180,6 @@ export class LivePlayState implements GameState {
     // Free-look owns the camera while active; otherwise the auto ball-tracking replay cam runs.
     if (this.freeCam?.active) this.freeCam.update();
     else this.app.scene3d.replayCam(fr.focusX, fr.focusY, this.dir, this.replayZoom);
-  }
-
-  /** On a recorded tackle event during forward playback, fire the ragdoll on those avatars and
-   *  clear the event so the canned tackle clip doesn't play instead. */
-  private spawnReplayRagdolls(players: Player[]): void {
-    const carrier = players.find((g) => g.animEvent === "tackle");
-    const tackler = players.find((g) => g.animEvent === "tackleMade");
-    const velOf = (g: Player) => ({ x: g.loco.speed * Math.cos(g.loco.heading), y: g.loco.speed * Math.sin(g.loco.heading) });
-    if (carrier) {
-      const v = velOf(carrier);
-      const dx = tackler ? carrier.pos.x - tackler.pos.x : Math.cos(carrier.loco.heading);
-      const dy = tackler ? carrier.pos.y - tackler.pos.y : Math.sin(carrier.loco.heading);
-      this.app.scene3d.startRagdoll(players.indexOf(carrier), { hitDirX: dx, hitDirY: dy, closingPx: 170, carryVx: v.x, carryVy: v.y, big: true, bit: 0x0002 });
-      carrier.animEvent = null;
-    }
-    if (tackler) {
-      const v = velOf(tackler);
-      const dx = carrier ? tackler.pos.x - carrier.pos.x : Math.cos(tackler.loco.heading);
-      const dy = carrier ? tackler.pos.y - carrier.pos.y : Math.sin(tackler.loco.heading);
-      this.app.scene3d.startRagdoll(players.indexOf(tackler), { hitDirX: dx, hitDirY: dy, closingPx: 110, carryVx: v.x, carryVy: v.y, big: true, bit: 0x0004 });
-      tackler.animEvent = null;
-    }
   }
 
   /** Open the between-downs play-call as a broadcast overlay over the still-live field. */

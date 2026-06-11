@@ -697,6 +697,11 @@ class FbxAvatar implements Avatar {
   private throwHeading = 0;
   /** Bind-pose local transforms, the target the get-up blends back to. */
   private readonly restPose = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
+  /** Stable bone order for pose capture/apply (the 1:1 replay records every bone's local transform). */
+  private boneList: THREE.Bone[] = [];
+  /** When set (instant replay), the renderer applies this exact recorded pose instead of animating —
+   *  so a tackle's ragdoll/get-up plays back verbatim rather than re-simulating physics. */
+  replayPose: Float32Array | null = null;
   /** Extremity bones sampled to keep the body on the turf during the get-up (lazy-cached). */
   private contactBones: THREE.Bone[] | null = null;
   /** Foot-IK influence (1 at a stand/walk, fading to 0 at a sprint). The ground correction pops the
@@ -845,6 +850,7 @@ class FbxAvatar implements Avatar {
     inner.traverse((o) => {
       if ((o as THREE.Bone).isBone) this.restPose.set(o as THREE.Bone, { p: o.position.clone(), q: o.quaternion.clone() });
     });
+    this.boneList = [...this.restPose.keys()]; // fixed order for pose capture/apply
     this.measureGetupOrientations();
     this.setupFootIK();
   }
@@ -981,6 +987,42 @@ class FbxAvatar implements Avatar {
 
   // --- physics ragdoll lifecycle ----------------------------------------------------------
   ragdollActive(): boolean { return this.rPhase !== "anim"; }
+
+  /** Capture the EXACT rendered pose (group + lean + every bone's local transform) for a 1:1 replay.
+   *  Returns null unless a physics ragdoll / get-up owns the body — locomotion + one-shots replay
+   *  faithfully from their recorded loco/event, but physics isn't reproducible, so we record the real
+   *  pose and play it back verbatim. ~375 floats; only the ~2-4 tackled players, only while down. */
+  capturePose(): Float32Array | null {
+    if (this.rPhase === "anim") return null;
+    const bones = this.boneList;
+    const buf = new Float32Array(11 + bones.length * 7);
+    const g = this.group, l = this.lean;
+    let o = 0;
+    buf[o++] = g.position.x; buf[o++] = g.position.y; buf[o++] = g.position.z;
+    buf[o++] = g.quaternion.x; buf[o++] = g.quaternion.y; buf[o++] = g.quaternion.z; buf[o++] = g.quaternion.w;
+    buf[o++] = l.quaternion.x; buf[o++] = l.quaternion.y; buf[o++] = l.quaternion.z; buf[o++] = l.quaternion.w;
+    for (const b of bones) {
+      buf[o++] = b.position.x; buf[o++] = b.position.y; buf[o++] = b.position.z;
+      buf[o++] = b.quaternion.x; buf[o++] = b.quaternion.y; buf[o++] = b.quaternion.z; buf[o++] = b.quaternion.w;
+    }
+    return buf;
+  }
+
+  /** Apply a captured pose verbatim (instant replay). The scene graph is group → lean → inner(const)
+   *  → bones, so setting those three layers reproduces the exact world pose. */
+  private applyPose(buf: Float32Array): void {
+    const bones = this.boneList;
+    const g = this.group, l = this.lean;
+    let o = 0;
+    g.position.set(buf[o++], buf[o++], buf[o++]);
+    g.quaternion.set(buf[o++], buf[o++], buf[o++], buf[o++]);
+    l.quaternion.set(buf[o++], buf[o++], buf[o++], buf[o++]);
+    for (const b of bones) {
+      b.position.set(buf[o++], buf[o++], buf[o++]);
+      b.quaternion.set(buf[o++], buf[o++], buf[o++], buf[o++]);
+    }
+    this.inner.updateWorldMatrix(true, true);
+  }
 
   /** Snapshot the current animated pose and hand the body to physics for a real tackle fall. */
   startRagdoll(physics: PhysicsWorld, carry: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow: boolean, bit: number, variant?: HitVariant): void {
@@ -1288,6 +1330,15 @@ class FbxAvatar implements Avatar {
   }
 
   present(alpha: number, dt: number): void {
+    if (this.replayPose) {
+      // 1:1 replay: apply the exact recorded ragdoll/get-up pose instead of animating, and keep the
+      // interp primed at this spot so locomotion doesn't slide when the pose clears (get-up ends).
+      this.applyPose(this.replayPose);
+      this.updateCarriedBall();
+      this.interp.reset();
+      this.interp.push(this.group.position.x, this.group.position.z);
+      return;
+    }
     if (this.rPhase !== "anim") return; // physics fixed the group while ragdolling; don't slide it
     this.group.position.x = this.interp.x(alpha);
     this.group.position.z = this.interp.z(alpha);
@@ -1323,6 +1374,9 @@ class FbxAvatar implements Avatar {
     const g = this.group;
     g.visible = true;
     this.carriesBall = p.hasBall; // tracked even through the ragdoll early-return below
+    // 1:1 replay pose owns the body — the recorded ragdoll/get-up pose is applied in present(); skip
+    // all live animation derivation here (keep the carried ball gripped).
+    if (this.replayPose) { this.nub.visible = p.hasBall; p.animEvent = null; return; }
     // While a physics ragdoll owns the body, it's stepped/driven in advanceRagdoll(); the
     // normal animation + position pipeline stands down so it doesn't fight the bones. Drop any
     // queued one-shot (e.g. the canned "tackle") so it can't fire when we hand back to anim.
@@ -1759,6 +1813,21 @@ export class Scene3D {
   ragdollsBusy(): boolean {
     for (const a of this.players) if (a.ragdollActive()) return true;
     return false;
+  }
+
+  /** Capture each avatar's exact pose this frame (non-null only for ragdolling/getting-up ones), to
+   *  record a 1:1 instant replay of the physics that can't otherwise be reproduced. */
+  capturePoses(): (Float32Array | null)[] {
+    return this.players.map((a) => (a instanceof FbxAvatar ? a.capturePose() : null));
+  }
+
+  /** Drive the replay: hand each avatar the recorded pose to apply this frame (null ⇒ animate
+   *  normally from its ghost loco). Passing null clears all overrides (back to live animation). */
+  setReplayPoses(poses: (Float32Array | null)[] | null): void {
+    for (let i = 0; i < this.players.length; i++) {
+      const a = this.players[i];
+      if (a instanceof FbxAvatar) a.replayPose = poses ? (poses[i] ?? null) : null;
+    }
   }
 
   /** DEBUG/verification: each skinned avatar's current formal animation state. */
@@ -2380,6 +2449,7 @@ export class Scene3D {
 
   /** Reset all avatars to a neutral upright pose (call when a new play starts). */
   resetAvatars(): void {
+    this.setReplayPoses(null); // drop any replay-pose overrides
     for (const a of this.players) a.resetPose();
   }
 

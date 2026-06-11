@@ -22,6 +22,9 @@ interface PlayerFrame {
   role: Player["role"];
   team: Player["team"];
   number: number;
+  /** Exact recorded skeleton pose for this frame (only while ragdolling/getting up) — replayed
+   *  verbatim so the physics tumble is 1:1 instead of re-simulated. Null ⇒ animate from loco. */
+  pose: Float32Array | null;
 }
 
 interface BallFrame {
@@ -77,9 +80,12 @@ export class ReplaySystem {
     return this.frames.length > 20;
   }
 
+  /** Index of the frame pushed by the most recent record() (−1 if capped), so attachPoses targets it. */
+  private lastRecorded = -1;
+
   /** Snapshot the current play state. Call once per sim tick while the play is live/settling. */
   record(all: Player[], ball: Ball, colorFor: ColorFor): void {
-    if (this.frames.length >= this.maxFrames) return;
+    if (this.frames.length >= this.maxFrames) { this.lastRecorded = -1; return; }
     const p: PlayerFrame[] = [];
     for (const o of all) {
       const c = colorFor(o);
@@ -89,19 +95,29 @@ export class ReplaySystem {
         loco: { gait: l.gait, speed: l.speed, speed01: l.speed01, heading: l.heading, moveRel: l.moveRel, turnRate: l.turnRate, down: l.down, contact: l.contact, stumbling: l.stumbling, accelX: l.accelX, accelY: l.accelY },
         hasBall: o.hasBall, controlled: o.controlled, isDown: o.isDown, leanTarget: o.leanTarget, anim: o.animEvent,
         jersey: c.jersey, trim: c.trim, accent: c.accent, helmet: c.helmet, onFire: c.onFire, defense: c.defense, role: o.role, team: o.team, number: o.number,
+        pose: null, // attached after the avatars are posed (attachPoses), since record runs pre-sync
       });
     }
     this.frames.push({
       p,
       b: { state: ball.state, x: ball.pos.x, y: ball.pos.y, z: ball.z, vx: ball.vel.x, vy: ball.vel.y, vvel: ball.verticalVel, spin: ball.spin },
     });
+    this.lastRecorded = this.frames.length - 1;
+  }
+
+  /** Attach the exact per-avatar skeleton poses (from Scene3D.capturePoses) to the frame just
+   *  recorded. Called AFTER the avatars are posed (post-sync), since record() runs before sync. */
+  attachPoses(poses: (Float32Array | null)[]): void {
+    if (this.lastRecorded < 0) return;
+    const fp = this.frames[this.lastRecorded].p;
+    for (let k = 0; k < fp.length && k < poses.length; k++) fp[k].pose = poses[k];
   }
 
   /**
    * Build ghost objects for the recorded frame at time `t` seconds and return everything
    * Scene3D.sync needs, plus the focus point (the ball, or its carrier when held).
    */
-  sample(t: number): { players: Player[]; ball: Ball; colorFor: ColorFor; focusX: number; focusY: number } {
+  sample(t: number): { players: Player[]; ball: Ball; colorFor: ColorFor; focusX: number; focusY: number; poses: (Float32Array | null)[] } {
     const n = this.frames.length;
     // Continuous frame position; interpolate between the two bracketing recorded frames so playback
     // is smooth at any speed (esp. slow-mo, where Math.round used to repeat a frame and stutter).
@@ -163,12 +179,15 @@ export class ReplaySystem {
       if (ci >= 0) { fx = this.ghosts[ci].pos.x; fy = this.ghosts[ci].pos.y; }
     }
     const players = this.ghosts.slice(0, f.p.length) as unknown as Player[];
+    // Poses are taken from the DISCRETE frame (no interpolation) — a verbatim 1:1 ragdoll playback.
+    const poses = f.p.map((s) => s.pose);
     return {
       players,
       ball: this.ghostBall as unknown as Ball,
       colorFor: (p) => (p as unknown as GhostPlayer).color,
       focusX: fx,
       focusY: fy,
+      poses,
     };
   }
 }
