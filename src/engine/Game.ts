@@ -88,37 +88,42 @@ export class GameApp {
     this.scene3d.setVisible(false);
     // Load the skinned character in the background; players use box avatars only until it's ready.
     const base = import.meta.env.BASE_URL;
-    // The rigged photo-scan player (vertex-colored, idle baked in — built by
-    // tools/build-player-asset.mjs) plus its Mixamo-retargeted animation pack (anim_*.fbx).
-    // A few legacy mocap clips cover the moves the new pack doesn't (throws, tackles, kicks…);
-    // those are rotation-only retargeted onto the scan skeleton (see SPORTS_RETARGET).
+    // The rigged photo-scan player (built by tools/build-player-asset.mjs) plus its
+    // Mixamo-retargeted animation pack (anim_*.fbx). A few legacy mocap clips cover the moves the
+    // new pack doesn't (throws, tackles, kicks…); those are rotation-only retargeted onto the
+    // scan skeleton (see SPORTS_RETARGET).
+    // ASSET_V busts HTTP caches: these files live at FIXED urls (unhashed, unlike the JS bundle),
+    // so without it a phone pairs a cached old model with new code after every deploy — the
+    // source of several "looks broken on my phone" reports. Bump it when any asset changes.
+    const ASSET_V = "?v=3";
+    const u = (file: string): string => `${base}${file}${ASSET_V}`;
     const urls = {
-      model: `${base}player.glb`,
-      run: `${base}anim_run.fbx`,
-      runBack: `${base}anim_run_back.fbx`,
-      strafe: `${base}anim_strafe.fbx`,
-      backDiag: `${base}anim_jog_back.fbx`,
-      pass: `${base}rig_pass.fbx`,
-      catch: `${base}anim_catch.fbx`,
-      juke: `${base}anim_juke.fbx`,
-      walk: `${base}anim_walk.fbx`,
-      tackle: `${base}tackle.fbx`,
-      spin: `${base}spin.fbx`,
-      defTackle: `${base}def_tackle.fbx`,
-      defSwat: `${base}anim_swat.fbx`,
-      celebrate: `${base}anim_dance.fbx`,
-      qbThrow: `${base}qb_throw.fbx`,
-      pitch: `${base}throw_long.fbx`,
-      kick: `${base}kick.fbx`,
-      celebGolf: `${base}anim_breakdance.fbx`,
-      celebBat: `${base}anim_sit_thumbs.fbx`,
-      celebTennis: `${base}anim_sit_laugh.fbx`,
-      dive: `${base}dive.fbx`,
-      pickup: `${base}pickup.fbx`,
-      turnRun: `${base}anim_turn_run.fbx`,
-      getup: `${base}anim_getup_a.fbx`,
-      getupB: `${base}anim_getup_b.fbx`,
-      getupC: `${base}anim_getup_c.fbx`,
+      model: u("player.glb"),
+      run: u("anim_run.fbx"),
+      runBack: u("anim_run_back.fbx"),
+      strafe: u("anim_strafe.fbx"),
+      backDiag: u("anim_jog_back.fbx"),
+      pass: u("rig_pass.fbx"),
+      catch: u("anim_catch.fbx"),
+      juke: u("anim_juke.fbx"),
+      walk: u("anim_walk.fbx"),
+      tackle: u("tackle.fbx"),
+      spin: u("spin.fbx"),
+      defTackle: u("def_tackle.fbx"),
+      defSwat: u("anim_swat.fbx"),
+      celebrate: u("anim_dance.fbx"),
+      qbThrow: u("qb_throw.fbx"),
+      pitch: u("throw_long.fbx"),
+      kick: u("kick.fbx"),
+      celebGolf: u("anim_breakdance.fbx"),
+      celebBat: u("anim_sit_thumbs.fbx"),
+      celebTennis: u("anim_sit_laugh.fbx"),
+      dive: u("dive.fbx"),
+      pickup: u("pickup.fbx"),
+      turnRun: u("anim_turn_run.fbx"),
+      getup: u("anim_getup_a.fbx"),
+      getupB: u("anim_getup_b.fbx"),
+      getupC: u("anim_getup_c.fbx"),
     };
     // Two-stage load so the skinned model appears ASAP: (1) the ~1MB rig swaps box avatars for the
     // model immediately (idle only); (2) the animation clips stream in and upgrade it. A slow or
