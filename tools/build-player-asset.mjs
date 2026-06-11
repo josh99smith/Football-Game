@@ -114,6 +114,11 @@ console.log(`  ${nSrc} verts, ${srcIdx.length / 3} tris`);
   const v = new THREE.Vector3();
   for (let i = 0; i < nSrc; i++) {
     v.fromArray(srcPos, i * 3).applyMatrix4(world);
+    // The scan was reoriented during its Mixamo upload, so the skeleton in the animation FBXs is
+    // 180° about Y from the RAW scan: the skeleton's +Z (toes, animation forward) points out the
+    // scan's BACK — verified by locating the facemask grill at -Z. Rotate the mesh into skeleton
+    // space here, or every player visibly runs facing backwards with knees bending the wrong way.
+    v.x = -v.x; v.z = -v.z;
     v.toArray(srcPos, i * 3);
   }
 }
@@ -703,11 +708,10 @@ const classify = (r, g, b, x, y, z) => {
   const [h, s, l] = rgbToHsl(r, g, b);
   if (h >= 8 && h <= 52 && l > 0.1 && l < 0.8 && (s > 0.62 || (s > 0.42 && l < 0.45))) return MASK_PRIMARY;
   if (s > 0.12 && l < 0.68 && h >= 180 && h <= 270) return MASK_SECONDARY;
-  // The BACK of the helmet has a white trim band + light panel that reads as a FACEMASK at
-  // gameplay distance — players look like they're running backwards. Fold the helmet-back
-  // whites into the uniform-base class so they take the team color; the real (gray, front)
-  // facemask stays "keep", which makes the true front unambiguous.
-  if (y > 0.13 && z < 0.0 && l > 0.5 && s < 0.4) return MASK_SECONDARY;
+  // Helmet-back whites (now at -Z after the orientation fix) read as a facemask at gameplay
+  // distance — fold them into the uniform-base class so they take the team color; the real gray
+  // grill (front, +Z) stays "keep", which makes the true front unambiguous.
+  if (y > 0.13 && z < -0.02 && l > 0.5 && s < 0.4) return MASK_SECONDARY;
   return MASK_KEEP;
 };
 for (let t = 0; t < fIdx.length; t += 3) {
