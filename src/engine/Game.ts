@@ -95,7 +95,7 @@ export class GameApp {
     // ASSET_V busts HTTP caches: these files live at FIXED urls (unhashed, unlike the JS bundle),
     // so without it a phone pairs a cached old model with new code after every deploy — the
     // source of several "looks broken on my phone" reports. Bump it when any asset changes.
-    const ASSET_V = "?v=3";
+    const ASSET_V = "?v=4";
     const u = (file: string): string => `${base}${file}${ASSET_V}`;
     const urls = {
       model: u("player.glb"),
