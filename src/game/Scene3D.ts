@@ -621,43 +621,51 @@ function blendW(a: THREE.AnimationAction | null, target: number, dt: number): vo
 }
 
 // --- Photo-scan team colorways ------------------------------------------------------------------
-// The scanned player model is vertex-colored (no texture): COLOR_0 carries RGBA8 where rgb is the
-// baked photogrammetry color and ALPHA is a recolor mask authored by tools/build-player-asset.mjs
-// (255 = keep — skin/pants/whites; ~170 = the warm trim class; ~85 = the navy uniform-base class).
-// A team's colorway substitutes the two uniform classes with the team jersey/accent hues while
-// preserving the baked luminance (shading/wrinkles survive). One recolored geometry is cached per
-// colorway and shared by every avatar on that team.
-const scanGeomCache = new Map<string, THREE.BufferGeometry>();
-function scanTeamGeometry(base: THREE.BufferGeometry, jersey: number, accent: number): THREE.BufferGeometry {
+// The scanned player model ships a baked RGBA atlas (tools/build-player-asset.mjs): rgb is the
+// re-baked photogrammetry albedo and ALPHA is a recolor mask (255 = keep — skin/pants/whites;
+// ~170 = the warm trim class; ~85 = the navy uniform-base class; the material stays OPAQUE so
+// alpha never renders). A team's colorway substitutes the two uniform classes with the team
+// jersey/accent hues while preserving the baked luminance (shading/wrinkles survive). One
+// recolored texture is cached per colorway and shared by every avatar on that team.
+const scanTexCache = new Map<string, THREE.Texture>();
+function scanTeamTexture(base: THREE.Texture, jersey: number, accent: number): THREE.Texture {
   const key = `${base.uuid}-${jersey.toString(16)}-${accent.toString(16)}`;
-  const hit = scanGeomCache.get(key);
+  const hit = scanTexCache.get(key);
   if (hit) return hit;
-  const g = base.clone();
-  const attr = g.getAttribute("color") as THREE.BufferAttribute;
-  const jc = new THREE.Color(jersey);
-  const ac = new THREE.Color(accent);
-  // Baseline luminance of each class in the source scan — the per-vertex luminance ratio
-  // against this carries the baked shading onto the substituted hue. Everything here is
-  // LINEAR-space: COLOR_0 ships linear (per glTF), and THREE.Color(hex) decodes the team's
-  // sRGB hex into the linear working space under default color management.
-  const NAVY_LUM = 0.04, WARM_LUM = 0.21;
-  const out = new Float32Array(attr.count * 4);
-  for (let i = 0; i < attr.count; i++) {
-    // The getters denormalize, so this is agnostic to the attribute's storage width.
-    const r = attr.getX(i), gg = attr.getY(i), b = attr.getZ(i), a = attr.getW(i);
-    out[i * 4] = r; out[i * 4 + 1] = gg; out[i * 4 + 2] = b; out[i * 4 + 3] = a;
-    if (a > 0.8) continue; // keep class — skin, whites, pants
-    const lum = 0.299 * r + 0.587 * gg + 0.114 * b;
-    const warm = a > 0.45; // ~0.67 = warm trim class, ~0.33 = navy uniform-base class
-    const team = warm ? ac : jc;
+  const img = base.image as CanvasImageSource & { width: number; height: number };
+  const c = document.createElement("canvas");
+  c.width = img.width;
+  c.height = img.height;
+  const x = c.getContext("2d")!;
+  x.drawImage(img, 0, 0);
+  const data = x.getImageData(0, 0, c.width, c.height);
+  const d = data.data;
+  // Work directly on sRGB bytes (canvas space): pull the team hexes apart as sRGB too — going
+  // through THREE.Color would hand back linear working-space values under color management.
+  const jr = (jersey >> 16) & 255, jg = (jersey >> 8) & 255, jb = jersey & 255;
+  const ar = (accent >> 16) & 255, ag = (accent >> 8) & 255, ab = accent & 255;
+  // Baseline luminance of each class in the source scan — the per-texel luminance ratio against
+  // this carries the baked shading onto the substituted hue.
+  const NAVY_LUM = 0.22, WARM_LUM = 0.5;
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3];
+    if (a > 200) { d[i + 3] = 255; continue; } // keep class — skin, whites, pants
+    const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+    const warm = a > 120; // ~170 = warm trim class, ~85 = navy uniform-base class
     const s = Math.min(warm ? 2.0 : 2.2, Math.max(0.25, lum / (warm ? WARM_LUM : NAVY_LUM)));
-    out[i * 4] = Math.min(1, team.r * s);
-    out[i * 4 + 1] = Math.min(1, team.g * s);
-    out[i * 4 + 2] = Math.min(1, team.b * s);
+    d[i] = Math.min(255, (warm ? ar : jr) * s);
+    d[i + 1] = Math.min(255, (warm ? ag : jg) * s);
+    d[i + 2] = Math.min(255, (warm ? ab : jb) * s);
+    d[i + 3] = 255;
   }
-  g.setAttribute("color", new THREE.BufferAttribute(out, 4));
-  scanGeomCache.set(key, g);
-  return g;
+  x.putImageData(data, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false; // glTF convention, matches the source texture
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = 4;
+  scanTexCache.set(key, tex);
+  return tex;
 }
 
 /** A skinned, animated player using the rigged model's own textured uniform. */
@@ -707,13 +715,12 @@ class FbxAvatar implements Avatar {
   private readonly helmetMats: THREE.MeshStandardMaterial[] = [];
   /** Face/arms material(s) — held at a neutral skin tone. */
   private readonly skinMats: THREE.MeshStandardMaterial[] = [];
-  /** The photo-scan mesh + material (vertex-colored): team colors come from a palette-swapped
-   *  COLOR_0 attribute (see scanTeamGeometry), not from a painted texture. */
-  private readonly scanMeshes: THREE.Mesh[] = [];
+  /** The photo-scan material(s): team colors come from a palette-swapped copy of the model's
+   *  baked atlas (see scanTeamTexture), keyed off the recolor mask in its alpha channel. */
   private readonly scanMats: THREE.MeshStandardMaterial[] = [];
-  /** Each scan mesh's PRISTINE geometry (colorway swaps replace mesh.geometry with a cached
-   *  recolored clone, so the original must be kept to derive future colorways from). */
-  private readonly scanBase: THREE.BufferGeometry[] = [];
+  /** The model's PRISTINE atlas (colorway swaps replace material.map with a cached recolored
+   *  copy, so the original must be kept to derive future colorways from). */
+  private scanBaseMap: THREE.Texture | null = null;
   /** Cache key of the scan colorway currently applied. */
   private scanKey = "";
   /** Cache key of the jersey texture currently applied, so we only swap it when it changes. */
@@ -794,10 +801,9 @@ class FbxAvatar implements Avatar {
       const isScan = /scan/i.test(m.name);
       const isJersey = !isScan && /body/i.test(m.name);
       const isHelmet = !isScan && /helmet/i.test(m.name);
-      if (isScan) { this.scanMeshes.push(m); this.scanBase.push(m.geometry as THREE.BufferGeometry); }
       const apply = (mat: THREE.Material): THREE.Material => {
         const clone = mat.clone() as THREE.MeshStandardMaterial;
-        if (isScan) this.scanMats.push(clone);
+        if (isScan) { this.scanMats.push(clone); this.scanBaseMap ??= clone.map; }
         else if (isJersey) this.jerseyMats.push(clone);
         else if (isHelmet) this.helmetMats.push(clone);
         else { clone.color.setHex(SKIN); this.skinMats.push(clone); }
@@ -1617,13 +1623,14 @@ class FbxAvatar implements Avatar {
     // NOTE: the mixer is advanced in present() at the display's refresh rate (not here at the fixed
     // 60Hz sim rate) so the skinned animation is smooth on high-refresh screens — see present().
 
-    // Scan model: swap in the team's colorway geometry (vertex-color palette swap, cached per
-    // team) and let ON FIRE glow through the material emissive.
-    if (this.scanMeshes.length > 0) {
+    // Scan model: swap in the team's colorway texture (palette-swapped atlas, cached per team)
+    // and let ON FIRE glow through the material emissive.
+    if (this.scanMats.length > 0) {
       const skey = `${jersey.toString(16)}-${accent.toString(16)}`;
-      if (skey !== this.scanKey) {
+      if (skey !== this.scanKey && this.scanBaseMap) {
         this.scanKey = skey;
-        this.scanMeshes.forEach((m, i) => { m.geometry = scanTeamGeometry(this.scanBase[i], jersey, accent); });
+        const tex = scanTeamTexture(this.scanBaseMap, jersey, accent);
+        for (const m of this.scanMats) { m.map = tex; m.needsUpdate = true; }
       }
       for (const m of this.scanMats) {
         m.color.setHex(0xffffff);
