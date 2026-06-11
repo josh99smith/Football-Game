@@ -205,21 +205,21 @@ export class MenuState implements GameState {
     const cx = W / 2;
     const ctx = r.ctx;
 
-    // Blood glow behind the emblem, then the spiked skull + stamped wordmark.
+    // Brand-orange glow behind the emblem, then the spiked skull + stamped wordmark.
     const badgeY = this.badgeY;
     const glow = ctx.createRadialGradient(cx, badgeY, this.badgeR * 0.4, cx, badgeY, this.badgeR * 2.6);
-    glow.addColorStop(0, "rgba(177,18,31,0.45)");
-    glow.addColorStop(1, "rgba(177,18,31,0)");
+    glow.addColorStop(0, "rgba(217,86,15,0.45)");
+    glow.addColorStop(1, "rgba(217,86,15,0)");
     ctx.fillStyle = glow;
     ctx.fillRect(cx - this.badgeR * 3, badgeY - this.badgeR * 3, this.badgeR * 6, this.badgeR * 6);
     drawHardcoreBadge(ctx, cx, badgeY, this.badgeR);
     const titleSize = this.titleSize;
-    this.stampedTitle(r, "GRIDIRON BLITZ", cx, this.wordY, titleSize);
+    this.stampedTitle(r, "BOBBLE BOWL", cx, this.wordY, titleSize);
 
     // Gritty tagline strip.
     ctx.save();
     ctx.letterSpacing = "3px";
-    r.text("NO REFS · NO MERCY · STREET RULES", cx, this.taglineY, {
+    r.text("BIG HEADS · BIG HITS · STREET RULES", cx, this.taglineY, {
       size: clamp(titleSize * 0.24, 9, 14),
       align: "center",
       color: COLORS.blood,

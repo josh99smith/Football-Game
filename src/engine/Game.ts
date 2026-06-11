@@ -88,33 +88,37 @@ export class GameApp {
     this.scene3d.setVisible(false);
     // Load the skinned character in the background; players use box avatars only until it's ready.
     const base = import.meta.env.BASE_URL;
+    // The rigged photo-scan player (vertex-colored, idle baked in — built by
+    // tools/build-player-asset.mjs) plus its Mixamo-retargeted animation pack (anim_*.fbx).
+    // A few legacy mocap clips cover the moves the new pack doesn't (throws, tackles, kicks…);
+    // those are rotation-only retargeted onto the scan skeleton (see SPORTS_RETARGET).
     const urls = {
-      model: `${base}rig_stance.fbx`,
-      run: `${base}standard_run.fbx`,
-      runBack: `${base}run_backward.fbx`,
-      strafe: `${base}strafe.fbx`,
-      backDiag: `${base}back_diag.fbx`,
+      model: `${base}player.glb`,
+      run: `${base}anim_run.fbx`,
+      runBack: `${base}anim_run_back.fbx`,
+      strafe: `${base}anim_strafe.fbx`,
+      backDiag: `${base}anim_jog_back.fbx`,
       pass: `${base}rig_pass.fbx`,
-      catch: `${base}rig_catch.fbx`,
-      juke: `${base}change_dir.fbx`,
-      walk: `${base}walk.fbx`,
+      catch: `${base}anim_catch.fbx`,
+      juke: `${base}anim_juke.fbx`,
+      walk: `${base}anim_walk.fbx`,
       tackle: `${base}tackle.fbx`,
       spin: `${base}spin.fbx`,
       defTackle: `${base}def_tackle.fbx`,
-      defSwat: `${base}def_swat.fbx`,
-      celebrate: `${base}celebrate.fbx`,
+      defSwat: `${base}anim_swat.fbx`,
+      celebrate: `${base}anim_dance.fbx`,
       qbThrow: `${base}qb_throw.fbx`,
       pitch: `${base}throw_long.fbx`,
       kick: `${base}kick.fbx`,
-      celebGolf: `${base}celeb_golf.fbx`,
-      celebBat: `${base}celeb_bat.fbx`,
-      celebTennis: `${base}celeb_tennis.fbx`,
+      celebGolf: `${base}anim_breakdance.fbx`,
+      celebBat: `${base}anim_sit_thumbs.fbx`,
+      celebTennis: `${base}anim_sit_laugh.fbx`,
       dive: `${base}dive.fbx`,
       pickup: `${base}pickup.fbx`,
-      turnRun: `${base}turn_run.fbx`,
-      getup: `${base}getup_c.fbx`,
-      getupB: `${base}getup_a.fbx`,
-      getupC: `${base}getup_b.fbx`,
+      turnRun: `${base}anim_turn_run.fbx`,
+      getup: `${base}anim_getup_a.fbx`,
+      getupB: `${base}anim_getup_b.fbx`,
+      getupC: `${base}anim_getup_c.fbx`,
     };
     // Two-stage load so the skinned model appears ASAP: (1) the ~1MB rig swaps box avatars for the
     // model immediately (idle only); (2) the animation clips stream in and upgrade it. A slow or

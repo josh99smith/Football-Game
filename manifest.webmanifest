@@ -1,12 +1,12 @@
 {
-  "name": "Gridiron Blitz",
-  "short_name": "Blitz",
-  "description": "A mobile-first arcade American football game. Fast, loud, and over-the-top.",
+  "name": "Bobble Bowl",
+  "short_name": "Bobble",
+  "description": "Bighead arcade football. Big heads, big hits — fast, loud, and over-the-top.",
   "start_url": "./",
   "display": "fullscreen",
   "orientation": "any",
-  "background_color": "#06210e",
-  "theme_color": "#0b3d18",
+  "background_color": "#0c1224",
+  "theme_color": "#e8590f",
   "icons": [
     {
       "src": "./icon.svg",

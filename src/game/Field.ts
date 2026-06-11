@@ -111,8 +111,8 @@ export class Field {
     }
 
     // End zones (team-colored) with a diagonal hatch + the team nickname.
-    this.endzone(ctx, 0, homeColor, home?.label ?? "BLITZ", home?.accent ?? "rgba(255,255,255,0.95)");
-    this.endzone(ctx, RIGHT_GOAL_X, awayColor, away?.label ?? "BLITZ", away?.accent ?? "rgba(255,255,255,0.95)");
+    this.endzone(ctx, 0, homeColor, home?.label ?? "BOBBLE", home?.accent ?? "rgba(255,255,255,0.95)");
+    this.endzone(ctx, RIGHT_GOAL_X, awayColor, away?.label ?? "BOBBLE", away?.accent ?? "rgba(255,255,255,0.95)");
 
     // Yard lines + goal lines.
     for (let yd = 0; yd <= FIELD_PLAY_YARDS; yd += 5) {
@@ -150,7 +150,7 @@ export class Field {
       this.yardNumber(ctx, x, FIELD_WIDTH * 0.87, n, yd);
     }
 
-    // Repeated faint "BLITZ" wordmarks near both sidelines (arcade branding).
+    // Repeated faint "BOBBLE" wordmarks near both sidelines (arcade branding).
     ctx.save();
     ctx.fillStyle = "rgba(255,255,255,0.10)";
     ctx.font = `900 26px "Trebuchet MS", system-ui, sans-serif`;
@@ -158,8 +158,8 @@ export class Field {
     ctx.textBaseline = "middle";
     for (let yd = 10; yd <= 90; yd += 20) {
       const x = xFromLeftGoal(yd);
-      ctx.fillText("BLITZ", x, FIELD_WIDTH * 0.05);
-      ctx.fillText("BLITZ", x, FIELD_WIDTH * 0.95);
+      ctx.fillText("BOBBLE", x, FIELD_WIDTH * 0.05);
+      ctx.fillText("BOBBLE", x, FIELD_WIDTH * 0.95);
     }
     ctx.restore();
 

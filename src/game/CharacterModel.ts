@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 export interface CharacterClips {
   /** Football ready stance / default idle (used by everyone when set). */
@@ -168,6 +169,21 @@ async function loadFbx(loader: FBXLoader, url: string): Promise<THREE.Group> {
   throw new Error(`could not load ${url} (tried ${pathCandidates(url).length} paths): ${String(lastErr)}`);
 }
 
+/** Load a GLB (the rigged scan model), with the same path-fallback + retry armor as the FBXs. */
+async function loadGlb(url: string): Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }> {
+  const loader = new GLTFLoader();
+  let lastErr: unknown;
+  for (const candidate of pathCandidates(url)) {
+    try {
+      const gltf = await withRetry(() => withTimeout(loader.loadAsync(candidate), 20000, candidate), 3, candidate);
+      return { scene: gltf.scene, animations: gltf.animations };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(`could not load ${url} (tried ${pathCandidates(url).length} paths): ${String(lastErr)}`);
+}
+
 /**
  * Free a loaded FBX scene's GPU/CPU resources. Each animation FBX ships a FULL character mesh we
  * don't keep (we only extract its AnimationClip), so on memory-constrained devices (Android Chrome)
@@ -231,6 +247,14 @@ function emptyClips(idle: THREE.AnimationClip | null): CharacterClips {
  * never leave the player staring at blocks.
  */
 export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
+  if (/\.glb(\?|$)/i.test(modelUrl)) {
+    const { scene, animations } = await loadGlb(modelUrl);
+    // Skinned bounds don't track the pose in three, and the bind-pose bbox is tight on the body —
+    // a diving/ragdolling player would get frustum-culled mid-fall. 14 players is nothing to cull.
+    scene.traverse((o) => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.frustumCulled = false; });
+    const idle = animations[0] ? prep(animations[0]) : null;
+    return buildAsset(scene, emptyClips(idle));
+  }
   const loader = new FBXLoader();
   const model = await loadFbx(loader, modelUrl);
   const idle = model.animations[0] ? prep(model.animations[0]) : null;
@@ -253,8 +277,10 @@ const CLIP_URL_KEY: Record<Exclude<keyof CharacterClips, "idle">, keyof Characte
   qbThrow: "qbThrow", pitch: "pitch", kick: "kick", celebGolf: "celebGolf", celebBat: "celebBat", celebTennis: "celebTennis",
   dive: "dive", pickup: "pickup", turnRun: "turnRun", getup: "getup", getupB: "getupB", getupC: "getupC",
 };
-/** Clips authored on a different skeleton — retarget rotation-only to preserve our proportions. */
-const SPORTS_RETARGET = new Set<Exclude<keyof CharacterClips, "idle">>(["qbThrow", "pitch", "kick", "celebGolf", "celebBat", "celebTennis", "dive", "pickup", "backDiag", "turnRun", "getup", "getupB", "getupC"]);
+/** Clips authored on a DIFFERENT skeleton than the scan rig (legacy mocap kept for the moves the
+ *  new pack doesn't cover) — retarget rotation-only to preserve the scan's chibi proportions.
+ *  Everything else was Mixamo-retargeted onto the scan's own skeleton and binds 1:1. */
+const SPORTS_RETARGET = new Set<Exclude<keyof CharacterClips, "idle">>(["pass", "tackle", "spin", "defTackle", "qbThrow", "pitch", "kick", "dive", "pickup"]);
 
 /** True once every animation clip (not just idle) is loaded — i.e. nothing left to retry. */
 export function clipsComplete(asset: CharacterAsset): boolean {

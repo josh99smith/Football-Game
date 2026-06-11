@@ -1,10 +1,10 @@
-# 🏈 Gridiron Blitz
+# 🏈 Bobble Bowl
 
-A **mobile-first arcade American football game** in the spirit of *NFL Blitz* and
-*Tecmo Bowl* — fast, loud, and over-the-top. Rendered in **real 3D with Three.js (WebGL)**
-on a custom TypeScript game engine, with a 2D canvas HUD/controls overlay. **Zero
-external art/audio assets**: the turf texture is generated procedurally and all sound is
-synthesized with the Web Audio API.
+**Bighead arcade American football** in the spirit of *NFL Blitz* and *Tecmo Bowl* — fast,
+loud, and over-the-top, starring a **photo-scanned bobblehead player**. Rendered in real 3D
+with **Three.js (WebGL)** on a custom TypeScript game engine, with a 2D canvas HUD/controls
+overlay. The turf texture is generated procedurally and all sound is synthesized with the
+Web Audio API.
 
 > 7-on-7. 30 yards for a first down. Turbo. Big hits. ON FIRE. Pick a play and go.
 
@@ -52,6 +52,30 @@ sprint for the burst, but pick your moments.
   speed/power boost (flames included) until the opponent scores.
 - Touchdowns, sacks, interceptions, safeties, and turnovers on downs all handled.
 
+## The player model (photo-scan pipeline)
+
+Every player on the field is one **photogrammetry scan of a bobblehead football figure**,
+auto-rigged and palette-swapped per team:
+
+- The raw scan (≈830k triangles, chaotic per-chart texture atlas) is decimated to a mobile
+  budget and its texture is **baked into vertex colors** (`public/player.glb`, ~0.6 MB).
+- The skeleton comes from the **Mixamo auto-rig** of the same scan: the bundled
+  `anim_*.fbx` clips (run/walk/strafe/juke/catch/get-ups/celebrations…) were retargeted by
+  Mixamo onto the scan's own proportions and bind 1:1. A handful of legacy mocap clips
+  (throws, tackles, kick) are retargeted rotation-only at load.
+- Skinning is computed offline — bone-segment distance weights + Laplacian smoothing.
+- **Team colorways**: the asset pipeline classifies each vertex (uniform navy / orange trim /
+  keep skin & whites) into `COLOR_0.alpha`; at load the game substitutes the two uniform
+  classes with each team's jersey/accent colors, preserving the baked shading.
+
+Rebuild the model from a new scan + Mixamo `Idle.fbx` with:
+
+```bash
+npm run build:player -- <scan.glb> <Idle.fbx> public/player.glb
+```
+
+(see [`tools/build-player-asset.mjs`](tools/build-player-asset.mjs)).
+
 ## How it's built
 
 A clean split between a reusable **engine**, the **game** logic, and **rendering**:
@@ -64,6 +88,7 @@ src/
               the Match/rules model, the Three.js scene (Scene3D), and the state machine
               (menu → kickoff → play select → live play → result → game over)
   ui/         HUD scoreboard, on-screen touch controls, menu widgets
+tools/        offline asset pipeline (scan → rigged, vertex-colored player.glb)
 ```
 
 - **2D simulation, 3D presentation**: all gameplay (AI, rules, physics) runs in 2D field
