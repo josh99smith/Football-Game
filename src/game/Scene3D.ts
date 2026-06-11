@@ -687,6 +687,7 @@ class FbxAvatar implements Avatar {
   private fallT = 0;
   /** Smoothed body bank (roll) into turns/cuts, so direction changes read as a lean. */
   private bankSmooth = 0;
+  private pitchSmooth = 0; // smoothed accel weight-pitch (raw accel spikes at turbo would jitter it)
   private readonly interp = new Interp();
 
   // --- physics ragdoll tackle (replaces the canned tackle clip when a hit lands) ---
@@ -1265,6 +1266,7 @@ class FbxAvatar implements Avatar {
     for (const [bone, r] of this.restPose) { bone.position.copy(r.p); bone.quaternion.copy(r.q); }
     this.fallT = 0;
     this.bankSmooth = 0;
+    this.pitchSmooth = 0;
     this.throwT = 0; // kill any in-flight procedural throw so a reset mid-arc can't jam the arm next play
     // Zero EVERY one-shot (not just the current `this.oneShot`): an overlapping overlay can leave an
     // orphaned action clamped at weight > 0, and those accumulated across the pooled avatars' reuse —
@@ -1467,10 +1469,14 @@ class FbxAvatar implements Avatar {
       const accelPitch = clamp(aFwd * ANIM.LEAN_ACCEL_GAIN, -ANIM.LEAN_PITCH_MAX, ANIM.LEAN_PITCH_MAX);
       const bankTarget = clamp(clamp(-lo.turnRate * 0.085, -0.55, 0.55) + p.leanTarget * 0.52 + aLat * ANIM.BANK_ACCEL_GAIN, -0.62, 0.62);
       this.bankSmooth += (bankTarget - this.bankSmooth) * Math.min(1, dt * 9);
+      // Smooth the accel pitch too (it was applied raw): the human's snappy accel (accelMul 3.2) makes
+      // the per-frame acceleration spike at turbo, which jittered the forward/back pitch every frame —
+      // the open-field "spazz" when sprinting. Critically damp it like the bank.
+      this.pitchSmooth += (accelPitch - this.pitchSmooth) * Math.min(1, dt * 9);
       // Forward lean while running ahead (more at speed), slight backward lean when backpedaling,
-      // plus the accel weight pitch — all FADED OUT as the body falls (1 - fallT) so a tackled /
-      // wrapped-up player doesn't pile a running+decel lean on top of the fall and plank backward.
-      this.lean.rotation.x += (((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01 + accelPitch) * (1 - this.fallT);
+      // plus the (smoothed) accel weight pitch — all FADED OUT as the body falls (1 - fallT) so a
+      // tackled / wrapped-up player doesn't pile a running+decel lean on top of the fall.
+      this.lean.rotation.x += (((fwd - back) * 0.16 + fwd * lo.speed01 * 0.12) * moving01 + this.pitchSmooth) * (1 - this.fallT);
       // Half-frequency weight-shift roll (once per stride) on top of the turn/accel bank.
       const hipRoll = ANIM.PROC_HIP ? Math.sin(this.phase * 3.5) * ANIM.HIP_ROLL_AMP * moving01 * fwd : 0;
       this.lean.rotation.z = this.bankSmooth + hipRoll;
