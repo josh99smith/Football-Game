@@ -23,6 +23,7 @@ import { TWO_POINT_POINTS } from "../Match";
 import type { Match, PlayOutcome, OutcomeType } from "../Match";
 import { PlayCallOverlay } from "../../ui/PlayCallOverlay";
 import { cpuOffensePlay, cpuDefensePlay } from "../ai/PlayCaller";
+import { comebackLevel, comebackPick, comebackReact, comebackSpeed, keyedOnPlay } from "../ai/Comeback";
 import { KickoffState } from "./KickoffState";
 import { GameOverState } from "./GameOverState";
 import { PatChoiceState } from "./PatChoiceState";
@@ -320,6 +321,7 @@ export class LivePlayState implements GameState {
     this.defensePlay = defensePlay;
     this.offenseTeamId = m.possession;
     this.humanIsOffense = m.possession === m.humanTeam;
+    m.noteOffensePlay(this.offenseTeamId, offensePlay.id);
     this.dir = m.attackDir(this.offenseTeamId);
     this.startLosX = m.losX;
 
@@ -553,7 +555,7 @@ export class LivePlayState implements GameState {
         this.offense,
         this.defense,
         landed,
-        DIFFICULTY[m.difficulty].pick,
+        comebackPick(m, DIFFICULTY[m.difficulty].pick, m.opponent(this.offenseTeamId)),
         { minX: f.minX, maxX: f.maxX, minY: f.minY, maxY: f.maxY },
         this.passTarget,
       );
@@ -1160,7 +1162,9 @@ export class LivePlayState implements GameState {
       d.vel.y += Math.sin(f) * 165;
       this.app.particles.burst(d.pos.x, d.pos.y, "#dce6ff", 5, 70);
       const diff = this.app.match.difficulty;
-      this.cpuBigHitCd = diff === "allpro" ? 1.4 : diff === "pro" ? 1.9 : 2.8;
+      const cd = diff === "allpro" ? 1.4 : diff === "pro" ? 1.9 : 2.8;
+      const m = this.app.match;
+      this.cpuBigHitCd = cd * (1 - 0.12 * Math.max(0, comebackLevel(m, m.opponent(this.offenseTeamId))));
       return;
     }
   }
@@ -1368,7 +1372,14 @@ export class LivePlayState implements GameState {
     // Defense ramps up after the snap so plays can develop; the rate scales with
     // difficulty (Rookie gives more pocket time and bigger lanes).
     const diff = DIFFICULTY[m.difficulty];
-    const react = Math.min(1, diff.reactBase + this.playTime * diff.reactRate);
+    // Blitz-style momentum: a trailing defense reacts a touch sooner, and a defense that has seen
+    // the same human play several snaps running keys on it (reads it faster, DBs bite less).
+    const defTeamId = m.opponent(this.offenseTeamId);
+    const keyed = keyedOnPlay(m, this.offenseTeamId);
+    const react = Math.min(
+      1,
+      diff.reactBase + comebackReact(m, defTeamId) + keyed * 0.18 + this.playTime * diff.reactRate,
+    );
     for (const p of this.all) {
       if (p.isDown) {
         p.step(dt, 0);
@@ -1382,10 +1393,10 @@ export class LivePlayState implements GameState {
       if (isDefense && this.isEngagedByBlocker(p)) mult *= 0.32;
       // A covering DB is flat-footed for a beat when his receiver breaks, so the
       // receiver gains real separation out of the cut.
-      if (isDefense && p.job === "cover" && p.assignment && p.assignment.cutTimer > 0) mult *= 0.55;
+      if (isDefense && p.job === "cover" && p.assignment && p.assignment.cutTimer > 0) mult *= 0.55 + 0.25 * keyed;
       // Glancing-hit stumble drains a beat of speed.
       if (p.isStumbling) mult *= 0.5;
-      const target = p.speedFor(p.turbo || diving, onFire) * mult;
+      const target = p.speedFor(p.turbo || diving, onFire) * mult * comebackSpeed(m, p.team);
       // The human-controlled player gets much snappier acceleration + sharper turning, so the
       // stick feels responsive — easy to cut, reverse, and weave — while the AI stays grounded.
       const human = p === this.controlled;

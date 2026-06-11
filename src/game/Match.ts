@@ -98,6 +98,18 @@ export class Match {
   /** Set while a two-point conversion attempt is the active "play" (a goal-line down from the 2). */
   twoPointActive = false;
 
+  /** The human's consecutive-call tracker (Blitz-style: a spammed play gets keyed on by the
+   *  defense — see ai/Comeback.ts). `count` is how many snaps in a row `id` has been called. */
+  playRepeat: { id: string; count: number } = { id: "", count: 0 };
+
+  /** Note a snapped offensive play for the repeat tracker (only the human's calls count). */
+  noteOffensePlay(team: TeamId, playId: string): void {
+    if (team !== this.humanTeam) return;
+    this.playRepeat = this.playRepeat.id === playId
+      ? { id: playId, count: this.playRepeat.count + 1 }
+      : { id: playId, count: 1 };
+  }
+
   /** Per-team box score. */
   readonly stats: Record<TeamId, TeamStats> = { HOME: emptyStats(), AWAY: emptyStats() };
 
