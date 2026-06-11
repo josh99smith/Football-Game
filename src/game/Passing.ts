@@ -12,8 +12,8 @@ export interface CatchResult {
 
 // Catching is resolved by the ball's real 3D proximity to a PLAYER (not its target spot): the ball
 // has to actually arrive in a player's reach and be at a catchable height before anything triggers.
-const CATCH_REACH = 28;       // horizontal px a player can reach to the ball (~2 yd; +arm)
-const CATCH_REACH_INTENDED = 42; // the targeted receiver reaches a bit further (benefit of the doubt)
+const CATCH_REACH = 19;       // horizontal px to the ball — tighter, so the ball must arrive close
+const CATCH_REACH_INTENDED = 29; // the targeted receiver still reaches a bit further (was 42)
 const CATCH_HEIGHT = 70;      // ball must have descended below this height to be catchable
 
 /**

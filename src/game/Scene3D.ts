@@ -1623,6 +1623,9 @@ export class Scene3D {
   private physics: PhysicsWorld | null = null;
   private readonly ballGroup = new THREE.Group();
   private readonly ballMesh: THREE.Mesh;
+  /** Red-hot ember glow around the ball while the possessing team is ON FIRE. */
+  private readonly ballGlow: THREE.Sprite;
+  private ballFireT = 0; // drives the fire pulse/flicker
   /** Glowing comet trail behind a thrown ball (sprite pool placed along recent positions). */
   private readonly ballTrail: THREE.Sprite[] = [];
   private readonly ballTrailHist: THREE.Vector3[] = [];
@@ -1727,21 +1730,27 @@ export class Scene3D {
       this.scene.add(pm.group);
     }
 
-    // Ball: a stretched ellipsoid that spirals in flight.
+    // Ball: a stretched ellipsoid that spirals in flight (slightly smaller than before).
     this.ballMesh = new THREE.Mesh(
       new THREE.SphereGeometry(0.26, 14, 12),
       new THREE.MeshStandardMaterial({ color: 0x8a4b22, roughness: 0.55 }),
     );
-    this.ballMesh.scale.set(1.55, 0.92, 0.92);
+    this.ballMesh.scale.set(1.34, 0.79, 0.79);
     this.ballMesh.castShadow = true;
     const ballShadow = new THREE.Mesh(
-      new THREE.CircleGeometry(0.3, 12),
+      new THREE.CircleGeometry(0.26, 12),
       new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 }),
     );
     ballShadow.rotation.x = -Math.PI / 2;
     ballShadow.position.y = 0.02;
     ballShadow.name = "shadow";
-    this.ballGroup.add(this.ballMesh, ballShadow);
+    // Fire glow: an additive ember sprite that flares red-hot around the ball when the team's ON FIRE.
+    this.ballGlow = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: makeMoteTexture(), color: 0xff3814, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }),
+    );
+    this.ballGlow.scale.set(1.6, 1.6, 1.6);
+    this.ballGlow.visible = false;
+    this.ballGroup.add(this.ballMesh, ballShadow, this.ballGlow);
     this.ballGroup.visible = false;
     this.scene.add(this.ballGroup);
 
@@ -2560,6 +2569,8 @@ export class Scene3D {
     ssHeading?: number;
     /** Superstar cam: a field point (px) to pan the look toward (e.g. the QB's targeted receiver). */
     ssLook?: { x: number; y: number } | null;
+    /** The possessing team is ON FIRE — the ball flares red-hot. */
+    ballOnFire?: boolean;
   }): void {
     const { players, ball } = opts;
     for (let i = 0; i < this.players.length; i++) {
@@ -2609,6 +2620,23 @@ export class Scene3D {
         this.ballRoll += opts.dt * 16;
         this.ballMesh.rotation.set(this.ballRoll, Math.atan2(ball.vel.x, ball.vel.y), this.ballRoll * 0.6);
       }
+    }
+    // ON FIRE: the ball burns red-hot — emissive pulse on the leather + a flaring ember halo.
+    this.ballFireT += opts.dt;
+    const ballMat = this.ballMesh.material as THREE.MeshStandardMaterial;
+    if (opts.ballOnFire) {
+      const flick = 0.5 + 0.5 * Math.sin(this.ballFireT * 11) * Math.sin(this.ballFireT * 6.3); // jittery flame
+      ballMat.emissive.setHex(0xff2606);
+      ballMat.emissiveIntensity = 0.85 + flick * 1.15;
+      const gmat = this.ballGlow.material as THREE.SpriteMaterial;
+      gmat.opacity = 0.45 + flick * 0.5;
+      const s = 1.5 + flick * 0.7;
+      this.ballGlow.scale.set(s, s, s);
+      this.ballGlow.visible = this.ballGroup.visible;
+    } else if (this.ballGlow.visible || ballMat.emissiveIntensity !== 1) {
+      ballMat.emissive.setHex(0x000000);
+      ballMat.emissiveIntensity = 1;
+      this.ballGlow.visible = false;
     }
     this.tickBallTrail(ball.state === "inAir");
 

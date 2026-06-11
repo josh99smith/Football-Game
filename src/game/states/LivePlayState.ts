@@ -682,6 +682,7 @@ export class LivePlayState implements GameState {
       dt,
       ssHeading,
       ssLook,
+      ballOnFire: m.team(this.offenseTeamId).onFire,
     });
 
     // For a 1:1 replay, record the EXACT skeleton pose of any ragdolling/getting-up avatar this frame
@@ -2176,6 +2177,7 @@ export class LivePlayState implements GameState {
       focusX: fr.focusX, focusY: fr.focusY, dir: this.dir,
       losX: this.startLosX, firstDownX: this.app.match.firstDownX,
       shakeX: 0, shakeY: 0, dt,
+      ballOnFire: this.app.match.team(this.offenseTeamId).onFire,
     });
     // Free-look owns the camera while active; otherwise the auto ball-tracking replay cam runs.
     if (this.freeCam?.active) this.freeCam.update();
