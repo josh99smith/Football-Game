@@ -211,7 +211,7 @@ async function main(): Promise<void> {
   function update(dt: number): void {
     if (phase !== shownPhase) { shownPhase = phase; setMsg(); } // auto get-up changes phase itself
     if (phase === "fall") {
-      physics.step((sdt) => ragdoll.applyLimits(sdt)); // soft joint limits each substep
+      physics.step(dt, (sdt) => ragdoll.applyLimits(sdt)); // soft joint limits each substep
       ragdoll.drive();                                  // bodies drive the skinned mesh bones
       fallTime += dt;
       if (fallTime > MIN_FALL && ragdoll.residualMotion() < SETTLE_RESIDUAL) settleTimer += dt;

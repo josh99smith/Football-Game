@@ -2587,7 +2587,7 @@ export class Scene3D {
     // enforcing each one's joint limits per substep, then drive their bones + advance get-up.
     if (this.physics && this.ragdollsBusy()) {
       const active = this.players.filter((a) => a.ragdollActive());
-      this.physics.step((sdt) => { for (const a of active) a.applyRagdollLimits(sdt); });
+      this.physics.step(opts.dt, (sdt) => { for (const a of active) a.applyRagdollLimits(sdt); });
       for (const a of active) a.advanceRagdoll(opts.dt);
     }
 

@@ -63,16 +63,19 @@ export class PhysicsWorld {
   }
 
   /**
-   * Advance one 1/60 frame. `preSubstep(dt)` runs before every internal substep so
-   * joint "muscles" (PD torques) are re-applied each substep — torque impulses must be
-   * dt-scaled by the caller so the result is substep-invariant.
+   * Advance the world by `dt` seconds (pass the caller's SIM dt — including any hit-stop /
+   * bullet-time scaling, so slow-mo actually slows the ragdolls and a freeze freezes them).
+   * `preSubstep(sdt)` runs before every internal substep so joint "muscles" (PD torques) are
+   * re-applied each substep — torque impulses must be dt-scaled by the caller so the result is
+   * substep-invariant.
    */
-  step(preSubstep?: (dt: number) => void): void {
+  step(dt: number, preSubstep?: (dt: number) => void): void {
+    if (!(dt > 0)) return; // frozen frame (hit-stop) or bad input: hold the bodies still
     const sub = Math.max(1, this.substeps | 0);
-    const dt = 1 / 60 / sub;
-    this.world.timestep = dt;
+    const sdt = Math.min(dt, 1 / 20) / sub; // clamp a runaway frame so the solver can't blow up
+    this.world.timestep = sdt;
     for (let i = 0; i < sub; i++) {
-      preSubstep?.(dt);
+      preSubstep?.(sdt);
       this.world.step();
     }
     this.world.timestep = 1 / 60;

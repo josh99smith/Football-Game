@@ -111,7 +111,7 @@ async function main(): Promise<void> {
   // One fixed simulation step (the single source of truth for advancing physics).
   function simStep(): void {
     loco.tick(STEP); // gait + leg targets + foot-locks (once per physics frame)
-    physics.step((dt) => {
+    physics.step(STEP, (dt) => {
       loco.applyAssist(dt); // balance wrench, re-applied per substep
       ragdoll.update(dt); // PD muscle re-applied per substep
     });
