@@ -740,6 +740,28 @@ for (let t = 0; t < fIdx.length; t += 3) {
     }
   }
 }
+// Despeckle: residual outlier texels (bright flecks inside the navy, stray mask classes) read
+// fine up close but turn into marble streaks once a team colorway luminance-scales them. A 3x3
+// median over the covered texels (rgb per-channel + mask majority) kills them.
+for (let pass = 0; pass < 2; pass++) {
+  const out = Uint8Array.from(texData);
+  const rs = [], gs = [], bs = [], as = [];
+  for (let py = 1; py < AH - 1; py++) {
+    for (let px = 1; px < AW - 1; px++) {
+      if (!texCovered[py * AW + px]) continue;
+      rs.length = gs.length = bs.length = as.length = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const q = (py + dy) * AW + (px + dx);
+        if (!texCovered[q]) continue;
+        rs.push(texData[q * 4]); gs.push(texData[q * 4 + 1]); bs.push(texData[q * 4 + 2]); as.push(texData[q * 4 + 3]);
+      }
+      const mid = (arr) => { arr.sort((a, b) => a - b); return arr[arr.length >> 1]; };
+      const o = (py * AW + px) * 4;
+      out[o] = mid(rs); out[o + 1] = mid(gs); out[o + 2] = mid(bs); out[o + 3] = mid(as);
+    }
+  }
+  texData.set(out);
+}
 // Gutter dilation: bleed covered colors into empty texels so bilinear/mip sampling near chart
 // borders never reads black.
 for (let pass = 0; pass < 8; pass++) {
