@@ -384,44 +384,124 @@ function makeBlobTexture(): THREE.Texture {
 // We paint a jersey in that layout — base color, white shoulder yoke, accent collar V + sleeve
 // stripes, and an outlined player number front & back — then cache it per (jersey,accent,number).
 const _jerseyCache = new Map<string, THREE.CanvasTexture>();
-// Optional REALISTIC image skins, keyed by a team's HOME jersey color. Drop a PNG at /public/<file>
-// and the loaded image replaces the procedural draw for that team in place (the procedural texture is
-// still drawn first, so a missing/failed file just falls back to it — the game never breaks). NOTE:
-// the player number is baked into the image, so every player on that team shows it for now; a
-// numberless base + a drawn number is the follow-up once a skin is dialed in.
-const JERSEY_SKIN_OVERRIDES: Record<number, string> = {
-  0x0a1c3f: "skins/dal_home_jersey.webp", // Dallas Outlaws — home
-};
 
-/** Mean luminance (0..1) of a drawable, sampled small (cheap, one-time per skin load). */
-function meanLuma(src: CanvasImageSource, w: number, h: number): number {
-  const s = document.createElement("canvas");
-  s.width = s.height = 32;
-  const sx = s.getContext("2d")!;
-  sx.drawImage(src, 0, 0, w, h, 0, 0, 32, 32);
-  const d = sx.getImageData(0, 0, 32, 32).data;
-  let sum = 0;
-  for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
-  return sum / (d.length / 4) / 255;
+// ---- Realistic uniform atlas (the rigged model's own texture pack) ----
+// The rig ships with a real texture set (material "Helmet_Uniform"); we publish it as a NEUTRAL
+// template: skins/uniform_base.webp (baked "17"/"WR" markings erased, recolorable regions
+// normalized to gray with the AO baked into the luma) plus skins/uniform_mask.png (gray levels tag
+// each pixel's region: ~60 jersey, ~120 pants, ~180 accent, ~240 helmet shell, 0 keep-as-is).
+// At runtime each team's colors fill those regions and the player's own number is drawn at the
+// model's authored chest/back number spots — every team gets the realistic uniform, with
+// per-player numbers. Until the files arrive (or if they fail), the procedural painter below is
+// what shows — the game never breaks.
+const ATLAS = 512;
+const ATLAS_TEMPLATE_LUMA = 190; // the gray the template's recolor regions were normalized to
+interface SkinAtlas { base: ImageData; mask: ImageData; }
+let _atlasPromise: Promise<SkinAtlas | null> | null = null;
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = (import.meta.env.BASE_URL || "/") + src;
+  });
 }
 
-/** AI-upgraded skins arrive with shading baked into the albedo (deep colors + lighting gradients),
- *  so under the game's lights they render much darker than the procedural texture they replace.
- *  Brightness-match the image to the procedural reference's mean luminance so it sits in the same
- *  exposure — the detail (weave/stitching) survives, the "unlit" look goes away. */
-function lumaMatched(img: HTMLImageElement, ref: HTMLCanvasElement): HTMLCanvasElement {
-  const out = document.createElement("canvas");
-  out.width = img.naturalWidth;
-  out.height = img.naturalHeight;
-  const ox = out.getContext("2d")!;
-  const refL = meanLuma(ref, ref.width, ref.height);
-  const imgL = meanLuma(img, img.naturalWidth, img.naturalHeight);
-  const ratio = imgL > 0.01 ? Math.min(2.2, Math.max(0.6, refL / imgL)) : 1;
-  ox.filter = `brightness(${ratio.toFixed(3)})`;
-  ox.drawImage(img, 0, 0);
-  ox.filter = "none";
-  return out;
+function toImageData(img: HTMLImageElement): ImageData {
+  const c = document.createElement("canvas");
+  c.width = c.height = ATLAS;
+  const x = c.getContext("2d")!;
+  x.drawImage(img, 0, 0, ATLAS, ATLAS);
+  return x.getImageData(0, 0, ATLAS, ATLAS);
 }
+
+function loadSkinAtlas(): Promise<SkinAtlas | null> {
+  if (typeof Image === "undefined") return Promise.resolve(null);
+  return (_atlasPromise ??= Promise.all([loadImage("skins/uniform_base.webp"), loadImage("skins/uniform_mask.png")])
+    .then(([b, m]) => ({ base: toImageData(b), mask: toImageData(m) }))
+    .catch(() => null));
+}
+
+/** Fill the template's recolor regions with a team's colors (cached per palette). The template's
+ *  luma carries the baked AO/seam detail, so each output pixel = teamColor × (luma / template gray);
+ *  region-0 pixels (facemask, shoes, hardware) keep the original texture untouched. */
+const _atlasRecolorCache = new Map<string, HTMLCanvasElement>();
+function recolorAtlas(atlas: SkinAtlas, jersey: number, pants: number, accent: number, shell: number): HTMLCanvasElement {
+  const key = `${jersey.toString(16)}-${pants.toString(16)}-${accent.toString(16)}-${shell.toString(16)}`;
+  const cached = _atlasRecolorCache.get(key);
+  if (cached) return cached;
+  const cols = [jersey, pants, accent, shell].map((n) => [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]);
+  const c = document.createElement("canvas");
+  c.width = c.height = ATLAS;
+  const x = c.getContext("2d")!;
+  const out = new ImageData(new Uint8ClampedArray(atlas.base.data), ATLAS, ATLAS);
+  const d = out.data, mk = atlas.mask.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const region = ((mk[i] + 30) / 60) | 0; // 0 keep, 1..4 = jersey / pants / accent / shell
+    if (region === 0) continue;
+    const f = d[i] / ATLAS_TEMPLATE_LUMA; // template is gray here — R carries the detail
+    const col = cols[region - 1];
+    d[i] = col[0] * f;
+    d[i + 1] = col[1] * f;
+    d[i + 2] = col[2] * f;
+  }
+  x.putImageData(out, 0, 0);
+  _atlasRecolorCache.set(key, c);
+  return c;
+}
+
+/** Realistic jersey: the recolored atlas + this player's number at the authored chest/back spots
+ *  (uv centers (0.25, 0.75) front and (0.75, 0.75) back — measured from the original texture). */
+function composeJersey(atlas: SkinAtlas, jersey: number, accent: number, trim: number, num: number): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = c.height = ATLAS;
+  const x = c.getContext("2d")!;
+  x.drawImage(recolorAtlas(atlas, jersey, trim, accent, trim), 0, 0);
+  const lightBase = lum(jersey) > 0.6;
+  const ink = lightBase ? hexCss(accent) : "#f4f4ee";
+  const numOutline = lightBase ? "#0a0a0a" : hexCss(accent);
+  const label = String(num);
+  x.textAlign = "center";
+  x.textBaseline = "middle";
+  x.font = "900 72px Arial Narrow, Arial, sans-serif";
+  for (const cx of [0.25, 0.75]) {
+    x.save();
+    x.translate(cx * ATLAS, 0.25 * ATLAS);
+    x.shadowColor = "rgba(0,0,0,0.45)"; x.shadowBlur = 6; x.shadowOffsetY = 3;
+    x.lineWidth = 7; x.strokeStyle = numOutline; x.strokeText(label, 0, 0);
+    x.shadowColor = "transparent";
+    x.fillStyle = ink; x.fillText(label, 0, 0);
+    x.restore();
+  }
+  return c;
+}
+
+/** A shared detail texture that starts as a tiny flat fill and upgrades in place when its file
+ *  loads — a missing/failed file just leaves the flat fill (the previous untextured look). */
+function lazySharedTexture(src: string, fill: string, srgb: boolean): THREE.Texture {
+  const c = document.createElement("canvas");
+  c.width = c.height = 2;
+  const x = c.getContext("2d")!;
+  x.fillStyle = fill;
+  x.fillRect(0, 0, 2, 2);
+  const tex = new THREE.CanvasTexture(c);
+  if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+  if (typeof Image !== "undefined") {
+    const img = new Image();
+    img.onload = () => { tex.image = img; tex.needsUpdate = true; };
+    img.src = (import.meta.env.BASE_URL || "/") + src;
+  }
+  return tex;
+}
+let _uniformNormal: THREE.Texture | null = null;
+let _faceMap: THREE.Texture | null = null;
+let _faceNormal: THREE.Texture | null = null;
+/** Tangent-space normal map for the whole uniform + helmet (pad seams, fabric, vents). */
+const uniformNormalTex = (): THREE.Texture => (_uniformNormal ??= lazySharedTexture("skins/uniform_normal.webp", "#8080ff", false));
+/** Face/arms albedo, luma-normalized to ~#d7d7d7 so material.color (the skin tone) tints it. */
+const faceMapTex = (): THREE.Texture => (_faceMap ??= lazySharedTexture("skins/face.webp", "#d7d7d7", true));
+const faceNormalTex = (): THREE.Texture => (_faceNormal ??= lazySharedTexture("skins/face_normal.webp", "#8080ff", false));
 
 function hexCss(n: number): string {
   return `#${(n & 0xffffff).toString(16).padStart(6, "0")}`;
@@ -548,15 +628,13 @@ function jerseyTexture(jersey: number, accent: number, trim: number, num: number
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
-  // If a realistic image skin exists for this jersey color, load it and swap it in place once it
-  // arrives (same texture object → no re-bind needed). On a missing/failed file the procedural draw
-  // above just stays — graceful fallback.
-  const skin = JERSEY_SKIN_OVERRIDES[jersey];
-  if (skin && typeof Image !== "undefined") {
-    const img = new Image();
-    img.onload = () => { tex.image = lumaMatched(img, c); tex.needsUpdate = true; };
-    img.src = (import.meta.env.BASE_URL || "/") + skin;
-  }
+  // Upgrade in place to the realistic atlas uniform once it's available (same texture object → no
+  // re-bind needed). On missing/failed files the procedural draw above just stays.
+  loadSkinAtlas().then((atlas) => {
+    if (!atlas) return;
+    tex.image = composeJersey(atlas, jersey, accent, trim, num);
+    tex.needsUpdate = true;
+  });
   _jerseyCache.set(key, tex);
   return tex;
 }
@@ -567,11 +645,6 @@ function jerseyTexture(jersey: number, accent: number, trim: number, num: number
 // the shell color there, a front-to-back center stripe (accent between white pinstripes), and a
 // team decal on each side, then cache per (helmet,accent,decal).
 const _helmetCache = new Map<string, THREE.CanvasTexture>();
-// Optional realistic helmet image skins, keyed by shell color (same in-place swap + fallback as the
-// jersey override above). Drop a 256² PNG at /public/<file>.
-const HELMET_SKIN_OVERRIDES: Record<number, string> = {
-  0xc9ced6: "skins/dal_helmet.webp", // Dallas Outlaws — silver shell
-};
 function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THREE.CanvasTexture {
   const key = `${helmet.toString(16)}-${accent.toString(16)}-${decal ?? "none"}`;
   const cached = _helmetCache.get(key);
@@ -604,12 +677,21 @@ function helmetTexture(helmet: number, accent: number, decal?: EmblemIcon): THRE
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
-  const skin = HELMET_SKIN_OVERRIDES[helmet];
-  if (skin && typeof Image !== "undefined") {
-    const img = new Image();
-    img.onload = () => { tex.image = lumaMatched(img, c); tex.needsUpdate = true; };
-    img.src = (import.meta.env.BASE_URL || "/") + skin;
-  }
+  // Upgrade in place to the model's real helmet (recolored shell + accents) once the atlas is in;
+  // the team decal is stamped on top at the side-panel island, same spot as the procedural draw.
+  loadSkinAtlas().then((atlas) => {
+    if (!atlas) return;
+    const c2 = document.createElement("canvas");
+    c2.width = c2.height = ATLAS;
+    const x2 = c2.getContext("2d")!;
+    x2.drawImage(recolorAtlas(atlas, helmet, helmet, accent, helmet), 0, 0);
+    if (decal) {
+      const decalColor = lum(helmet) > 0.55 ? "#15171c" : acc;
+      drawIcon(x2, 0.21 * ATLAS, (1 - 0.11) * ATLAS, ATLAS * 0.07, decal, decalColor);
+    }
+    tex.image = c2;
+    tex.needsUpdate = true;
+  });
   _helmetCache.set(key, tex);
   return tex;
 }
@@ -746,9 +828,14 @@ class FbxAvatar implements Avatar {
       const isHelmet = /helmet/i.test(m.name);
       const apply = (mat: THREE.Material): THREE.Material => {
         const clone = mat.clone() as THREE.MeshStandardMaterial;
-        if (isJersey) this.jerseyMats.push(clone);
-        else if (isHelmet) this.helmetMats.push(clone);
-        else { clone.color.setHex(SKIN); this.skinMats.push(clone); }
+        if (isJersey) { clone.normalMap = uniformNormalTex(); this.jerseyMats.push(clone); }
+        else if (isHelmet) { clone.normalMap = uniformNormalTex(); this.helmetMats.push(clone); }
+        else {
+          clone.color.setHex(SKIN);
+          clone.map = faceMapTex();
+          clone.normalMap = faceNormalTex();
+          this.skinMats.push(clone);
+        }
         return clone;
       };
       m.material = Array.isArray(m.material) ? m.material.map(apply) : apply(m.material);
