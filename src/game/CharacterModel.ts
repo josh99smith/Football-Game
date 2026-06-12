@@ -54,6 +54,24 @@ export interface CharacterClips {
   getup: THREE.AnimationClip | null;
   getupB: THREE.AnimationClip | null;
   getupC: THREE.AnimationClip | null;
+  /** Pre-snap ready crouch (sliced from the relax take by the pipeline). */
+  stance: THREE.AnimationClip | null;
+}
+
+/** Measured tuning baked into the model GLB by the asset pipeline (units are MODEL-local —
+ *  multiply lengths by `CharacterAsset.scale` for world units). Everything is optional: when a
+ *  field (or the whole object) is missing, consumers keep their hardcoded fallbacks. */
+export interface PlayerMeta {
+  /** Ragdoll capsule overrides keyed by TackleRagdoll segment name. r = radius, m = mass (kg). */
+  segs: Record<string, { r: number; m: number }>;
+  /** Horizontal speed (model units/s) of the stance foot in the run/walk cycles — drives the
+   *  stride-warp so feet plant instead of skate. */
+  strideRun: number;
+  strideWalk: number;
+  /** Rest heights (model units): ankle (foot-IK plant bands), hip, total height. */
+  ankleY: number;
+  hipY: number;
+  height: number;
 }
 
 export interface CharacterAsset {
@@ -63,6 +81,8 @@ export interface CharacterAsset {
   scale: number;
   /** World-Y offset (pre-scale) that puts the model's feet on the ground. */
   groundOffset: number;
+  /** Measured tuning from the asset pipeline (null for legacy assets). */
+  meta: PlayerMeta | null;
 }
 
 export interface CharacterUrls {
@@ -94,6 +114,7 @@ export interface CharacterUrls {
   getup?: string;
   getupB?: string;
   getupC?: string;
+  stance?: string;
 }
 
 /**
@@ -225,19 +246,19 @@ async function loadClip(loader: FBXLoader, url: string, strict = false): Promise
 }
 
 /** Build a CharacterAsset from a loaded rig + (possibly partial) clip set. */
-function buildAsset(model: THREE.Group, clips: CharacterClips): CharacterAsset {
+function buildAsset(model: THREE.Group, clips: CharacterClips, meta: PlayerMeta | null = null): CharacterAsset {
   const box = new THREE.Box3().setFromObject(model);
   const size = new THREE.Vector3();
   box.getSize(size);
   const height = size.y || 1;
-  return { template: model, clips, scale: 1.95 / height, groundOffset: -box.min.y };
+  return { template: model, clips, scale: 1.95 / height, groundOffset: -box.min.y, meta };
 }
 
 function emptyClips(idle: THREE.AnimationClip | null): CharacterClips {
   return { idle, run: null, runBack: null, strafe: null, backDiag: null, pass: null, catch: null, juke: null,
     walk: null, tackle: null, spin: null, defTackle: null, defSwat: null, celebrate: null,
     qbThrow: null, pitch: null, kick: null, celebGolf: null, celebBat: null, celebTennis: null,
-    dive: null, pickup: null, turnRun: null, getup: null, getupB: null, getupC: null };
+    dive: null, pickup: null, turnRun: null, getup: null, getupB: null, getupC: null, stance: null };
 }
 
 /**
@@ -264,11 +285,13 @@ export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
     clips.run = named("run");
     clips.catch = named("catch");
     clips.dive = named("dive");
-    // No dedicated backpedal/strafe takes: reuse walk so off-axis movement isn't a frozen pose.
-    clips.runBack = named("walk");
-    clips.backDiag = named("walk");
-    clips.strafe = named("walk");
-    return buildAsset(scene, clips);
+    clips.stance = named("stance");
+    // Backpedal = the pipeline's reversed-walk bake; no strafe clip exists — the renderer folds
+    // lateral movement into the walk/run mix instead (one action, one phase, no smear).
+    clips.runBack = named("runback") ?? named("walk");
+    clips.backDiag = named("runback") ?? named("walk");
+    const meta = (scene.userData?.playerMeta as PlayerMeta | undefined) ?? null;
+    return buildAsset(scene, clips, meta);
   }
   const loader = new FBXLoader();
   const model = await loadFbx(loader, modelUrl);
@@ -282,12 +305,12 @@ export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
  * one-shots stream in after.
  */
 const CLIP_KEYS: Array<Exclude<keyof CharacterClips, "idle">> = [
-  "run", "walk", "runBack", "strafe", "backDiag", "spin", "juke", "catch", "pass", "tackle", "defTackle", "defSwat", "celebrate",
+  "run", "walk", "runBack", "strafe", "backDiag", "stance", "spin", "juke", "catch", "pass", "tackle", "defTackle", "defSwat", "celebrate",
   // Sports-mocap one-shots load last (lowest priority — locomotion + core one-shots come first).
   "qbThrow", "pitch", "kick", "celebGolf", "celebBat", "celebTennis", "dive", "pickup", "turnRun", "getup", "getupB", "getupC",
 ];
 const CLIP_URL_KEY: Record<Exclude<keyof CharacterClips, "idle">, keyof CharacterUrls> = {
-  run: "run", runBack: "runBack", strafe: "strafe", backDiag: "backDiag", pass: "pass", catch: "catch", juke: "juke",
+  run: "run", runBack: "runBack", strafe: "strafe", backDiag: "backDiag", stance: "stance", pass: "pass", catch: "catch", juke: "juke",
   walk: "walk", tackle: "tackle", spin: "spin", defTackle: "defTackle", defSwat: "defSwat", celebrate: "celebrate",
   qbThrow: "qbThrow", pitch: "pitch", kick: "kick", celebGolf: "celebGolf", celebBat: "celebBat", celebTennis: "celebTennis",
   dive: "dive", pickup: "pickup", turnRun: "turnRun", getup: "getup", getupB: "getupB", getupC: "getupC",
@@ -310,7 +333,7 @@ export function loadedClipCount(asset: CharacterAsset): number {
 /** True once the locomotion clips are in — enough to apply so moving players animate immediately. */
 export function locomotionReady(asset: CharacterAsset): boolean {
   const c = asset.clips;
-  return c.run != null && c.walk != null && c.runBack != null && c.strafe != null;
+  return c.run != null && c.walk != null && c.runBack != null;
 }
 
 /**
