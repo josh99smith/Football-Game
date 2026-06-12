@@ -14,20 +14,9 @@ import { TackleRagdoll } from "../physics/TackleRagdoll";
  */
 
 const base = import.meta.env.BASE_URL;
+// The single-file character GLB carries its full clip set (see tools/convert-tripo.mjs).
 const URLS = {
   model: `${base}player.glb`,
-  run: `${base}anim_run.fbx`,
-  runBack: `${base}anim_run_back.fbx`,
-  strafe: `${base}anim_strafe.fbx`,
-  pass: `${base}rig_pass.fbx`,
-  catch: `${base}anim_catch.fbx`,
-  juke: `${base}anim_juke.fbx`,
-  walk: `${base}anim_walk.fbx`,
-  tackle: `${base}tackle.fbx`,
-  spin: `${base}spin.fbx`,
-  defTackle: `${base}def_tackle.fbx`,
-  defSwat: `${base}anim_swat.fbx`,
-  celebrate: `${base}anim_dance.fbx`,
 };
 
 /** Walk the model and list every bone with its name and parent — the rig we must match. */
