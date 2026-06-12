@@ -64,6 +64,12 @@ const BONE_RENAME = new Map(Object.entries({
   R_Calf: "mixamorigRightLeg",
   R_Foot: "mixamorigRightFoot",
   R_ToeBase: "mixamorigRightToeBase",
+  // Leaf ends — unskinned and unanimated, but the tackle ragdoll's body segments end at these
+  // joints (foot and hand capsule far-ends), so give them the mixamo names it looks up.
+  L_Hand_end: "mixamorigLeftHandMiddle3",
+  R_Hand_end: "mixamorigRightHandMiddle3",
+  L_ToeBase_end: "mixamorigLeftToe_End",
+  R_ToeBase_end: "mixamorigRightToe_End",
 }));
 
 /** Which take feeds which game clip (matched against the FBX take names). */
@@ -233,38 +239,86 @@ for (const { name, match } of CLIP_MAP) {
   console.log(`  ${name} ← "${clip.name}" (${clip.duration.toFixed(2)}s)`);
 }
 
+/** Slice [t0, t1] out of a clip (times rebased to 0). Constant/sparse tracks with no keys inside
+ *  the window are resampled at the window start instead of dropped — losing e.g. a single-key
+ *  Root rotation track silently breaks the later per-take yaw normalization. */
+function sliceClip(src, t0, t1, name) {
+  const c = src.clone();
+  if (name) c.name = name;
+  c.tracks = c.tracks.map((tr) => {
+    const keep = [];
+    for (let i = 0; i < tr.times.length; i++) if (tr.times[i] >= t0 && tr.times[i] <= t1) keep.push(i);
+    const stride = tr.getValueSize();
+    const T = tr.constructor;
+    if (keep.length === 0) {
+      const interp = tr.createInterpolant();
+      const v = interp.evaluate(Math.min(Math.max(t0, tr.times[0]), tr.times[tr.times.length - 1]));
+      return new T(tr.name, new Float32Array([0]), Float32Array.from(v));
+    }
+    const times = new Float32Array(keep.length);
+    const values = new Float32Array(keep.length * stride);
+    keep.forEach((srcI, dst) => {
+      times[dst] = tr.times[srcI] - t0;
+      values.set(tr.values.subarray(srcI * stride, (srcI + 1) * stride), dst * stride);
+    });
+    return new T(tr.name, times, values);
+  }).filter((tr) => tr != null && tr.times.length > 0);
+  c.duration = t1 - t0;
+  return c;
+}
+
+/** Time-reverse a clip — the baked backpedal (runtime negative timeScale is impossible: the
+ *  stride-warp clamps setEffectiveTimeScale to ≥ 0.7 every tick). */
+function reverseClip(src, name) {
+  const c = src.clone();
+  c.name = name;
+  c.tracks = c.tracks.map((tr) => {
+    const n = tr.times.length;
+    const stride = tr.getValueSize();
+    const times = new Float32Array(n);
+    const values = new Float32Array(n * stride);
+    for (let i = 0; i < n; i++) {
+      const j = n - 1 - i;
+      times[i] = src.duration - tr.times[j];
+      values.set(tr.values.subarray(j * stride, (j + 1) * stride), i * stride);
+    }
+    const T = tr.constructor;
+    return new T(tr.name, times, values);
+  });
+  return c;
+}
+
 // Trim the 17.5s "relax" take to a clean standing window — the game freezes neutral players at
 // IDLE_POSE (13%) into the clip, which otherwise lands in one of the take's crouch/stretch beats.
 const IDLE_WINDOW = [4.0, 12.0];
+const rawRelax = takes.find((t) => t.name === "idle")?.clip ?? null;
 {
   const take = takes.find((t) => t.name === "idle");
   if (take) {
-    const [t0, t1] = IDLE_WINDOW;
-    take.clip = take.clip.clone();
-    take.clip.tracks = take.clip.tracks.map((tr) => {
-      const keep = [];
-      for (let i = 0; i < tr.times.length; i++) if (tr.times[i] >= t0 && tr.times[i] <= t1) keep.push(i);
-      const stride = tr.getValueSize();
-      const T = tr.constructor;
-      if (keep.length === 0) {
-        // Constant / sparse track (e.g. a single-key Root rotation): sample its value at the
-        // window start instead of dropping it — losing the Root track silently breaks the
-        // later per-take yaw normalization.
-        const interp = tr.createInterpolant();
-        const v = interp.evaluate(Math.min(Math.max(t0, tr.times[0]), tr.times[tr.times.length - 1]));
-        return new T(tr.name, new Float32Array([0]), Float32Array.from(v));
-      }
-      const times = new Float32Array(keep.length);
-      const values = new Float32Array(keep.length * stride);
-      keep.forEach((src, dst) => {
-        times[dst] = tr.times[src] - t0;
-        values.set(tr.values.subarray(src * stride, (src + 1) * stride), dst * stride);
-      });
-      return new T(tr.name, times, values);
-    }).filter((tr) => tr != null && tr.times.length > 0);
-    take.clip.duration = t1 - t0;
-    console.log(`  idle trimmed to [${t0}, ${t1}]s`);
+    take.clip = sliceClip(take.clip, IDLE_WINDOW[0], IDLE_WINDOW[1]);
+    console.log(`  idle trimmed to [${IDLE_WINDOW[0]}, ${IDLE_WINDOW[1]}]s`);
   }
+}
+
+// STANCE: a pre-snap ready pose sliced from the relax take's deepest crouch beat (those beats
+// live OUTSIDE the idle window). Found by scanning head height across the raw take.
+if (rawRelax) {
+  const mixerS = new THREE.AnimationMixer(grp);
+  const findB = (n) => allBones.find((b) => b.name === n);
+  let bestT = 2.0, bestY = Infinity;
+  for (let t = 0.5; t < rawRelax.duration - 1.0; t += 0.25) {
+    mixerS.stopAllAction();
+    const act = mixerS.clipAction(rawRelax);
+    act.reset(); act.play();
+    mixerS.update(t);
+    grp.updateMatrixWorld(true);
+    const y = findB("Head").getWorldPosition(new THREE.Vector3()).y;
+    if (y < bestY) { bestY = y; bestT = t; }
+  }
+  mixerS.stopAllAction();
+  const s0 = Math.max(0, bestT - 0.4), s1 = Math.min(rawRelax.duration, bestT + 0.8);
+  takes.push({ name: "stance", clip: sliceClip(rawRelax, s0, s1, "stance") });
+  console.log(`  stance sliced from crouch beat @${bestT.toFixed(2)}s (headY ${bestY.toFixed(2)}) → [${s0.toFixed(1)}, ${s1.toFixed(1)}]`);
 }
 
 // Normalize each take's facing: the takes were merged from DIFFERENT source armatures and don't
@@ -315,6 +369,16 @@ console.log("— normalizing take orientations");
   }
 }
 
+// Derived backpedal: time-reversed walk, baked AFTER yaw normalization (reversal preserves the
+// corrected orientation). Ships as its own clip so backpedal blends at an independent phase.
+{
+  const walk = takes.find((t) => t.name === "walk");
+  if (walk) {
+    takes.push({ name: "runback", clip: reverseClip(walk.clip, "runback") });
+    console.log("  runback ← reversed walk");
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Skeleton. Node transforms = the trimmed idle's FIRST FRAME locals: the FBX node rest is a
 // garbage mid-take pose (it breaks the game's bbox-derived scale/ground offset and the get-up's
@@ -338,6 +402,125 @@ const nodes = orderTop.map((b) => {
   if (kids.length) n.children = kids;
   return n;
 });
+
+// ---------------------------------------------------------------------------------------------
+// playerMeta: measured tuning the game reads from the asset (units are GLB-local — the runtime
+// multiplies by its own display scale). Hardcoded game constants remain as fallbacks/clamps.
+// ---------------------------------------------------------------------------------------------
+console.log("— measuring playerMeta");
+const playerMeta = { segs: {}, strideRun: 0, strideWalk: 0, ankleY: 0, hipY: 0, height: 0 };
+{
+  // Bind world position per skin joint (vertices live in this same baked-bind space).
+  const bindPos = skeleton.bones.map((b, i) => {
+    const m = new THREE.Matrix4().copy(skeleton.boneInverses[i]).invert();
+    return new THREE.Vector3().setFromMatrixPosition(m);
+  });
+  const renamed = skeleton.bones.map((b) => BONE_RENAME.get(b.name) ?? b.name);
+  const jointIdxByName = new Map(renamed.map((n, i) => [n, i]));
+  // Ragdoll segments (mirrors TackleRagdoll's SEGS): per segment, the drive bone + its twist
+  // children own the vertices; the axis runs top→bot.
+  const SEG_SPEC = [
+    { name: "pelvis", top: "mixamorigHips", bot: "mixamorigSpine1", own: ["mixamorigHips", "Pelvis", "mixamorigSpine"] },
+    { name: "torso", top: "mixamorigSpine1", bot: "mixamorigNeck", own: ["mixamorigSpine1", "mixamorigSpine2", "mixamorigLeftShoulder", "mixamorigRightShoulder"] },
+    { name: "head", top: "mixamorigNeck", bot: "mixamorigHead", own: ["mixamorigNeck", "NeckTwist02", "mixamorigHead"] },
+    ...["Left", "Right"].flatMap((S) => {
+      const P = S === "Left" ? "L" : "R";
+      return [
+        { name: `thigh${P}`, top: `mixamorig${S}UpLeg`, bot: `mixamorig${S}Leg`, own: [`mixamorig${S}UpLeg`, `${P}_ThighTwist01`, `${P}_ThighTwist02`] },
+        { name: `shin${P}`, top: `mixamorig${S}Leg`, bot: `mixamorig${S}Foot`, own: [`mixamorig${S}Leg`, `${P}_CalfTwist01`, `${P}_CalfTwist02`] },
+        { name: `foot${P}`, top: `mixamorig${S}Foot`, bot: `mixamorig${S}ToeBase`, own: [`mixamorig${S}Foot`, `mixamorig${S}ToeBase`] },
+        { name: `uarm${P}`, top: `mixamorig${S}Arm`, bot: `mixamorig${S}ForeArm`, own: [`mixamorig${S}Arm`, `${P}_UpperarmTwist01`, `${P}_UpperarmTwist02`] },
+        { name: `farm${P}`, top: `mixamorig${S}ForeArm`, bot: `mixamorig${S}Hand`, own: [`mixamorig${S}ForeArm`, `${P}_ForearmTwist01`, `${P}_ForearmTwist02`] },
+        { name: `hand${P}`, top: `mixamorig${S}Hand`, bot: `mixamorig${S}Hand`, own: [`mixamorig${S}Hand`] },
+      ];
+    }),
+  ];
+  const ownerOf = new Map(); // joint index → segment
+  for (const spec of SEG_SPEC) for (const n of spec.own) {
+    const ji = jointIdxByName.get(n);
+    if (ji !== undefined) ownerOf.set(ji, spec);
+  }
+  // Per-vertex dominant joint → segment; accumulate perpendicular distances to the segment axis.
+  const dists = new Map(SEG_SPEC.map((s) => [s.name, []]));
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), Pv = new THREE.Vector3(), AB = new THREE.Vector3(), AP = new THREE.Vector3();
+  for (let i = 0; i < nVert; i++) {
+    let bestW = 0, bestJ = -1;
+    for (let c = 0; c < 4; c++) if (weights[i * 4 + c] > bestW) { bestW = weights[i * 4 + c]; bestJ = joints[i * 4 + c]; }
+    const spec = ownerOf.get(bestJ);
+    if (!spec) continue;
+    const ti = jointIdxByName.get(spec.top), bi = jointIdxByName.get(spec.bot);
+    if (ti === undefined || bi === undefined) continue;
+    A.copy(bindPos[ti]); B.copy(bindPos[bi]);
+    Pv.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+    AB.subVectors(B, A);
+    const len2 = AB.lengthSq();
+    AP.subVectors(Pv, A);
+    const t = len2 > 1e-10 ? Math.max(0, Math.min(1, AP.dot(AB) / len2)) : 0;
+    dists.get(spec.name).push(AP.addScaledVector(AB, -t).length());
+  }
+  let volSum = 0;
+  const seg = {};
+  for (const spec of SEG_SPEC) {
+    const d = dists.get(spec.name);
+    if (!d || d.length < 12) continue;
+    d.sort((a, b) => a - b);
+    const r = d[(d.length * 0.6) | 0]; // 60th percentile — capsule hugs the body, ignores outliers
+    const ti = jointIdxByName.get(spec.top), bi = jointIdxByName.get(spec.bot);
+    const len = Math.max(0.04, bindPos[ti].distanceTo(bindPos[bi]));
+    seg[spec.name] = { r, len };
+    volSum += r * r * len;
+  }
+  for (const [name, s] of Object.entries(seg)) {
+    s.m = +(100 * (s.r * s.r * s.len) / volSum).toFixed(2); // ~100 kg split by capsule volume
+    s.r = +s.r.toFixed(4);
+    delete s.len;
+  }
+  playerMeta.segs = seg;
+
+  // Rest heights FIRST — grp still holds the idle-frame pose from the skeleton section (the
+  // stride sampling below disturbs it).
+  const findB = (n) => allBones.find((b) => b.name === n);
+  grp.updateMatrixWorld(true);
+  playerMeta.ankleY = +findB("L_Foot").getWorldPosition(new THREE.Vector3()).y.toFixed(3);
+  playerMeta.hipY = +findB("Hip").getWorldPosition(new THREE.Vector3()).y.toFixed(3);
+  playerMeta.height = +(findB("Head").getWorldPosition(new THREE.Vector3()).y + 0.1).toFixed(3);
+
+  // Stride speed: average horizontal speed of the STANCE (lower) foot in the in-place cycle.
+  // Also tracks the minimum ANKLE height across the cycle — the true plant height for foot IK
+  // (the rest pose can have a lifted/crossed foot, so a single-frame read lies).
+  let minAnkleY = Infinity;
+  const measureStride = (clip) => {
+    const mixerM = new THREE.AnimationMixer(grp);
+    const lt = findB("L_ToeBase"), rt = findB("R_ToeBase");
+    const la = findB("L_Foot"), ra = findB("R_Foot");
+    const samples = 40;
+    let sum = 0, n = 0;
+    let prevL = null, prevR = null;
+    const dt = clip.duration / samples;
+    for (let i = 0; i <= samples; i++) {
+      mixerM.stopAllAction(); const a2 = mixerM.clipAction(clip); a2.reset(); a2.play();
+      mixerM.update(i * dt);
+      grp.updateMatrixWorld(true);
+      const L = lt.getWorldPosition(new THREE.Vector3());
+      const R = rt.getWorldPosition(new THREE.Vector3());
+      minAnkleY = Math.min(minAnkleY, la.getWorldPosition(new THREE.Vector3()).y, ra.getWorldPosition(new THREE.Vector3()).y);
+      if (prevL) {
+        const stance = L.y < R.y ? [L, prevL] : [R, prevR];
+        const dx = stance[0].x - stance[1].x, dz = stance[0].z - stance[1].z;
+        sum += Math.hypot(dx, dz) / dt; n++;
+      }
+      prevL = L; prevR = R;
+    }
+    mixerM.stopAllAction();
+    return n ? sum / n : 0;
+  };
+  const runTake = takes.find((t) => t.name === "run");
+  const walkTake = takes.find((t) => t.name === "walk");
+  playerMeta.strideRun = +(runTake ? measureStride(runTake.clip) : 0).toFixed(3);
+  playerMeta.strideWalk = +(walkTake ? measureStride(walkTake.clip) : 0).toFixed(3);
+  if (Number.isFinite(minAnkleY)) playerMeta.ankleY = +Math.max(0.01, minAnkleY).toFixed(3);
+  console.log(`  segs: ${Object.keys(seg).length}, strideRun ${playerMeta.strideRun} m/s, strideWalk ${playerMeta.strideWalk} m/s, ankleY ${playerMeta.ankleY}`);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Write GLB
@@ -429,7 +612,8 @@ const wrapNode = nodes.length;
 const outJson = {
   asset: { version: "2.0", generator: "Football-Game tools/convert-tripo.mjs" },
   scene: 0,
-  scenes: [{ name: "player", nodes: [wrapNode] }],
+  // playerMeta lands on gltf.scene.userData at load — the game's measured-tuning channel.
+  scenes: [{ name: "player", nodes: [wrapNode], extras: { playerMeta } }],
   nodes,
   skins: [{ inverseBindMatrices: accIbm, joints: skeleton.bones.map((b) => boneIndex.get(b)), skeleton: rootBoneIdxs[0] }],
   meshes: [{ name: "playerscan", primitives: [{ attributes: { POSITION: accPos, NORMAL: accNrm, TEXCOORD_0: accUv, JOINTS_0: accJnt, WEIGHTS_0: accWgt }, indices: accIdx, material: 0 }] }],

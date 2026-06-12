@@ -105,6 +105,21 @@ const LOWER = new Set(["thighL", "shinL", "footL", "thighR", "shinR", "footR"]);
 export type HitVariant = "highKnock" | "lowCut" | "sideSwipe" | "angledBack" | "twist";
 const MAX_SPIN = 10; // rad/s — clamp so a body can never spin up into a contorted blur
 
+/** Endpoint fallbacks for rigs that lack the mixamo leaf bones (e.g. the Tripo character has no
+ *  finger or Toe_End bones). The capsule just ends at the nearest existing joint — and when the
+ *  fallback collapses onto the segment's TOP bone (hands), the endpoint is synthesized by
+ *  extending past it (see spawn). A segment that still can't resolve is SKIPPED, never a crash:
+ *  a tackle with a missing hand capsule beats a tackle that throws mid-sim-tick. */
+const BONE_FALLBACKS: Record<string, string[]> = {
+  LeftToe_End: ["LeftToeBase", "LeftFoot"],
+  RightToe_End: ["RightToeBase", "RightFoot"],
+  LeftHandMiddle3: ["LeftHand"],
+  RightHandMiddle3: ["RightHand"],
+  HeadTop_End: ["Head"],
+  Spine1: ["Spine", "Hips"],
+  Neck: ["Spine2", "Spine1"],
+};
+
 export class TackleRagdoll {
   active = false;
   private readonly physics: PhysicsWorld;
@@ -118,8 +133,13 @@ export class TackleRagdoll {
   private age = 0; // seconds since spawn — limits fade out as this grows
   private groups = 0x00020003; // collision membership|filter, set per spawn (see spawn)
 
-  constructor(physics: PhysicsWorld) {
+  /** Optional per-segment capsule overrides (WORLD units) measured from the actual character
+   *  mesh by the asset pipeline — see playerMeta in CharacterModel. */
+  private readonly overrides: Record<string, { r: number; m: number }> | undefined;
+
+  constructor(physics: PhysicsWorld, overrides?: Record<string, { r: number; m: number }>) {
     this.physics = physics;
+    this.overrides = overrides;
   }
 
   /** Collect every bone instance, grouped by short name (mixamorig prefix stripped). */
@@ -139,15 +159,26 @@ export class TackleRagdoll {
     return this.bones.get(short)?.[0];
   }
 
-  /** All bone instances sharing a short name (one per skeleton that contains it). */
-  private boneList(short: string): THREE.Bone[] {
-    const b = this.bones.get(short);
-    if (!b || b.length === 0) throw new Error(`TackleRagdoll: missing bone ${short}`);
-    return b;
+  /** Non-throwing lookup with per-name fallback chains — rigs without the mixamo leaf bones
+   *  (fingers, Toe_End) resolve to the nearest existing joint instead of crashing the tackle. */
+  private tryBone(short: string): THREE.Bone | null {
+    const direct = this.bones.get(short);
+    if (direct && direct.length > 0) return direct[0];
+    for (const fb of BONE_FALLBACKS[short] ?? []) {
+      const b = this.bones.get(fb);
+      if (b && b.length > 0) return b[0];
+    }
+    return null;
   }
 
-  private bone(short: string): THREE.Bone {
-    return this.boneList(short)[0];
+  private tryBoneList(short: string): THREE.Bone[] | null {
+    const direct = this.bones.get(short);
+    if (direct && direct.length > 0) return direct;
+    for (const fb of BONE_FALLBACKS[short] ?? []) {
+      const b = this.bones.get(fb);
+      if (b && b.length > 0) return b;
+    }
+    return null;
   }
 
   /**
@@ -160,6 +191,21 @@ export class TackleRagdoll {
    */
   spawn(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow = false, collisionBit = 0x0002, variant?: HitVariant): void {
     if (this.active) this.dispose();
+    try {
+      this.spawnInner(carryVel, hitDir, hitSpeed, hitLow, collisionBit, variant);
+    } catch (e) {
+      // A failed spawn must never take down the sim tick OR leak: remove any bodies already
+      // created and release the substep refcount, then carry on without a ragdoll (the caller
+      // checks `active` and falls back to the procedural fall).
+      console.warn("[TackleRagdoll] spawn failed — falling back to procedural fall", e);
+      for (const seg of this.segs) this.physics.world.removeRigidBody(seg.body);
+      this.segs = [];
+      this.active = false;
+      if (this.highSub) { this.physics.releaseHighSubsteps(); this.highSub = false; }
+    }
+  }
+
+  private spawnInner(carryVel: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow: boolean, collisionBit: number, variant?: HitVariant): void {
     // Membership = this ragdoll's bit; it collides with the ground (0x0001) and its OWN bit
     // (self-collision stops limbs melting through the torso) but NOT other ragdolls' bits, so
     // two bodies in a tackle pile each stay stable instead of exploding into each other.
@@ -183,10 +229,20 @@ export class TackleRagdoll {
     const twistVel = _twistVel.copy(carryVel).addScaledVector(_sideDir, hitSpeed * 0.5);          // legs swept across
 
     for (const def of SEGS) {
-      const top = this.bone(def.top);
-      const bot = this.bone(def.bot);
+      const top = this.tryBone(def.top);
+      const bot = this.tryBone(def.bot);
+      const driveBoneList = this.tryBoneList(def.drives);
+      if (!top || !bot || !driveBoneList) continue; // unresolvable on this rig — skip the segment
       top.getWorldPosition(_a);
       bot.getWorldPosition(_b);
+      if (_a.distanceToSquared(_b) < 0.0009) {
+        // Endpoint fallback collapsed onto the top joint (e.g. a hand with no finger bones):
+        // synthesize the far end by extending past the joint along its parent's direction.
+        (top.parent as THREE.Object3D).getWorldPosition(_wp2);
+        _dir.subVectors(_a, _wp2);
+        if (_dir.lengthSq() < 1e-8) _dir.set(0, -1, 0);
+        _b.copy(_a).addScaledVector(_dir.normalize(), Math.max(0.08, def.r * 1.6));
+      }
       _c.addVectors(_a, _b).multiplyScalar(0.5); // segment center
       _dir.subVectors(_b, _a);
       const len = Math.max(0.04, _dir.length());
@@ -206,6 +262,11 @@ export class TackleRagdoll {
         case "twist":      v = isPelvis ? midVel : (isLeg ? twistVel : hitVel); break;
         default:           v = isPelvis ? midVel : (isLeg ? carryVel : hitVel); break; // highKnock
       }
+      // Measured capsule size/mass when the asset supplies them; the SEGS constants are the
+      // fallback AND the sanity clamp (a derived radius can never exceed half the bone length).
+      const ov = this.overrides?.[def.name];
+      const segR = Math.min(ov ? Math.max(0.03, ov.r) : def.r, Math.max(0.03, len / 2 - 0.01));
+      const segM = ov?.m && ov.m > 0.1 ? ov.m : def.m;
       const bodyDesc = R.RigidBodyDesc.dynamic()
         .setTranslation(_c.x, _c.y, _c.z)
         .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })
@@ -214,16 +275,16 @@ export class TackleRagdoll {
         .setLinearDamping(0.4)
         .setCanSleep(true);
       const body = world.createRigidBody(bodyDesc);
-      const half = Math.max(0.02, len / 2 - def.r);
-      const col = R.ColliderDesc.capsule(half, def.r)
+      const half = Math.max(0.02, len / 2 - segR);
+      const col = R.ColliderDesc.capsule(half, segR)
         .setDensity(0)
-        .setMass(def.m)
+        .setMass(segM)
         .setFriction(0.8)
         .setRestitution(0.0)
         .setCollisionGroups(this.groups);
       world.createCollider(col, body);
 
-      const driveBone = this.bone(def.drives);
+      const driveBone = driveBoneList[0];
       // qOffset so that boneWorldQ = bodyWorldQ * qOffset (captured now).
       driveBone.getWorldQuaternion(_q2); // bone world Q
       const qOffset = _pq.copy(_q).invert().multiply(_q2).clone();
@@ -232,24 +293,33 @@ export class TackleRagdoll {
       const posOffset = _b.copy(_wp).sub(_c).applyQuaternion(_q.clone().invert()).clone();
 
       const seg: Seg = {
-        ...def, body, center: _c.clone(), qOffset, posOffset,
-        driveBone, driveBones: this.boneList(def.drives),
+        ...def, r: segR, m: segM, body, center: _c.clone(), qOffset, posOffset,
+        driveBone, driveBones: driveBoneList,
         parentSeg: null, qRelRest: new THREE.Quaternion(),
       };
       this.segs.push(seg);
       byName.set(def.name, seg);
     }
+    // Without at least the pelvis there is no body to topple — treat as a failed spawn.
+    if (!byName.has("pelvis")) throw new Error("rig has no resolvable pelvis segment");
 
     // Link each segment to its parent with a spherical joint; the joint's range of motion is
     // enforced softly per-substep (see applyLimits) rather than by the joint itself, which
     // gives stable cone+twist limits without fragile per-joint hinge axes.
     for (const seg of this.segs) {
       if (!seg.parent) continue;
-      const parent = byName.get(seg.parent)!;
+      // Walk up the def chain to the nearest segment that actually spawned (a skipped segment's
+      // children re-attach to their grandparent instead of floating free).
+      let parentName: string | null = seg.parent;
+      let parent: Seg | undefined;
+      while (parentName && !(parent = byName.get(parentName))) {
+        parentName = SEGS.find((d) => d.name === parentName)?.parent ?? null;
+      }
+      if (!parent) continue;
       seg.parentSeg = parent;
       // Neutral relative orientation at spawn (the pose the soft limits measure deviation from).
       seg.qRelRest.copy(quatOf(parent.body)).invert().multiply(quatOf(seg.body));
-      this.bone(seg.top).getWorldPosition(_a); // joint world pos
+      this.tryBone(seg.top)!.getWorldPosition(_a); // joint world pos (resolved when seg spawned)
       // _q becomes childBodyQ^-1, _q2 becomes parentBodyQ^-1 (reused as the fixed-joint frames).
       const aChild = _b.copy(_a).sub(seg.center).applyQuaternion(_q.copy(quatOf(seg.body)).invert());
       const aParent = _c.copy(_a).sub(parent.center).applyQuaternion(_q2.copy(quatOf(parent.body)).invert());

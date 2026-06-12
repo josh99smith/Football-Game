@@ -1,14 +1,15 @@
 {
   "name": "bobble-bowl",
   "version": "0.2.0",
-  "description": "Bobble Bowl — bighead arcade American football (NFL Blitz-style) starring a rigged photo-scanned player, built with Three.js + TypeScript.",
+  "description": "Bobble Bowl \u2014 bighead arcade American football (NFL Blitz-style) starring a rigged photo-scanned player, built with Three.js + TypeScript.",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "build:player": "node tools/build-player-asset.mjs"
+    "build:player": "node tools/convert-tripo.mjs tools/source/character.fbx public/player.glb",
+    "test:headless": "node tools/headless/run.mjs"
   },
   "keywords": [
     "game",

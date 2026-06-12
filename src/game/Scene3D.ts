@@ -3,6 +3,7 @@ import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.j
 import { solveTwoBone } from "./anim/FootIK";
 import { ANIM } from "./anim/tuning";
 import { deriveAvatarState, type AvatarState } from "./anim/AvatarState";
+import { PROC_MOVES, type ProcCtx, type ProcMove } from "./anim/ProceduralOneShots";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
@@ -751,9 +752,17 @@ class FbxAvatar implements Avatar {
 
   // --- physics ragdoll tackle (replaces the canned tackle clip when a hit lands) ---
   private readonly inner: THREE.Object3D;
+  /** inner's rest Y (ground offset) — procedural hops set inner.position.y = base + dy. */
+  private readonly innerBaseY: number;
   /** Procedural QB throw: time remaining + the heading locked at release. */
   private throwT = 0;
   private throwHeading = 0;
+  /** Active procedural one-shot (moves with no clip on this character) + its progress clock. */
+  private procMove: ProcMove | null = null;
+  private procT = 0;
+  private procHeading = 0;
+  private procCtx: ProcCtx | null = null;
+  private readonly procBones = new Map<string, THREE.Bone | null>();
   /** Bind-pose local transforms, the target the get-up blends back to. */
   private readonly restPose = new Map<THREE.Bone, { p: THREE.Vector3; q: THREE.Quaternion }>();
   /** Stable bone order for pose capture/apply (the 1:1 replay records every bone's local transform). */
@@ -763,6 +772,13 @@ class FbxAvatar implements Avatar {
   replayPose: Float32Array | null = null;
   /** Extremity bones sampled to keep the body on the turf during the get-up (lazy-cached). */
   private contactBones: THREE.Bone[] | null = null;
+  /** Stride-warp factors (timeScale = lo.speed × K): derived from the asset's measured stride
+   *  speeds when playerMeta is present, else the legacy constants tuned for the old clips. */
+  private readonly kRun: number = FOOT_PLANT_K;
+  private readonly kWalk: number = WALK_PLANT_K;
+  private readonly kBack: number = BACK_PLANT_K;
+  /** Ragdoll capsule radius/mass overrides (world units), derived from playerMeta. */
+  private readonly ragdollSegs: Record<string, { r: number; m: number }> | null = null;
   /** Foot-IK influence (1 at a stand/walk, fading to 0 at a sprint). The ground correction pops the
    *  planted foot frame-to-frame at high stride rates — that was the open-field run "stutter" — and
    *  the stride-warp already keeps fast feet from skating, so we fade IK out as speed climbs. */
@@ -908,8 +924,28 @@ class FbxAvatar implements Avatar {
     this.lean.add(inner);
     this.group.add(this.lean, this.ring, this.chevron, this.nub, this.blob);
 
+    // Measured tuning from the asset pipeline: stride-warp factors (timeScale = speed × K, so
+    // K = U / worldStrideSpeed) and world-unit ragdoll capsule overrides. Legacy assets without
+    // meta keep the class-field defaults (the old hand-tuned constants).
+    const meta = asset.meta;
+    if (meta) {
+      if (meta.strideRun > 0.05) this.kRun = U / (meta.strideRun * asset.scale);
+      if (meta.strideWalk > 0.05) {
+        this.kWalk = U / (meta.strideWalk * asset.scale);
+        this.kBack = this.kWalk; // backpedal is the reversed walk — same stride
+      }
+      if (meta.segs && Object.keys(meta.segs).length > 0) {
+        const segs: Record<string, { r: number; m: number }> = {};
+        for (const [name, sm] of Object.entries(meta.segs)) {
+          segs[name] = { r: Math.min(0.22, Math.max(0.03, sm.r * asset.scale)), m: sm.m };
+        }
+        this.ragdollSegs = segs;
+      }
+    }
+
     // Snapshot the bind pose now (before the mixer ever runs) — the get-up blends back to it.
     this.inner = inner;
+    this.innerBaseY = inner.position.y;
     inner.traverse((o) => {
       if ((o as THREE.Bone).isBone) this.restPose.set(o as THREE.Bone, { p: o.position.clone(), q: o.quaternion.clone() });
     });
@@ -1090,10 +1126,13 @@ class FbxAvatar implements Avatar {
 
   /** Snapshot the current animated pose and hand the body to physics for a real tackle fall. */
   startRagdoll(physics: PhysicsWorld, carry: THREE.Vector3, hitDir: THREE.Vector3, hitSpeed: number, hitLow: boolean, bit: number, variant?: HitVariant): void {
-    if (!this.ragdoll) { this.ragdoll = new TackleRagdoll(physics); this.ragdoll.bind(this.inner); }
+    if (!this.ragdoll) { this.ragdoll = new TackleRagdoll(physics, this.ragdollSegs ?? undefined); this.ragdoll.bind(this.inner); }
     this.group.updateWorldMatrix(true, true); // freeze the live pose in world space
     this.group.position.y = 0;                 // so the get-up later stands with feet on the ground
     this.ragdoll.spawn(carry, hitDir, hitSpeed, hitLow, bit, variant);
+    // A failed spawn (unresolvable rig) leaves the ragdoll inactive — stay in the animation
+    // path and let the procedural fall (fallT via lo.down) flatten the body instead.
+    if (!this.ragdoll.active) return;
     this.rPhase = "fall"; this.fallTime = 0; this.settleTimer = 0; this.suppressFall = false;
     this.ring.visible = false; this.chevron.visible = false;
     // Keep the ball gripped if THIS player is the carrier (a clean tackle, not a fumble); only a real
@@ -1135,6 +1174,51 @@ class FbxAvatar implements Avatar {
     let found: THREE.Bone | null = null;
     this.inner.traverse((o) => { if (!found && (o as THREE.Bone).isBone && o.name === "mixamorig" + short) found = o as THREE.Bone; });
     return found;
+  }
+
+  /** Play the clip when this character has it, else run the procedural version of the move. */
+  private oneShotOrProc(action: THREE.AnimationAction | null, procName: string, heading: number, maxDur: number, rate = 1, startAt = 0, ownsFall = false): void {
+    if (action) { this.triggerOneShot(action, maxDur, rate, startAt, ownsFall); return; }
+    this.triggerProc(procName, heading);
+  }
+
+  private triggerProc(name: string, heading: number): void {
+    const move = PROC_MOVES[name];
+    if (!move) return;
+    this.procMove = move;
+    this.procT = 0;
+    this.procHeading = heading;
+    this.oneShotOwnsFall = !!move.ownsFall;
+  }
+
+  private endProc(): void {
+    if (!this.procMove) return;
+    this.procMove = null;
+    this.oneShotOwnsFall = false;
+    // Clear the SET-semantics body offsets the move was driving.
+    this.inner.rotation.set(0, 0, 0);
+    this.inner.position.y = this.innerBaseY;
+  }
+
+  /** Advance + apply the active procedural move (display rate, after the mixer poses bones). */
+  private applyProc(dt: number): void {
+    const move = this.procMove;
+    if (!move) return;
+    this.procT += dt;
+    if (this.procT >= move.dur) { this.endProc(); return; }
+    if (!this.procCtx) {
+      this.procCtx = {
+        p: 0, heading: 0, body: this.inner, baseY: this.innerBaseY,
+        bone: (short: string) => {
+          if (!this.procBones.has(short)) this.procBones.set(short, this.bone(short));
+          return this.procBones.get(short) ?? null;
+        },
+        aimBone: (b, c, d, w) => this.aimBone(b, c, d, w),
+      };
+    }
+    this.procCtx.p = this.procT / move.dur;
+    this.procCtx.heading = this.procHeading;
+    move.apply(this.procCtx);
   }
 
   /** Throw visual: play the mocap QB/pitch clip when we have it, otherwise fall back to the
@@ -1304,6 +1388,7 @@ class FbxAvatar implements Avatar {
     for (const a of [this.idleAction, this.walkAction, this.runAction, this.backAction, this.backDiagAction, this.strafeAction]) a?.setEffectiveWeight(0);
   }
   private silenceActions(): void {
+    this.endProc();
     if (this.oneShot) { this.oneShot.setEffectiveWeight(0); this.oneShot.stop(); this.oneShot = null; }
     this.throwT = 0;
   }
@@ -1374,6 +1459,7 @@ class FbxAvatar implements Avatar {
     this.bankSmooth = 0;
     this.pitchSmooth = 0;
     this.throwT = 0; // kill any in-flight procedural throw so a reset mid-arc can't jam the arm next play
+    this.endProc(); // and any in-flight procedural one-shot (clears its body rotation/hop offsets)
     // Zero EVERY one-shot (not just the current `this.oneShot`): an overlapping overlay can leave an
     // orphaned action clamped at weight > 0, and those accumulated across the pooled avatars' reuse —
     // the walk/run corruption that grew over a session. Wipe them all on each fresh play.
@@ -1416,9 +1502,10 @@ class FbxAvatar implements Avatar {
       this.throwT -= dt;
       this.applyThrow(clamp(1 - this.throwT / THROW_DUR, 0, 1));
     }
+    this.applyProc(dt); // procedural one-shots pose on top of the mixer, like the throw
     // Foot IK runs on the fully-posed skeleton (after the mixer + throw). Suppressed during one-shot
     // overlays (tackle/juke/spin) where the legs do non-locomotion things. Default-off (see FOOT_IK).
-    if (ANIM.FOOT_IK && !this.oneShot && this.footIKScale > 0.02) this.applyFootIK();
+    if (ANIM.FOOT_IK && !this.oneShot && !this.procMove && this.footIKScale > 0.02) this.applyFootIK();
     this.updateCarriedBall();
   }
 
@@ -1460,29 +1547,27 @@ class FbxAvatar implements Avatar {
     // mocap. Start the slice right at the reach so the hands are already out the instant the ball
     // arrives (the catch event fires when the ball attaches), then run fast through the secure — not
     // a wind-up that has him reach AFTER he's already holding it.
-    else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.85, 1.5, 0.85);
-    else if (p.animEvent === "juke") this.triggerOneShot(this.jukeAction, 0.55, 1.25, 0);
-    else if (p.animEvent === "spin") this.triggerOneShot(this.spinAction ?? this.jukeAction, 0.95, 1.1, 0);
-    else if (p.animEvent === "stiffArm") this.triggerOneShot(this.jukeAction ?? this.spinAction, 0.5, 1.3, 0);
-    else if (p.animEvent === "tackle") this.triggerOneShot(this.tackleAction, 1.4, 1.1, 1.0, true);
-    // def_tackle is a 5s mocap take whose forward wrap/drive is ~1.0-2.5s in — slice to the lunge so
-    // the defender actually tackles ON contact (the first 1.5s is just the slow run-in).
-    else if (p.animEvent === "tackleMade") this.triggerOneShot(this.defTackleAction, 1.15, 1.3, 1.05);
-    else if (p.animEvent === "swat") this.triggerOneShot(this.defSwatAction, 0.95, 1.2, 0.3);
-    // kick (Soccer penalty) is a 28s take — slice to the plant→swing (~3.4s in).
-    else if (p.animEvent === "kick") this.triggerOneShot(this.kickAction, 1.2, 1.2, 2.6);
-    // dive (Run_To_Dive, 1.18s): the launch is at the very start — play it fast for the runner dive
-    // / defender dive-tackle. Falls back to the canned tackle clip until the dive clip streams in.
-    else if (p.animEvent === "dive") this.triggerOneShot(this.diveAction ?? this.tackleAction, 1.0, 1.45, 0.0, true);
-    // pickup (Pick_Up_Item, 1.2s): bend-down + scoop — play the whole bend/grab/rise for a recovery.
-    else if (p.animEvent === "pickup") this.triggerOneShot(this.pickupAction ?? this.catchAction, 1.0, 1.3, 0.05);
-    // turnRun (Turn_To_Running, 1.68s): the plant-and-turn is up front — play it fast for a hard
-    // direction reversal; falls back to the juke clip until it streams in.
-    else if (p.animEvent === "turnRun") this.triggerOneShot(this.turnRunAction ?? this.jukeAction, 0.7, 1.5, 0.0);
+    // catch (Football Catch take, 3.42s): slice to the reach→secure so the hands are already out
+    // the instant the ball attaches (slice point tuned on harness contact sheets).
+    else if (p.animEvent === "catch") this.triggerOneShot(this.catchAction, 0.9, 1.3, 0.9);
+    // Moves without a clip on this character run their procedural version (ProceduralOneShots);
+    // a real take dropped into the GLB under the right name takes precedence automatically.
+    else if (p.animEvent === "juke") this.oneShotOrProc(this.jukeAction, "juke", p.loco.heading, 0.55, 1.25, 0);
+    else if (p.animEvent === "spin") this.oneShotOrProc(this.spinAction, "spin", p.loco.heading, 0.95, 1.1, 0);
+    else if (p.animEvent === "stiffArm") this.oneShotOrProc(this.jukeAction ?? this.spinAction, "stiffArm", p.loco.heading, 0.5, 1.3, 0);
+    else if (p.animEvent === "tackle") this.oneShotOrProc(this.tackleAction, "hitReact", p.loco.heading, 1.4, 1.1, 1.0, true);
+    else if (p.animEvent === "tackleMade") this.oneShotOrProc(this.defTackleAction, "defTackle", p.loco.heading, 1.15, 1.3, 1.05);
+    else if (p.animEvent === "swat") this.oneShotOrProc(this.defSwatAction, "swat", p.loco.heading, 0.95, 1.2, 0.3);
+    else if (p.animEvent === "kick") this.oneShotOrProc(this.kickAction, "kick", p.loco.heading, 1.2, 1.2, 2.6);
+    // dive (parkour swan dive, 2.71s): skip the run-up — slice from the launch and own the fall.
+    else if (p.animEvent === "dive") this.triggerOneShot(this.diveAction ?? this.tackleAction, 1.0, 1.3, 0.45, true);
+    else if (p.animEvent === "pickup") this.oneShotOrProc(this.pickupAction, "pickup", p.loco.heading, 1.0, 1.3, 0.05);
+    else if (p.animEvent === "turnRun") this.oneShotOrProc(this.turnRunAction, "turnRun", p.loco.heading, 0.7, 1.5, 0.0);
     else if (p.animEvent === "celebrate") {
       const v = this.celebVariants;
       const pick = v.length ? v[(Math.random() * v.length) | 0] : null;
-      this.triggerOneShot(pick ? pick.a : this.celebrateAction, 2.6, 1.0, pick ? pick.s : 0);
+      if (pick || this.celebrateAction) this.triggerOneShot(pick ? pick.a : this.celebrateAction, 2.6, 1.0, pick ? pick.s : 0);
+      else this.triggerProc("celebrate", p.loco.heading);
     }
     p.animEvent = null;
 
@@ -1560,6 +1645,10 @@ class FbxAvatar implements Avatar {
       let strafe = Math.pow(Math.abs(Math.sin(lo.moveRel)), 2.0);
       const sum = fwd + back + strafe || 1;
       fwd /= sum; back /= sum; strafe /= sum;
+      // Slots without a dedicated clip FOLD their weight into the walk/run mix instead of
+      // playing a second copy of the same clip at a different phase (which smears the pose).
+      if (!this.strafeAction) { fwd += strafe; strafe = 0; }
+      if (!this.backAction && !this.backDiagAction) { fwd += back; back = 0; }
       const fwdMoving = fwd * moving01;
       tWalk = fwdMoving * (1 - runMix);
       tRun = fwdMoving * runMix;
@@ -1567,10 +1656,10 @@ class FbxAvatar implements Avatar {
       tStrafe = strafe * moving01;
       tIdle = 1 - moving01; // everyone settles into the football ready stance
       // Each cycle is warped to its own measured stride so feet grip the ground.
-      this.walkAction?.setEffectiveTimeScale(clamp(lo.speed * WALK_PLANT_K, 0.7, 3.6));
-      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * FOOT_PLANT_K, 0.7, 3.0));
-      this.backAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
-      this.backDiagAction?.setEffectiveTimeScale(clamp(lo.speed * BACK_PLANT_K, 0.7, 3.0));
+      this.walkAction?.setEffectiveTimeScale(clamp(lo.speed * this.kWalk, 0.7, 3.6));
+      this.runAction?.setEffectiveTimeScale(clamp(lo.speed * this.kRun, 0.7, 3.0));
+      this.backAction?.setEffectiveTimeScale(clamp(lo.speed * this.kBack, 0.7, 3.0));
+      this.backDiagAction?.setEffectiveTimeScale(clamp(lo.speed * this.kBack, 0.7, 3.0));
       this.strafeAction?.setEffectiveTimeScale(clamp(lo.speed * STRAFE_PLANT_K, 0.7, 3.0));
       // Bank hard into turns/cuts so a change of direction reads as a dynamic lean (plus the
       // juke lean). Smoothed so it carves in rather than snapping, but quick enough to feel sharp.
@@ -1608,7 +1697,7 @@ class FbxAvatar implements Avatar {
     // Formal state for this anim frame; the setter enforces channel ownership on any transition.
     this.setAnimState(deriveAvatarState({
       ragdolling: false, gettingUp: false,
-      overlay: this.oneShot != null || this.throwT > 0,
+      overlay: this.oneShot != null || this.throwT > 0 || this.procMove != null,
       down: lo.down, contact: lo.contact,
     }));
 
@@ -2546,6 +2635,13 @@ export class Scene3D {
 
   setCharacter(asset: CharacterAsset): void {
     this.charAsset = asset;
+    // Foot-IK plant bands follow the asset's measured ankle height (world units). These are the
+    // live-tunable ANIM defaults — the debug panel can still override them in a session.
+    if (asset.meta && asset.meta.ankleY > 0) {
+      const ankleW = asset.meta.ankleY * asset.scale;
+      ANIM.FOOT_PLANT_LO = Math.min(0.08, Math.max(0.02, ankleW * 0.55));
+      ANIM.FOOT_PLANT_HI = Math.min(0.3, Math.max(0.1, ankleW * 3.0));
+    }
     this.rebuildSidelinePlayers(); // upgrade the box bench figures to real skinned models
     const c = asset.clips;
     this.charInfo = {

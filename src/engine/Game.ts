@@ -95,7 +95,7 @@ export class GameApp {
     // ASSET_V busts HTTP caches: the file lives at a FIXED url (unhashed, unlike the JS bundle),
     // so without it a phone pairs a cached old model with new code after every deploy — the
     // source of several "looks broken on my phone" reports. Bump it when the asset changes.
-    const ASSET_V = "?v=6";
+    const ASSET_V = "?v=7";
     const urls = { model: `${base}player.glb${ASSET_V}` };
     // Two-stage load so the skinned model appears ASAP: (1) the ~1MB rig swaps box avatars for the
     // model immediately (idle only); (2) the animation clips stream in and upgrade it. A slow or
