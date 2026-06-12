@@ -233,6 +233,40 @@ for (const { name, match } of CLIP_MAP) {
   console.log(`  ${name} ← "${clip.name}" (${clip.duration.toFixed(2)}s)`);
 }
 
+// Trim the 17.5s "relax" take to a clean standing window — the game freezes neutral players at
+// IDLE_POSE (13%) into the clip, which otherwise lands in one of the take's crouch/stretch beats.
+const IDLE_WINDOW = [4.0, 12.0];
+{
+  const take = takes.find((t) => t.name === "idle");
+  if (take) {
+    const [t0, t1] = IDLE_WINDOW;
+    take.clip = take.clip.clone();
+    take.clip.tracks = take.clip.tracks.map((tr) => {
+      const keep = [];
+      for (let i = 0; i < tr.times.length; i++) if (tr.times[i] >= t0 && tr.times[i] <= t1) keep.push(i);
+      const stride = tr.getValueSize();
+      const T = tr.constructor;
+      if (keep.length === 0) {
+        // Constant / sparse track (e.g. a single-key Root rotation): sample its value at the
+        // window start instead of dropping it — losing the Root track silently breaks the
+        // later per-take yaw normalization.
+        const interp = tr.createInterpolant();
+        const v = interp.evaluate(Math.min(Math.max(t0, tr.times[0]), tr.times[tr.times.length - 1]));
+        return new T(tr.name, new Float32Array([0]), Float32Array.from(v));
+      }
+      const times = new Float32Array(keep.length);
+      const values = new Float32Array(keep.length * stride);
+      keep.forEach((src, dst) => {
+        times[dst] = tr.times[src] - t0;
+        values.set(tr.values.subarray(src * stride, (src + 1) * stride), dst * stride);
+      });
+      return new T(tr.name, times, values);
+    }).filter((tr) => tr != null && tr.times.length > 0);
+    take.clip.duration = t1 - t0;
+    console.log(`  idle trimmed to [${t0}, ${t1}]s`);
+  }
+}
+
 // Normalize each take's facing: the takes were merged from DIFFERENT source armatures and don't
 // share a base orientation (walk plays ~90° off, catch ~180°). Measure each clip's yaw on the
 // loaded FBX and bake a corrective world-yaw into its Root rotation track so every clip faces
@@ -278,33 +312,6 @@ console.log("— normalizing take orientations");
       q.toArray(track.values, i);
     }
     console.log(`  ${take.name}: yaw off by ${(mean * 180 / Math.PI - 180).toFixed(0)}°, corrected`);
-  }
-}
-
-// Trim the 17.5s "relax" take to a clean standing window — the game freezes neutral players at
-// IDLE_POSE (13%) into the clip, which otherwise lands in one of the take's crouch/stretch beats.
-const IDLE_WINDOW = [4.0, 12.0];
-{
-  const take = takes.find((t) => t.name === "idle");
-  if (take) {
-    const [t0, t1] = IDLE_WINDOW;
-    take.clip = take.clip.clone();
-    take.clip.tracks = take.clip.tracks.map((tr) => {
-      const keep = [];
-      for (let i = 0; i < tr.times.length; i++) if (tr.times[i] >= t0 && tr.times[i] <= t1) keep.push(i);
-      if (keep.length === 0) return null;
-      const stride = tr.getValueSize();
-      const times = new Float32Array(keep.length);
-      const values = new Float32Array(keep.length * stride);
-      keep.forEach((src, dst) => {
-        times[dst] = tr.times[src] - t0;
-        values.set(tr.values.subarray(src * stride, (src + 1) * stride), dst * stride);
-      });
-      const T = tr.constructor;
-      return new T(tr.name, times, values);
-    }).filter((tr) => tr != null && tr.times.length > 0);
-    take.clip.duration = t1 - t0;
-    console.log(`  idle trimmed to [${t0}, ${t1}]s`);
   }
 }
 
