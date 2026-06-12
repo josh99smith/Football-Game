@@ -88,43 +88,15 @@ export class GameApp {
     this.scene3d.setVisible(false);
     // Load the skinned character in the background; players use box avatars only until it's ready.
     const base = import.meta.env.BASE_URL;
-    // The rigged photo-scan player (built by tools/build-player-asset.mjs) plus its
-    // Mixamo-retargeted animation pack (anim_*.fbx). A few legacy mocap clips cover the moves the
-    // new pack doesn't (throws, tackles, kicks…); those are rotation-only retargeted onto the
-    // scan skeleton (see SPORTS_RETARGET).
-    // ASSET_V busts HTTP caches: these files live at FIXED urls (unhashed, unlike the JS bundle),
+    // The whole character ships in ONE file: the rigged Tripo player GLB carries its full
+    // animation set (idle/walk/run/catch/dive — built by tools/convert-tripo.mjs); slots without
+    // a clip fall back to the renderer's procedural motions (throw arm, ragdoll tackles,
+    // physics get-ups).
+    // ASSET_V busts HTTP caches: the file lives at a FIXED url (unhashed, unlike the JS bundle),
     // so without it a phone pairs a cached old model with new code after every deploy — the
-    // source of several "looks broken on my phone" reports. Bump it when any asset changes.
-    const ASSET_V = "?v=4";
-    const u = (file: string): string => `${base}${file}${ASSET_V}`;
-    const urls = {
-      model: u("player.glb"),
-      run: u("anim_run.fbx"),
-      runBack: u("anim_run_back.fbx"),
-      strafe: u("anim_strafe.fbx"),
-      backDiag: u("anim_jog_back.fbx"),
-      pass: u("rig_pass.fbx"),
-      catch: u("anim_catch.fbx"),
-      juke: u("anim_juke.fbx"),
-      walk: u("anim_walk.fbx"),
-      tackle: u("tackle.fbx"),
-      spin: u("spin.fbx"),
-      defTackle: u("def_tackle.fbx"),
-      defSwat: u("anim_swat.fbx"),
-      celebrate: u("anim_dance.fbx"),
-      qbThrow: u("qb_throw.fbx"),
-      pitch: u("throw_long.fbx"),
-      kick: u("kick.fbx"),
-      celebGolf: u("anim_breakdance.fbx"),
-      celebBat: u("anim_sit_thumbs.fbx"),
-      celebTennis: u("anim_sit_laugh.fbx"),
-      dive: u("dive.fbx"),
-      pickup: u("pickup.fbx"),
-      turnRun: u("anim_turn_run.fbx"),
-      getup: u("anim_getup_a.fbx"),
-      getupB: u("anim_getup_b.fbx"),
-      getupC: u("anim_getup_c.fbx"),
-    };
+    // source of several "looks broken on my phone" reports. Bump it when the asset changes.
+    const ASSET_V = "?v=5";
+    const urls = { model: `${base}player.glb${ASSET_V}` };
     // Two-stage load so the skinned model appears ASAP: (1) the ~1MB rig swaps box avatars for the
     // model immediately (idle only); (2) the animation clips stream in and upgrade it. A slow or
     // stalled clip fetch on mobile can therefore never leave the player stuck on blocks.
@@ -156,12 +128,14 @@ export class GameApp {
           retry(asset);
         });
     };
+    // With the single-file GLB there are no separate clip urls — the rig load IS the full load.
+    const hasClipUrls = Object.keys(urls).length > 1;
     const loadRig = (attempt = 0): void => {
       loadBaseRig(urls.model)
         .then((rig) => {
           this.diag.rig = "ok";
           this.scene3d.setCharacter(rig); // model is visible NOW (idle); clips follow
-          loadAnims(rig);
+          if (hasClipUrls) loadAnims(rig);
         })
         .catch((err) => {
           console.error(`base rig load failed (attempt ${attempt + 1}); retrying…`, err);

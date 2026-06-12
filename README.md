@@ -52,31 +52,33 @@ sprint for the burst, but pick your moments.
   speed/power boost (flames included) until the opponent scores.
 - Touchdowns, sacks, interceptions, safeties, and turnovers on downs all handled.
 
-## The player model (photo-scan pipeline)
+## The player model (single-file character)
 
-Every player on the field is one **photogrammetry scan of a bobblehead football figure**,
-auto-rigged and palette-swapped per team:
+Every player on the field is one rigged character that ships — mesh, texture, and its whole
+animation set — in a single `public/player.glb` (~4 MB), built by
+[`tools/convert-tripo.mjs`](tools/convert-tripo.mjs) from a Tripo-generated FBX:
 
-- The raw scan (≈830k triangles, a noisy double-layered shell with a chaotic per-chart
-  texture atlas) is **voxel-remeshed** into one clean manifold surface, decimated to a
-  mobile budget, **unwrapped with xatlas**, and a fresh texture atlas is **re-baked** from
-  the dense source point cloud (`public/player.glb`, ~3 MB all-in).
-- The skeleton comes from the **Mixamo auto-rig** of the same scan: the bundled
-  `anim_*.fbx` clips (run/walk/strafe/juke/catch/get-ups/celebrations…) were retargeted by
-  Mixamo onto the scan's own proportions and bind 1:1. A handful of legacy mocap clips
-  (throws, tackles, kick) are retargeted rotation-only at load.
-- Skinning is computed offline — bone-segment distance weights + Laplacian smoothing.
-- **Team colorways**: the asset pipeline classifies each texel (uniform navy / orange trim /
-  keep skin & whites) into the atlas's **alpha channel**; at load the game palette-swaps the
-  two uniform classes to each team's jersey/accent colors, preserving the baked shading.
+- decimated to a mobile triangle budget (UVs and skin weights survive the simplify),
+- its bones **renamed to the mixamorig names** the game is built around (foot IK, the
+  physics tackle ragdoll, the procedural QB throw, and replay pose capture all look bones
+  up by name),
+- each take's base orientation normalized (the merged takes pointed different directions)
+  and the long "relax" take trimmed to a clean standing window for the pre-snap idle,
+- five takes baked as named glTF animations — `idle / walk / run / catch / dive`; moves
+  without a take (throws, tackles, get-ups, spins…) fall back to the renderer's procedural
+  motions and the physics ragdoll,
+- **team colorways**: each texel is classified (cool uniform base / warm camo+trim / keep)
+  into the texture's **alpha channel**; at load the game palette-swaps the two uniform
+  classes to each team's jersey/accent colors, preserving the baked shading.
 
-Rebuild the model from a new scan + Mixamo `Idle.fbx` with:
+Rebuild with:
 
 ```bash
-npm run build:player -- <scan.glb> <Idle.fbx> public/player.glb
+node tools/convert-tripo.mjs <character.fbx> public/player.glb
 ```
 
-(see [`tools/build-player-asset.mjs`](tools/build-player-asset.mjs)).
+(`tools/build-player-asset.mjs` remains for rigging raw photogrammetry scans against a
+Mixamo-fitted skeleton.)
 
 ## How it's built
 

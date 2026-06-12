@@ -66,21 +66,21 @@ export interface CharacterAsset {
 }
 
 export interface CharacterUrls {
-  /** Rigged model that also supplies the idle/stance animation. */
+  /** Rigged model that also supplies its animation set (a GLB ships every clip it has; slots
+   *  without a URL below simply stay empty and the renderer's procedural fallbacks cover them). */
   model: string;
-  run: string;
-  runBack: string;
-  strafe: string;
-  pass: string;
-  catch: string;
-  juke: string;
-  walk: string;
-  tackle: string;
-  spin: string;
-  defTackle: string;
-  defSwat: string;
-  celebrate: string;
-  // Optional clips (the main game supplies these; tools/sandboxes may omit them).
+  run?: string;
+  runBack?: string;
+  strafe?: string;
+  pass?: string;
+  catch?: string;
+  juke?: string;
+  walk?: string;
+  tackle?: string;
+  spin?: string;
+  defTackle?: string;
+  defSwat?: string;
+  celebrate?: string;
   backDiag?: string;
   qbThrow?: string;
   pitch?: string;
@@ -252,8 +252,23 @@ export async function loadBaseRig(modelUrl: string): Promise<CharacterAsset> {
     // Skinned bounds don't track the pose in three, and the bind-pose bbox is tight on the body —
     // a diving/ragdolling player would get frustum-culled mid-fall. 14 players is nothing to cull.
     scene.traverse((o) => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.frustumCulled = false; });
-    const idle = animations[0] ? prep(animations[0]) : null;
-    return buildAsset(scene, emptyClips(idle));
+    // The GLB ships its whole clip set as named animations (tools/convert-tripo.mjs): map them
+    // into the game's slots. prep() clones, so slots reusing a clip get independent actions.
+    const byName = new Map(animations.map((a) => [a.name, a]));
+    const named = (n: string): THREE.AnimationClip | null => {
+      const c = byName.get(n);
+      return c ? prep(c) : null;
+    };
+    const clips = emptyClips(named("idle") ?? (animations[0] ? prep(animations[0]) : null));
+    clips.walk = named("walk");
+    clips.run = named("run");
+    clips.catch = named("catch");
+    clips.dive = named("dive");
+    // No dedicated backpedal/strafe takes: reuse walk so off-axis movement isn't a frozen pose.
+    clips.runBack = named("walk");
+    clips.backDiag = named("walk");
+    clips.strafe = named("walk");
+    return buildAsset(scene, clips);
   }
   const loader = new FBXLoader();
   const model = await loadFbx(loader, modelUrl);
