@@ -494,7 +494,7 @@ const playerMeta = { segs: {}, strideRun: 0, strideWalk: 0, ankleY: 0, hipY: 0, 
     const lt = findB("L_ToeBase"), rt = findB("R_ToeBase");
     const la = findB("L_Foot"), ra = findB("R_Foot");
     const samples = 40;
-    let sum = 0, n = 0;
+    const speeds = [];
     let prevL = null, prevR = null;
     const dt = clip.duration / samples;
     for (let i = 0; i <= samples; i++) {
@@ -507,12 +507,16 @@ const playerMeta = { segs: {}, strideRun: 0, strideWalk: 0, ankleY: 0, hipY: 0, 
       if (prevL) {
         const stance = L.y < R.y ? [L, prevL] : [R, prevR];
         const dx = stance[0].x - stance[1].x, dz = stance[0].z - stance[1].z;
-        sum += Math.hypot(dx, dz) / dt; n++;
+        speeds.push(Math.hypot(dx, dz) / dt);
       }
       prevL = L; prevR = R;
     }
     mixerM.stopAllAction();
-    return n ? sum / n : 0;
+    if (speeds.length === 0) return 0;
+    // 75th percentile, not the mean: samples at the foot-reversal instants are near zero and a
+    // mean drags the estimate ~2x low → clips played ~2x too fast in-game (strobing legs).
+    speeds.sort((a, b) => a - b);
+    return speeds[(speeds.length * 0.75) | 0];
   };
   const runTake = takes.find((t) => t.name === "run");
   const walkTake = takes.find((t) => t.name === "walk");
@@ -574,6 +578,57 @@ const accIbm = push(ibm, null, { componentType: 5126, count: skeleton.bones.leng
 }
 const imgBvIdx = bufferViews.length - 1;
 
+// One-shot takes (dive/catch/stance) carry their VERTICAL body motion as a Root translation
+// channel — rotation-only export pivots the body around a pelvis frozen at standing height (the
+// dive read as a crawl with the legs in the air). Vertical-only so the channel can never fight
+// the sim's horizontal movement, and on Root (not Hips) so the runtime's Hips.position strip
+// leaves it alone. Values are Root-parent-local: Vloc = the wrap node's inverse-rotated world up.
+const VERT_TAKES = new Set(["dive", "catch", "stance"]);
+const rootBoneTop = orderTop[0];
+const rootRestLocal = new THREE.Vector3().fromArray(nodes[boneIndex.get(rootBoneTop)].translation);
+const Vloc = (() => {
+  grp.updateMatrixWorld(true);
+  const ancestor = rootBoneTop.parent ? rootBoneTop.parent.matrixWorld.clone() : new THREE.Matrix4();
+  const W = new THREE.Matrix4().makeRotationY(Math.PI).multiply(ancestor);
+  const q = new THREE.Quaternion().setFromRotationMatrix(W).invert();
+  return new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+})();
+// The source takes have NO vertical root motion (Tripo strips it — the dive "flattens" by
+// rotating around a pelvis pinned at standing height, legs in the air). Synthesize the drop:
+// per frame, measure the body's LOWEST extremity and push the whole body down by however much
+// it rose above its frame-0 level — the lowest point stays glued to the turf through the move.
+const sampleDropY = (clip, n) => {
+  const mixerV = new THREE.AnimationMixer(grp);
+  // Hands excluded: they swing below ground level in the source takes and would invert the
+  // correction into a LIFT. A hand brushing into the turf is fine; a floating body is not.
+  const joints = ["Head", "L_Foot", "R_Foot", "L_ToeBase", "R_ToeBase"]
+    .map((nm) => allBones.find((b) => b.name === nm)).filter(Boolean);
+  const v = new THREE.Vector3();
+  const mins = [];
+  for (let i = 0; i <= n; i++) {
+    mixerV.stopAllAction();
+    const a = mixerV.clipAction(clip);
+    a.reset(); a.play();
+    mixerV.update((i / n) * clip.duration);
+    grp.updateMatrixWorld(true);
+    let m = Infinity;
+    for (const b of joints) m = Math.min(m, b.getWorldPosition(v).y);
+    mins.push(m);
+  }
+  mixerV.stopAllAction();
+  // Absolute ground reference (the measured ankle plant height) rather than frame 0 — the take
+  // may START with a foot lifted mid-stride. Push down only, never lift; the one-shot's weight
+  // fade-in absorbs any offset at the clip start.
+  const groundRef = Math.max(0.01, playerMeta.ankleY || 0.03) * 1.3;
+  const drops = mins.map((m) => Math.min(0, groundRef - m));
+  // Light smoothing so the grounding can't pop frame to frame.
+  return drops.map((_, i) => {
+    let sum = 0, cnt = 0;
+    for (let k = Math.max(0, i - 1); k <= Math.min(drops.length - 1, i + 1); k++) { sum += drops[k]; cnt++; }
+    return sum / cnt;
+  });
+};
+
 const animations = takes.map(({ name, clip }) => {
   const channels = [];
   const samplers = [];
@@ -586,6 +641,23 @@ const animations = takes.map(({ name, clip }) => {
     const outAcc = push(Float32Array.from(tr.values), null, { componentType: 5126, count: tr.times.length, type: "VEC4" });
     samplers.push({ input: inAcc, output: outAcc, interpolation: "LINEAR" });
     channels.push({ sampler: samplers.length - 1, target: { node, path: "rotation" } });
+  }
+  if (VERT_TAKES.has(name)) {
+    const N = Math.max(12, Math.round(clip.duration * 12));
+    const ys = sampleDropY(clip, N);
+    const times = new Float32Array(N + 1);
+    const values = new Float32Array((N + 1) * 3);
+    for (let i = 0; i <= N; i++) {
+      times[i] = (i / N) * clip.duration;
+      const dy = ys[i];
+      values[i * 3] = rootRestLocal.x + Vloc.x * dy;
+      values[i * 3 + 1] = rootRestLocal.y + Vloc.y * dy;
+      values[i * 3 + 2] = rootRestLocal.z + Vloc.z * dy;
+    }
+    const inAcc = push(times, null, { componentType: 5126, count: times.length, type: "SCALAR", min: [0], max: [clip.duration] });
+    const outAcc = push(values, null, { componentType: 5126, count: times.length, type: "VEC3" });
+    samplers.push({ input: inAcc, output: outAcc, interpolation: "LINEAR" });
+    channels.push({ sampler: samplers.length - 1, target: { node: boneIndex.get(rootBoneTop), path: "translation" } });
   }
   return { name, channels, samplers };
 });
